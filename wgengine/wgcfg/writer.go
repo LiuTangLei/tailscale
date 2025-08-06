@@ -41,6 +41,15 @@ func (cfg *Config) ToUAPI(logf logger.Logf, w io.Writer, prev *Config) error {
 	// Device config.
 	if !prev.PrivateKey.Equal(cfg.PrivateKey) {
 		set("private_key", cfg.PrivateKey.UntypedHexString())
+		set("jc", "12")         // Junk packet count
+		set("jmin", "64")       // Min junk size
+		set("jmax", "512")      // Max junk size
+		set("s1", "32")         // Init packet junk size
+		set("s2", "48")         // Response packet junk size
+		set("h1", "2147483648") // Init packet magic header
+		set("h2", "3221225472") // Response packet magic header
+		set("h3", "1073741824") // Underload packet magic header
+		set("h4", "3758096384") // Transport packet magic header
 	}
 
 	old := make(map[key.NodePublic]Peer)

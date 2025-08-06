@@ -30,9 +30,9 @@ import (
 	"unsafe"
 
 	qt "github.com/frankban/quicktest"
-	wgconn "github.com/tailscale/wireguard-go/conn"
-	"github.com/tailscale/wireguard-go/device"
-	"github.com/tailscale/wireguard-go/tun/tuntest"
+	wgconn "github.com/LiuTangLei/wireguard-go/conn"
+	"github.com/LiuTangLei/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/tun/tuntest"
 	"go4.org/mem"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"

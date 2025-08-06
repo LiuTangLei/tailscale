@@ -124,7 +124,7 @@ func (cfg *Config) handleDeviceLine(k, value mem.RO, valueBytes []byte) error {
 		if err != nil {
 			return err
 		}
-	case k.EqualString("listen_port") || k.EqualString("fwmark"):
+	case k.EqualString("listen_port") || k.EqualString("fwmark") || k.EqualString("jc") || k.EqualString("jmin") || k.EqualString("jmax") || k.EqualString("s1") || k.EqualString("s2") || k.EqualString("h1") || k.EqualString("h2") || k.EqualString("h3") || k.EqualString("h4"):
 	// ignore
 	default:
 		return fmt.Errorf("unexpected IpcGetOperation key: %q", k.StringCopy())
