@@ -5165,7 +5165,7 @@ func (b *LocalBackend) authReconfig() {
 		b.dialer.SetExitDNSDoH("")
 	}
 
-	cfg, err := nmcfg.WGCfg(nm, b.logf, flags, prefs.ExitNodeID())
+	cfg, err := nmcfg.WGCfg(nm, b.logf, flags, prefs.ExitNodeID(), prefs.AmneziaWG())
 	if err != nil {
 		b.logf("wgcfg: %v", err)
 		return

@@ -9,10 +9,25 @@ import (
 	"net/netip"
 	"strconv"
 
+	"tailscale.com/envknob"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
 
+var (
+	// Amnezia-WG environment knobs
+	// JC, JMin, JMax, S1, S2 default to 0 for standard WireGuard compatibility
+	// H1-H4 default to 1,2,3,4 respectively for standard WireGuard magic headers
+	amneziaJC   = envknob.RegisterInt("TS_AMNEZIA_JC")
+	amneziaJMin = envknob.RegisterInt("TS_AMNEZIA_JMIN")
+	amneziaJMax = envknob.RegisterInt("TS_AMNEZIA_JMAX")
+	amneziaS1   = envknob.RegisterInt("TS_AMNEZIA_S1")
+	amneziaS2   = envknob.RegisterInt("TS_AMNEZIA_S2")
+	amneziaH1   = envknob.RegisterInt("TS_AMNEZIA_H1")
+	amneziaH2   = envknob.RegisterInt("TS_AMNEZIA_H2")
+	amneziaH3   = envknob.RegisterInt("TS_AMNEZIA_H3")
+	amneziaH4   = envknob.RegisterInt("TS_AMNEZIA_H4")
+)
 // ToUAPI writes cfg in UAPI format to w.
 // Prev is the previous device Config.
 //
@@ -41,15 +56,87 @@ func (cfg *Config) ToUAPI(logf logger.Logf, w io.Writer, prev *Config) error {
 	// Device config.
 	if !prev.PrivateKey.Equal(cfg.PrivateKey) {
 		set("private_key", cfg.PrivateKey.UntypedHexString())
-		set("jc", "12")         // Junk packet count
-		set("jmin", "64")       // Min junk size
-		set("jmax", "512")      // Max junk size
-		set("s1", "32")         // Init packet junk size
-		set("s2", "48")         // Response packet junk size
-		set("h1", "2147483648") // Init packet magic header
-		set("h2", "3221225472") // Response packet magic header
-		set("h3", "1073741824") // Underload packet magic header
-		set("h4", "3758096384") // Transport packet magic header
+
+		// Apply Amnezia-WG parameters from config or environment
+		jc := cfg.AmneziaJC
+		if jc == 0 {
+			jc = uint16(amneziaJC())
+		}
+		if jc > 0 {
+			setUint16("jc", jc)
+		}
+
+		jmin := cfg.AmneziaJMin
+		if jmin == 0 {
+			jmin = uint16(amneziaJMin())
+		}
+		if jmin > 0 {
+			setUint16("jmin", jmin)
+		}
+
+		jmax := cfg.AmneziaJMax
+		if jmax == 0 {
+			jmax = uint16(amneziaJMax())
+		}
+		if jmax > 0 {
+			setUint16("jmax", jmax)
+		}
+
+		s1 := cfg.AmneziaS1
+		if s1 == 0 {
+			s1 = uint16(amneziaS1())
+		}
+		if s1 > 0 {
+			setUint16("s1", s1)
+		}
+
+		s2 := cfg.AmneziaS2
+		if s2 == 0 {
+			s2 = uint16(amneziaS2())
+		}
+		if s2 > 0 {
+			setUint16("s2", s2)
+		}
+
+		h1 := cfg.AmneziaH1
+		if h1 == 0 {
+			if envH1 := uint32(amneziaH1()); envH1 > 0 {
+				h1 = envH1
+			} else {
+				h1 = 1 // Default for standard WireGuard compatibility
+			}
+		}
+		set("h1", strconv.FormatUint(uint64(h1), 10))
+
+		h2 := cfg.AmneziaH2
+		if h2 == 0 {
+			if envH2 := uint32(amneziaH2()); envH2 > 0 {
+				h2 = envH2
+			} else {
+				h2 = 2 // Default for standard WireGuard compatibility
+			}
+		}
+		set("h2", strconv.FormatUint(uint64(h2), 10))
+
+		h3 := cfg.AmneziaH3
+		if h3 == 0 {
+			if envH3 := uint32(amneziaH3()); envH3 > 0 {
+				h3 = envH3
+			} else {
+				h3 = 3 // Default for standard WireGuard compatibility
+			}
+		}
+		set("h3", strconv.FormatUint(uint64(h3), 10))
+
+		h4 := cfg.AmneziaH4
+		if h4 == 0 {
+			if envH4 := uint32(amneziaH4()); envH4 > 0 {
+				h4 = envH4
+			} else {
+				h4 = 4 // Default for standard WireGuard compatibility
+			}
+		}
+		set("h4", strconv.FormatUint(uint64(h4), 10))
 	}
 
 	old := make(map[key.NodePublic]Peer)

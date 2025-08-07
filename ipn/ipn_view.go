@@ -173,6 +173,7 @@ func (v PrefsView) RelayServerPort() views.ValuePointer[int] {
 
 func (v PrefsView) AllowSingleHosts() marshalAsTrueInJSON { return v.ж.AllowSingleHosts }
 func (v PrefsView) Persist() persist.PersistView          { return v.ж.Persist.View() }
+func (v PrefsView) AmneziaWG() AmneziaWGPrefs             { return v.ж.AmneziaWG }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _PrefsViewNeedsRegeneration = Prefs(struct {
@@ -209,6 +210,7 @@ var _PrefsViewNeedsRegeneration = Prefs(struct {
 	RelayServerPort        *int
 	AllowSingleHosts       marshalAsTrueInJSON
 	Persist                *persist.Persist
+	AmneziaWG              AmneziaWGPrefs
 }{})
 
 // View returns a read-only view of ServeConfig.

@@ -294,9 +294,25 @@ type Prefs struct {
 	//  We can maybe do that once we're sure which module should persist
 	//  it (backend or frontend?)
 	Persist *persist.Persist `json:"Config"`
+
+	// AmneziaWG contains Amnezia-WG specific configuration
+	AmneziaWG AmneziaWGPrefs `json:",omitempty"`
 }
 
-// AutoUpdatePrefs are the auto update settings for the node agent.
+// AmneziaWGPrefs contains Amnezia-WG specific configuration parameters.
+// Zero values for JC, JMin, JMax, S1, S2 mean standard WireGuard behavior.
+// Zero values for H1-H4 will use defaults (1,2,3,4) for standard WireGuard compatibility.
+type AmneziaWGPrefs struct {
+	JC   uint16 `json:",omitempty"` // Junk packet count (0 = disabled)
+	JMin uint16 `json:",omitempty"` // Min junk size (0 = disabled)
+	JMax uint16 `json:",omitempty"` // Max junk size (0 = disabled)
+	S1   uint16 `json:",omitempty"` // Init packet junk size (0 = disabled)
+	S2   uint16 `json:",omitempty"` // Response packet junk size (0 = disabled)
+	H1   uint32 `json:",omitempty"` // Init packet magic header (0 = use default 1)
+	H2   uint32 `json:",omitempty"` // Response packet magic header (0 = use default 2)
+	H3   uint32 `json:",omitempty"` // Underload packet magic header (0 = use default 3)
+	H4   uint32 `json:",omitempty"` // Transport packet magic header (0 = use default 4)
+} // AutoUpdatePrefs are the auto update settings for the node agent.
 type AutoUpdatePrefs struct {
 	// Check specifies whether background checks for updates are enabled. When
 	// enabled, tailscaled will periodically check for available updates and
@@ -371,6 +387,7 @@ type MaskedPrefs struct {
 	NetfilterKindSet          bool                `json:",omitempty"`
 	DriveSharesSet            bool                `json:",omitempty"`
 	RelayServerPortSet        bool                `json:",omitempty"`
+	AmneziaWGSet              bool                `json:",omitempty"`
 }
 
 // SetsInternal reports whether mp has any of the Internal*Set field bools set
@@ -658,7 +675,8 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
 		p.PostureChecking == p2.PostureChecking &&
 		slices.EqualFunc(p.DriveShares, p2.DriveShares, drive.SharesEqual) &&
 		p.NetfilterKind == p2.NetfilterKind &&
-		compareIntPtrs(p.RelayServerPort, p2.RelayServerPort)
+		compareIntPtrs(p.RelayServerPort, p2.RelayServerPort) &&
+		p.AmneziaWG == p2.AmneziaWG
 }
 
 func (au AutoUpdatePrefs) Pretty() string {

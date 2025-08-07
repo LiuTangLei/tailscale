@@ -4,11 +4,14 @@
 package cli
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net/netip"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -65,6 +68,8 @@ type setArgsT struct {
 	statefulFiltering      bool
 	netfilterMode          string
 	relayServerPort        string
+	amneziaWG              string
+	amneziaWGConfig        bool
 }
 
 func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
@@ -86,6 +91,10 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
 	setf.BoolVar(&setArgs.reportPosture, "report-posture", false, "allow management plane to gather device posture information")
 	setf.BoolVar(&setArgs.runWebClient, "webclient", false, "expose the web interface for managing this node over Tailscale at port 5252")
 	setf.StringVar(&setArgs.relayServerPort, "relay-server-port", "", hidden+"UDP port number (0 will pick a random unused port) for the relay server to bind to, on all interfaces, or empty string to disable relay server functionality")
+
+	// Amnezia-WG configuration flags
+	setf.StringVar(&setArgs.amneziaWG, "amnezia-wg", "", hidden+"Amnezia-WG configuration as JSON string, e.g. '{\"jc\":5,\"jmin\":50,\"jmax\":1000,\"s1\":30,\"s2\":40,\"h1\":123456,\"h2\":67543,\"h3\":32345,\"h4\":123123}' (JC/JMin/JMax/S1/S2=0 and H1/H2/H3/H4=0 use standard WireGuard defaults)")
+	setf.BoolVar(&setArgs.amneziaWGConfig, "amnezia-wg-config", false, hidden+"Configure Amnezia-WG parameters interactively")
 
 	ffcomplete.Flag(setf, "exit-node", func(args []string) ([]string, ffcomplete.ShellCompDirective, error) {
 		st, err := localClient.Status(context.Background())
@@ -128,6 +137,11 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 		fatalf("too many non-flag arguments: %q", args)
 	}
 
+	// Handle Amnezia-WG interactive configuration
+	if setArgs.amneziaWGConfig {
+		return runAmneziaWGSet(ctx, []string{})
+	}
+
 	st, err := localClient.Status(ctx)
 	if err != nil {
 		return err
@@ -161,6 +175,16 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 		},
 	}
 
+	// Handle Amnezia-WG JSON configuration
+	if setArgs.amneziaWG != "" {
+		var amneziaConfig ipn.AmneziaWGPrefs
+		if err := json.Unmarshal([]byte(setArgs.amneziaWG), &amneziaConfig); err != nil {
+			return fmt.Errorf("invalid amnezia-wg JSON: %v", err)
+		}
+		maskedPrefs.Prefs.AmneziaWG = amneziaConfig
+		maskedPrefs.AmneziaWGSet = true
+	}
+
 	if effectiveGOOS() == "linux" {
 		nfMode, warning, err := netfilterModeFromFlag(setArgs.netfilterMode)
 		if err != nil {
@@ -191,12 +215,18 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 	}
 	var advertiseExitNodeSet, advertiseRoutesSet bool
 	setFlagSet.Visit(func(f *flag.Flag) {
-		updateMaskedPrefsFromUpOrSetFlag(maskedPrefs, f.Name)
+		// Skip amnezia-wg flag here since it's handled separately below
+		if f.Name != "amnezia-wg" {
+			updateMaskedPrefsFromUpOrSetFlag(maskedPrefs, f.Name)
+		}
 		switch f.Name {
 		case "advertise-exit-node":
 			advertiseExitNodeSet = true
 		case "advertise-routes":
 			advertiseRoutesSet = true
+		case "amnezia-wg":
+			// Handle amnezia-wg flag - this ensures AmneziaWGSet is marked as true
+			maskedPrefs.AmneziaWGSet = true
 		}
 	})
 	if maskedPrefs.IsEmpty() {
@@ -261,6 +291,26 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 	_, err = localClient.EditPrefs(ctx, maskedPrefs)
 	if err != nil {
 		return err
+	}
+
+	// If Amnezia-WG configuration was changed, offer to restart tailscaled
+	if maskedPrefs.AmneziaWGSet {
+		fmt.Print("Restart tailscaled now to apply Amnezia-WG changes? [Y/n]: ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			response := strings.TrimSpace(strings.ToLower(scanner.Text()))
+			if response == "" || response == "y" || response == "yes" {
+				fmt.Println("Restarting tailscaled...")
+				if err := restartTailscaled(); err != nil {
+					fmt.Printf("Warning: Failed to restart tailscaled: %v\n", err)
+					fmt.Println("You may need to restart tailscaled manually for changes to take effect.")
+				} else {
+					fmt.Println("tailscaled restarted successfully.")
+				}
+			} else {
+				fmt.Println("Skipped restart. Please restart tailscaled manually for Amnezia-WG changes to take effect.")
+			}
+		}
 	}
 
 	if setArgs.runWebClient && len(st.TailscaleIPs) > 0 {

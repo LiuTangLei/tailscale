@@ -25,6 +25,17 @@ type Config struct {
 	DNS        []netip.Addr
 	Peers      []Peer
 
+	// Amnezia-WG parameters (zero values mean standard WireGuard)
+	AmneziaJC   uint16 `json:",omitempty"` // Junk packet count
+	AmneziaJMin uint16 `json:",omitempty"` // Min junk size
+	AmneziaJMax uint16 `json:",omitempty"` // Max junk size
+	AmneziaS1   uint16 `json:",omitempty"` // Init packet junk size
+	AmneziaS2   uint16 `json:",omitempty"` // Response packet junk size
+	AmneziaH1   uint32 `json:",omitempty"` // Init packet magic header
+	AmneziaH2   uint32 `json:",omitempty"` // Response packet magic header
+	AmneziaH3   uint32 `json:",omitempty"` // Underload packet magic header
+	AmneziaH4   uint32 `json:",omitempty"` // Transport packet magic header
+
 	// NetworkLogging enables network logging.
 	// It is disabled if either ID is the zero value.
 	// LogExitFlowEnabled indicates whether or not exit flows should be logged.

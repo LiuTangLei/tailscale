@@ -354,7 +354,7 @@ func meshStacks(logf logger.Logf, mutateNetmap func(idx int, nm *netmap.NetworkM
 				peerSet.Add(peer.Key())
 			}
 			m.conn.UpdatePeers(peerSet)
-			wg, err := nmcfg.WGCfg(nm, logf, 0, "")
+			wg, err := nmcfg.WGCfg(nm, logf, 0, "", ipn.AmneziaWGPrefs{})
 			if err != nil {
 				// We're too far from the *testing.T to be graceful,
 				// blow up. Shouldn't happen anyway.
@@ -2228,7 +2228,7 @@ func TestIsWireGuardOnlyPeer(t *testing.T) {
 	}
 	m.conn.onNodeViewsUpdate(nv)
 
-	cfg, err := nmcfg.WGCfg(nm, t.Logf, netmap.AllowSubnetRoutes, "")
+	cfg, err := nmcfg.WGCfg(nm, t.Logf, netmap.AllowSubnetRoutes, "", ipn.AmneziaWGPrefs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2294,7 +2294,7 @@ func TestIsWireGuardOnlyPeerWithMasquerade(t *testing.T) {
 	}
 	m.conn.onNodeViewsUpdate(nv)
 
-	cfg, err := nmcfg.WGCfg(nm, t.Logf, netmap.AllowSubnetRoutes, "")
+	cfg, err := nmcfg.WGCfg(nm, t.Logf, netmap.AllowSubnetRoutes, "", ipn.AmneziaWGPrefs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2338,7 +2338,7 @@ func applyNetworkMap(t *testing.T, m *magicStack, nm *netmap.NetworkMap) {
 	m.conn.noV6.Store(true)
 
 	// Turn the network map into a wireguard config (for the tailscale internal wireguard device).
-	cfg, err := nmcfg.WGCfg(nm, t.Logf, netmap.AllowSubnetRoutes, "")
+	cfg, err := nmcfg.WGCfg(nm, t.Logf, netmap.AllowSubnetRoutes, "", ipn.AmneziaWGPrefs{})
 	if err != nil {
 		t.Fatal(err)
 	}
