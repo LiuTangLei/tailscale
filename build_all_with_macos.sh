@@ -23,4 +23,11 @@ CGO_ENABLED=1 TAGS=ts_apple_no_network_extension GOOS=darwin GOARCH=arm64 \
 CGO_ENABLED=1 TAGS=ts_apple_no_network_extension GOOS=darwin GOARCH=arm64 \
 	./build_dist.sh -o tailscale-darwin-arm64 ./cmd/tailscale
 
+# x64 macOS
+echo "Building for darwin/amd64..."
+CGO_ENABLED=1 TAGS=ts_apple_no_network_extension GOOS=darwin GOARCH=amd64 \
+    ./build_dist.sh -o tailscaled-darwin-amd64 ./cmd/tailscaled
+CGO_ENABLED=1 TAGS=ts_apple_no_network_extension GOOS=darwin GOARCH=amd64 \
+    ./build_dist.sh -o tailscale-darwin-amd64 ./cmd/tailscale
+
 echo "All builds complete."
