@@ -93,8 +93,8 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
 	setf.StringVar(&setArgs.relayServerPort, "relay-server-port", "", hidden+"UDP port number (0 will pick a random unused port) for the relay server to bind to, on all interfaces, or empty string to disable relay server functionality")
 
 	// Amnezia-WG configuration flags
-	setf.StringVar(&setArgs.amneziaWG, "amnezia-wg", "", hidden+"Amnezia-WG configuration as JSON string, e.g. '{\"jc\":5,\"jmin\":50,\"jmax\":1000,\"s1\":30,\"s2\":40,\"h1\":123456,\"h2\":67543,\"h3\":32345,\"h4\":123123}' (JC/JMin/JMax/S1/S2=0 and H1/H2/H3/H4=0 use standard WireGuard defaults)")
-	setf.BoolVar(&setArgs.amneziaWGConfig, "amnezia-wg-config", false, hidden+"Configure Amnezia-WG parameters interactively")
+	setf.StringVar(&setArgs.amneziaWG, "amnezia-wg", "", hidden+"Amnezia-WG 1.5 configuration as JSON string, e.g. '{\"jc\":4,\"jmin\":40,\"jmax\":70,\"s1\":10,\"s2\":15,\"i1\":\"<b 0xc0><r 32><c><t>\"}' (all parameters=0/empty use standard WireGuard, empty I1 enables AmneziaWG 1.0 compatibility)")
+	setf.BoolVar(&setArgs.amneziaWGConfig, "amnezia-wg-config", false, hidden+"Configure Amnezia-WG 1.5 parameters interactively")
 
 	ffcomplete.Flag(setf, "exit-node", func(args []string) ([]string, ffcomplete.ShellCompDirective, error) {
 		st, err := localClient.Status(context.Background())

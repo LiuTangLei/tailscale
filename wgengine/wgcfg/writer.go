@@ -15,18 +15,19 @@ import (
 )
 
 var (
-	// Amnezia-WG environment knobs
+	// Amnezia-WG 1.5 environment knobs
 	// JC, JMin, JMax, S1, S2 default to 0 for standard WireGuard compatibility
-	// H1-H4 default to 1,2,3,4 respectively for standard WireGuard magic headers
+	// I1-I5 are Custom Protocol Signature (CPS) packets for protocol masking
 	amneziaJC   = envknob.RegisterInt("TS_AMNEZIA_JC")
 	amneziaJMin = envknob.RegisterInt("TS_AMNEZIA_JMIN")
 	amneziaJMax = envknob.RegisterInt("TS_AMNEZIA_JMAX")
 	amneziaS1   = envknob.RegisterInt("TS_AMNEZIA_S1")
 	amneziaS2   = envknob.RegisterInt("TS_AMNEZIA_S2")
-	amneziaH1   = envknob.RegisterInt("TS_AMNEZIA_H1")
-	amneziaH2   = envknob.RegisterInt("TS_AMNEZIA_H2")
-	amneziaH3   = envknob.RegisterInt("TS_AMNEZIA_H3")
-	amneziaH4   = envknob.RegisterInt("TS_AMNEZIA_H4")
+	amneziaI1   = envknob.RegisterString("TS_AMNEZIA_I1")
+	amneziaI2   = envknob.RegisterString("TS_AMNEZIA_I2")
+	amneziaI3   = envknob.RegisterString("TS_AMNEZIA_I3")
+	amneziaI4   = envknob.RegisterString("TS_AMNEZIA_I4")
+	amneziaI5   = envknob.RegisterString("TS_AMNEZIA_I5")
 )
 // ToUAPI writes cfg in UAPI format to w.
 // Prev is the previous device Config.
@@ -98,45 +99,47 @@ func (cfg *Config) ToUAPI(logf logger.Logf, w io.Writer, prev *Config) error {
 			setUint16("s2", s2)
 		}
 
-		h1 := cfg.AmneziaH1
-		if h1 == 0 {
-			if envH1 := uint32(amneziaH1()); envH1 > 0 {
-				h1 = envH1
-			} else {
-				h1 = 1 // Default for standard WireGuard compatibility
-			}
+		// Custom Protocol Signature (CPS) packets for AmneziaWG 1.5
+		// If I1 is missing, the entire signature chain (I2-I5) is skipped for 1.0 compatibility
+		i1 := cfg.AmneziaI1
+		if i1 == "" {
+			i1 = amneziaI1()
 		}
-		set("h1", strconv.FormatUint(uint64(h1), 10))
+		if i1 != "" {
+			set("i1", i1)
+		}
 
-		h2 := cfg.AmneziaH2
-		if h2 == 0 {
-			if envH2 := uint32(amneziaH2()); envH2 > 0 {
-				h2 = envH2
-			} else {
-				h2 = 2 // Default for standard WireGuard compatibility
-			}
+		i2 := cfg.AmneziaI2
+		if i2 == "" {
+			i2 = amneziaI2()
 		}
-		set("h2", strconv.FormatUint(uint64(h2), 10))
+		if i2 != "" {
+			set("i2", i2)
+		}
 
-		h3 := cfg.AmneziaH3
-		if h3 == 0 {
-			if envH3 := uint32(amneziaH3()); envH3 > 0 {
-				h3 = envH3
-			} else {
-				h3 = 3 // Default for standard WireGuard compatibility
-			}
+		i3 := cfg.AmneziaI3
+		if i3 == "" {
+			i3 = amneziaI3()
 		}
-		set("h3", strconv.FormatUint(uint64(h3), 10))
+		if i3 != "" {
+			set("i3", i3)
+		}
 
-		h4 := cfg.AmneziaH4
-		if h4 == 0 {
-			if envH4 := uint32(amneziaH4()); envH4 > 0 {
-				h4 = envH4
-			} else {
-				h4 = 4 // Default for standard WireGuard compatibility
-			}
+		i4 := cfg.AmneziaI4
+		if i4 == "" {
+			i4 = amneziaI4()
 		}
-		set("h4", strconv.FormatUint(uint64(h4), 10))
+		if i4 != "" {
+			set("i4", i4)
+		}
+
+		i5 := cfg.AmneziaI5
+		if i5 == "" {
+			i5 = amneziaI5()
+		}
+		if i5 != "" {
+			set("i5", i5)
+		}
 	}
 
 	old := make(map[key.NodePublic]Peer)

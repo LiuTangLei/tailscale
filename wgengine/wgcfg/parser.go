@@ -146,22 +146,16 @@ func (cfg *Config) handleDeviceLine(k, value mem.RO, valueBytes []byte) error {
 		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
 			cfg.AmneziaS2 = uint16(v)
 		}
-	case k.EqualString("h1"):
-		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
-			cfg.AmneziaH1 = uint32(v)
-		}
-	case k.EqualString("h2"):
-		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
-			cfg.AmneziaH2 = uint32(v)
-		}
-	case k.EqualString("h3"):
-		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
-			cfg.AmneziaH3 = uint32(v)
-		}
-	case k.EqualString("h4"):
-		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
-			cfg.AmneziaH4 = uint32(v)
-		}
+	case k.EqualString("i1"):
+		cfg.AmneziaI1 = string(valueBytes)
+	case k.EqualString("i2"):
+		cfg.AmneziaI2 = string(valueBytes)
+	case k.EqualString("i3"):
+		cfg.AmneziaI3 = string(valueBytes)
+	case k.EqualString("i4"):
+		cfg.AmneziaI4 = string(valueBytes)
+	case k.EqualString("i5"):
+		cfg.AmneziaI5 = string(valueBytes)
 	default:
 		return fmt.Errorf("unexpected IpcGetOperation key: %q", k.StringCopy())
 	}
