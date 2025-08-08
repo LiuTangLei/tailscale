@@ -156,6 +156,22 @@ func (cfg *Config) handleDeviceLine(k, value mem.RO, valueBytes []byte) error {
 		cfg.AmneziaI4 = string(valueBytes)
 	case k.EqualString("i5"):
 		cfg.AmneziaI5 = string(valueBytes)
+	case k.EqualString("h1"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
+			cfg.AmneziaH1 = uint32(v)
+		}
+	case k.EqualString("h2"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
+			cfg.AmneziaH2 = uint32(v)
+		}
+	case k.EqualString("h3"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
+			cfg.AmneziaH3 = uint32(v)
+		}
+	case k.EqualString("h4"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
+			cfg.AmneziaH4 = uint32(v)
+		}
 	default:
 		return fmt.Errorf("unexpected IpcGetOperation key: %q", k.StringCopy())
 	}

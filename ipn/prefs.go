@@ -299,20 +299,24 @@ type Prefs struct {
 	AmneziaWG AmneziaWGPrefs `json:",omitempty"`
 }
 
-// AmneziaWGPrefs contains Amnezia-WG 1.5 specific configuration parameters.
+// AmneziaWGPrefs contains Amnezia-WG configuration parameters.
 // Zero values for all parameters mean standard WireGuard behavior.
-// If I1 is missing, the entire signature chain (I2-I5) is skipped for AmneziaWG 1.0 compatibility.
+// Network-wide consistency is required: all nodes must use identical parameters.
 type AmneziaWGPrefs struct {
 	JC   uint16 `json:",omitempty"` // Junk packet count (0 = disabled)
-	JMin uint16 `json:",omitempty"` // Min junk size (0 = disabled)  
+	JMin uint16 `json:",omitempty"` // Min junk size (0 = disabled)
 	JMax uint16 `json:",omitempty"` // Max junk size (0 = disabled)
 	S1   uint16 `json:",omitempty"` // Init packet prefix length (0 = disabled)
 	S2   uint16 `json:",omitempty"` // Response packet prefix length (0 = disabled)
 	I1   string `json:",omitempty"` // Primary signature packet (CPS format, e.g., "<b 0xf6ab3267fa><c><t><r 10>")
 	I2   string `json:",omitempty"` // Secondary signature packet (CPS format)
-	I3   string `json:",omitempty"` // Tertiary signature packet (CPS format)  
+	I3   string `json:",omitempty"` // Tertiary signature packet (CPS format)
 	I4   string `json:",omitempty"` // Quaternary signature packet (CPS format)
 	I5   string `json:",omitempty"` // Quinary signature packet (CPS format)
+	H1   uint32 `json:",omitempty"` // Header field 1
+	H2   uint32 `json:",omitempty"` // Header field 2
+	H3   uint32 `json:",omitempty"` // Header field 3
+	H4   uint32 `json:",omitempty"` // Header field 4
 } // AutoUpdatePrefs are the auto update settings for the node agent.
 type AutoUpdatePrefs struct {
 	// Check specifies whether background checks for updates are enabled. When

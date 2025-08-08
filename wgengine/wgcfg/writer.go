@@ -28,7 +28,12 @@ var (
 	amneziaI3   = envknob.RegisterString("TS_AMNEZIA_I3")
 	amneziaI4   = envknob.RegisterString("TS_AMNEZIA_I4")
 	amneziaI5   = envknob.RegisterString("TS_AMNEZIA_I5")
+	amneziaH1   = envknob.RegisterInt("TS_AMNEZIA_H1")
+	amneziaH2   = envknob.RegisterInt("TS_AMNEZIA_H2")
+	amneziaH3   = envknob.RegisterInt("TS_AMNEZIA_H3")
+	amneziaH4   = envknob.RegisterInt("TS_AMNEZIA_H4")
 )
+
 // ToUAPI writes cfg in UAPI format to w.
 // Prev is the previous device Config.
 //
@@ -48,6 +53,9 @@ func (cfg *Config) ToUAPI(logf logger.Logf, w io.Writer, prev *Config) error {
 		}
 	}
 	setUint16 := func(key string, value uint16) {
+		set(key, strconv.FormatUint(uint64(value), 10))
+	}
+	setUint32 := func(key string, value uint32) {
 		set(key, strconv.FormatUint(uint64(value), 10))
 	}
 	setPeer := func(peer Peer) {
@@ -139,6 +147,39 @@ func (cfg *Config) ToUAPI(logf logger.Logf, w io.Writer, prev *Config) error {
 		}
 		if i5 != "" {
 			set("i5", i5)
+		}
+
+		// Header field parameters (H1-H4)
+		h1 := cfg.AmneziaH1
+		if h1 == 0 {
+			h1 = uint32(amneziaH1())
+		}
+		if h1 > 0 {
+			setUint32("h1", h1)
+		}
+
+		h2 := cfg.AmneziaH2
+		if h2 == 0 {
+			h2 = uint32(amneziaH2())
+		}
+		if h2 > 0 {
+			setUint32("h2", h2)
+		}
+
+		h3 := cfg.AmneziaH3
+		if h3 == 0 {
+			h3 = uint32(amneziaH3())
+		}
+		if h3 > 0 {
+			setUint32("h3", h3)
+		}
+
+		h4 := cfg.AmneziaH4
+		if h4 == 0 {
+			h4 = uint32(amneziaH4())
+		}
+		if h4 > 0 {
+			setUint32("h4", h4)
 		}
 	}
 

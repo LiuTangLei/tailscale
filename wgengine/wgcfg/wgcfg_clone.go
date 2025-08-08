@@ -52,6 +52,10 @@ var _ConfigCloneNeedsRegeneration = Config(struct {
 	AmneziaI3      string
 	AmneziaI4      string
 	AmneziaI5      string
+	AmneziaH1      uint32
+	AmneziaH2      uint32
+	AmneziaH3      uint32
+	AmneziaH4      uint32
 	NetworkLogging struct {
 		NodeID             logid.PrivateID
 		DomainID           logid.PrivateID

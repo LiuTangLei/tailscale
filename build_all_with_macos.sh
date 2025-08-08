@@ -16,6 +16,11 @@ echo "Building for windows/amd64..."
 GOOS=windows GOARCH=amd64 ./build_dist.sh -o tailscaled-windows-amd64.exe ./cmd/tailscaled
 GOOS=windows GOARCH=amd64 ./build_dist.sh -o tailscale-windows-amd64.exe ./cmd/tailscale
 
+# arm64 Windows
+echo "Building for windows/arm64..."
+GOOS=windows GOARCH=arm64 ./build_dist.sh -o tailscaled-windows-arm64.exe ./cmd/tailscaled
+GOOS=windows GOARCH=arm64 ./build_dist.sh -o tailscale-windows-arm64.exe ./cmd/tailscale
+
 # arm64 macOS
 echo "Building for darwin/arm64..."
 CGO_ENABLED=1 TAGS=ts_apple_no_network_extension GOOS=darwin GOARCH=arm64 \
@@ -26,8 +31,8 @@ CGO_ENABLED=1 TAGS=ts_apple_no_network_extension GOOS=darwin GOARCH=arm64 \
 # x64 macOS
 echo "Building for darwin/amd64..."
 CGO_ENABLED=1 TAGS=ts_apple_no_network_extension GOOS=darwin GOARCH=amd64 \
-    ./build_dist.sh -o tailscaled-darwin-amd64 ./cmd/tailscaled
+	./build_dist.sh -o tailscaled-darwin-amd64 ./cmd/tailscaled
 CGO_ENABLED=1 TAGS=ts_apple_no_network_extension GOOS=darwin GOARCH=amd64 \
-    ./build_dist.sh -o tailscale-darwin-amd64 ./cmd/tailscale
+	./build_dist.sh -o tailscale-darwin-amd64 ./cmd/tailscale
 
 echo "All builds complete."

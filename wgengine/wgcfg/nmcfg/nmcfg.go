@@ -56,7 +56,7 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags, 
 		PrivateKey: nm.PrivateKey,
 		Addresses:  nm.GetAddresses().AsSlice(),
 		Peers:      make([]wgcfg.Peer, 0, len(nm.Peers)),
-		// Apply Amnezia-WG 1.5 parameters from prefs
+		// Apply Amnezia-WG parameters from prefs
 		AmneziaJC:   amneziaWG.JC,
 		AmneziaJMin: amneziaWG.JMin,
 		AmneziaJMax: amneziaWG.JMax,
@@ -67,6 +67,10 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags, 
 		AmneziaI3:   amneziaWG.I3,
 		AmneziaI4:   amneziaWG.I4,
 		AmneziaI5:   amneziaWG.I5,
+		AmneziaH1:   amneziaWG.H1,
+		AmneziaH2:   amneziaWG.H2,
+		AmneziaH3:   amneziaWG.H3,
+		AmneziaH4:   amneziaWG.H4,
 	}
 
 	// Setup log IDs for data plane audit logging.
