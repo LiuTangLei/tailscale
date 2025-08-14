@@ -45,17 +45,17 @@ After applying changes, you will be prompted to restart tailscaled.
 - I1-I5, JC, JMin, JMax: Can differ between nodes
 
 Examples:
-  # Basic DPI evasion (junk packets only, compatible with standard WireGuard)
-  tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70}'
+	# Basic DPI evasion (junk packets only, compatible with standard WireGuard)
+	tailscale amnezia-wg set '{"jc":4,"jmin":64,"jmax":96}'
 
-  # Advanced protocol masking with captured protocol header
-  tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0xc0000000><c><t>"}'
+	# Advanced protocol masking with captured protocol header
+	tailscale amnezia-wg set '{"jc":4,"jmin":64,"jmax":96,"s1":10,"s2":15,"i1":"<b 0xc0000000><c><t>"}'
 
-  # Header field parameters with junk packets
-  tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"h1":3847291638,"h2":1029384756,"h3":2847291047,"h4":3918472658}'
+	# Header field parameters with junk packets
+	tailscale amnezia-wg set '{"jc":4,"jmin":64,"jmax":96,"h1":3847291638,"h2":1029384756,"h3":2847291047,"h4":3918472658}'
 
-  # Combined header fields and signature parameters
-  tailscale amnezia-wg set '{"jc":4,"h1":3847291638,"h2":1029384756,"i1":"<b 0x12345678><r 16>"}'
+	# Combined header fields and signature parameters
+	tailscale amnezia-wg set '{"jc":4,"h1":3847291638,"h2":1029384756,"i1":"<b 0x12345678><r 16>"}'
 
   # Interactive configuration (recommended for beginners)
   tailscale amnezia-wg set
@@ -112,8 +112,8 @@ func runAmneziaWGSet(ctx context.Context, args []string) error {
 		scanner := bufio.NewScanner(os.Stdin)
 
 		config.JC = promptUint16WithRange(scanner, "Junk packet count", config.JC, "0-10", "Recommended: 3-6 for basic DPI evasion")
-		config.JMin = promptUint16WithRange(scanner, "Min junk packet size (bytes)", config.JMin, "64-1024", "Recommended: 40-50, must be ≤ jmax")
-		config.JMax = promptUint16WithRange(scanner, "Max junk packet size (bytes)", config.JMax, "64-1024", "Recommended: 70-100, must be ≥ jmin")
+		config.JMin = promptUint16WithRange(scanner, "Min junk packet size (bytes)", config.JMin, "64-1024", "Recommended: 64-128; must be ≥64 and ≤ JMax")
+		config.JMax = promptUint16WithRange(scanner, "Max junk packet size (bytes)", config.JMax, "64-1024", "Recommended: 128-256; must be ≥ JMin")
 		config.S1 = promptUint16WithRange(scanner, "Init packet prefix length (S1)", config.S1, "0-64", "Recommended: 10-20, breaks standard WG compatibility, MUST match all nodes")
 		config.S2 = promptUint16WithRange(scanner, "Response packet prefix length (S2)", config.S2, "0-64", "Recommended: 10-20, breaks standard WG compatibility, MUST match all nodes")
 
@@ -124,12 +124,19 @@ func runAmneziaWGSet(ctx context.Context, args []string) error {
 		fmt.Println("Use random numbers (0-4294967295) for effective obfuscation.")
 		fmt.Println("💡 Tip: Enter 'random' to auto-generate a 32-bit random number")
 		fmt.Println("⚠️  If ANY node sets these values, ALL nodes in the network must use IDENTICAL values!")
+		fmt.Println("👉  All-or-none: If H1 is 0 (disabled), H2-H4 will also be disabled & skipped. Set all four for consistent masking.")
 		fmt.Println()
 
-		config.H1 = promptUint32WithHint(scanner, "Header field 1 (H1)", config.H1, "32-bit random number (0-4294967295)")
-		config.H2 = promptUint32WithHint(scanner, "Header field 2 (H2)", config.H2, "32-bit random number (0-4294967295)")
-		config.H3 = promptUint32WithHint(scanner, "Header field 3 (H3)", config.H3, "32-bit random number (0-4294967295)")
-		config.H4 = promptUint32WithHint(scanner, "Header field 4 (H4)", config.H4, "32-bit random number (0-4294967295)")
+		// Prompt H1 first; if zero/disabled, force-clear H2-H4 and skip prompting them.
+		config.H1 = promptUint32WithHint(scanner, "Header field 1 (H1)", config.H1, "32-bit random number (0-4294967295); enter 0 to disable all header fields")
+		if config.H1 == 0 {
+			config.H2, config.H3, config.H4 = 0, 0, 0
+			fmt.Println("H1 disabled -> Skipping H2-H4 (all header fields disabled).")
+		} else {
+			config.H2 = promptUint32WithHint(scanner, "Header field 2 (H2)", config.H2, "32-bit random number (0-4294967295)")
+			config.H3 = promptUint32WithHint(scanner, "Header field 3 (H3)", config.H3, "32-bit random number (0-4294967295)")
+			config.H4 = promptUint32WithHint(scanner, "Header field 4 (H4)", config.H4, "32-bit random number (0-4294967295)")
+		}
 
 		fmt.Println("\n" + strings.Repeat("=", 70))
 		fmt.Println("Custom Protocol Signature (CPS) Packets - Advanced Protocol Masking")
