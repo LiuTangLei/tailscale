@@ -12,10 +12,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/types/key"
 )
 
 var amneziaCmd = &ffcli.Command{
@@ -32,6 +35,13 @@ Amnezia-WG is backward compatible with standard WireGuard when all parameters ar
 
 Use 'tailscale amnezia-wg get' on one node and 'tailscale amnezia-wg set' on others to maintain consistency for required parameters.`,
 	Subcommands: []*ffcli.Command{
+		{
+			Name:       "sync",
+			ShortUsage: "tailscale amnezia-wg sync",
+			ShortHelp:  "Sync Amnezia-WG config from online peers",
+			LongHelp:   `List all online peers with non-zero Amnezia-WG config, preview and sync config to local node.`,
+			Exec:       runAmneziaWGSync,
+		},
 		{
 			Name:       "set",
 			ShortUsage: "tailscale amnezia-wg set [json-string]",
@@ -89,133 +99,171 @@ After resetting, you will be prompted to restart tailscaled.`,
 	},
 }
 
+// awgCmd is an alias for amneziaCmd to provide the shorter "tailscale awg" command
+var awgCmd = &ffcli.Command{
+	Name:        "awg",
+	ShortUsage:  "tailscale awg [subcommand]",
+	ShortHelp:   "Configure Amnezia-WG parameters (alias for amnezia-wg)",
+	LongHelp:    amneziaCmd.LongHelp,
+	Subcommands: amneziaCmd.Subcommands,
+}
+
 func runAmneziaWGSet(ctx context.Context, args []string) error {
-	var config ipn.AmneziaWGPrefs
-
-	if len(args) == 1 {
-		// Parse JSON argument
-		if err := json.Unmarshal([]byte(args[0]), &config); err != nil {
-			return fmt.Errorf("invalid JSON: %v", err)
-		}
-	} else if len(args) == 0 {
-		// Interactive configuration
-		curPrefs, err := localClient.GetPrefs(ctx)
-		if err != nil {
-			return err
-		}
-		config = curPrefs.AmneziaWG
-
-		fmt.Println("Configure Amnezia-WG parameters (press Enter to keep current value, 0 or empty to disable):")
-		fmt.Println("⚠️  H1-H4 and S1/S2 must be IDENTICAL on all nodes. I1-I5, JC, JMin, JMax can differ.")
-		fmt.Println("Tip: For maximum compatibility, use junk packets only. For advanced DPI evasion, add CPS signatures.\n")
-
-		scanner := bufio.NewScanner(os.Stdin)
-
-		config.JC = promptUint16WithRange(scanner, "Junk packet count", config.JC, "0-10", "Recommended: 3-6 for basic DPI evasion")
-		config.JMin = promptUint16WithRange(scanner, "Min junk packet size (bytes)", config.JMin, "64-1024", "Recommended: 64-128; must be ≥64 and ≤ JMax")
-		config.JMax = promptUint16WithRange(scanner, "Max junk packet size (bytes)", config.JMax, "64-1024", "Recommended: 128-256; must be ≥ JMin")
-		config.S1 = promptUint16WithRange(scanner, "Init packet prefix length (S1)", config.S1, "0-64", "Recommended: 10-20, breaks standard WG compatibility, MUST match all nodes")
-		config.S2 = promptUint16WithRange(scanner, "Response packet prefix length (S2)", config.S2, "0-64", "Recommended: 10-20, breaks standard WG compatibility, MUST match all nodes")
-
-		fmt.Println("\n" + strings.Repeat("=", 70))
-		fmt.Println("Header Field Parameters (h1-h4)")
-		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("These parameters provide basic protocol obfuscation using 32-bit random values.")
-		fmt.Println("Use random numbers (0-4294967295) for effective obfuscation.")
-		fmt.Println("💡 Tip: Enter 'random' to auto-generate a 32-bit random number")
-		fmt.Println("⚠️  If ANY node sets these values, ALL nodes in the network must use IDENTICAL values!")
-		fmt.Println("👉  All-or-none: If H1 is 0 (disabled), H2-H4 will also be disabled & skipped. Set all four for consistent masking.")
-		fmt.Println()
-
-		// Prompt H1 first; if zero/disabled, force-clear H2-H4 and skip prompting them.
-		config.H1 = promptUint32WithHint(scanner, "Header field 1 (H1)", config.H1, "32-bit random number (0-4294967295); enter 0 to disable all header fields")
-		if config.H1 == 0 {
-			config.H2, config.H3, config.H4 = 0, 0, 0
-			fmt.Println("H1 disabled -> Skipping H2-H4 (all header fields disabled).")
-		} else {
-			config.H2 = promptUint32WithHint(scanner, "Header field 2 (H2)", config.H2, "32-bit random number (0-4294967295)")
-			config.H3 = promptUint32WithHint(scanner, "Header field 3 (H3)", config.H3, "32-bit random number (0-4294967295)")
-			config.H4 = promptUint32WithHint(scanner, "Header field 4 (H4)", config.H4, "32-bit random number (0-4294967295)")
-		}
-
-		fmt.Println("\n" + strings.Repeat("=", 70))
-		fmt.Println("Custom Protocol Signature (CPS) Packets - Advanced Protocol Masking")
-		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("Format: <b hex_data> | <c> (counter) | <t> (timestamp) | <r length> (random)")
-		fmt.Println("Note: If I1 is empty, signature chain (I2-I5) is skipped")
-		fmt.Println("\nTo create effective CPS signatures:")
-		fmt.Println("1. Capture real protocol packets with Wireshark or tcpdump")
-		fmt.Println("2. Extract hex patterns from packet headers")
-		fmt.Println("3. Use <b hex_pattern> for static protocol headers")
-		fmt.Println("4. Add <c>, <t>, <r length> for dynamic fields")
-		fmt.Println("")
-		fmt.Println("📖 Complete guide: https://docs.amnezia.org/documentation/instructions/new-amneziawg-selfhosted")
-		fmt.Println("")
-		fmt.Println("💡 For long CPS signatures (real packet captures), use JSON mode:")
-		fmt.Println("   tailscale amnezia-wg set '{\"i1\":\"<b 0x...very_long_hex...>\"}'")
-		fmt.Println("")
-		fmt.Println("Basic format examples:")
-		fmt.Println("  Static header only:     <b 0xc0000000>")
-		fmt.Println("  With random padding:    <b 0x1234><r 16>")
-		fmt.Println("  With counter+timestamp: <b 0xabcd><c><t>")
-		fmt.Println()
-		fmt.Println("⚠️  Terminal Input Limitation:")
-		fmt.Println("  For long CPS signatures (>1000 chars), terminal input may be truncated.")
-		fmt.Println("  Use JSON mode instead: tailscale amnezia-wg set '{\"i1\":\"<your_long_cps>\"}'")
-		fmt.Println()
-
-		config.I1 = promptStringWithExample(scanner, "Primary signature packet (I1)", config.I1, "Leave empty for standard WireGuard compatibility (use JSON for long signatures >1000 chars)")
-		if config.I1 != "" {
-			config.I2 = promptStringWithExample(scanner, "Secondary signature packet (I2)", config.I2, "Optional entropy packet (use JSON for long signatures)")
-			config.I3 = promptStringWithExample(scanner, "Tertiary signature packet (I3)", config.I3, "Optional entropy packet (use JSON for long signatures)")
-			config.I4 = promptStringWithExample(scanner, "Quaternary signature packet (I4)", config.I4, "Optional entropy packet (use JSON for long signatures)")
-			config.I5 = promptStringWithExample(scanner, "Quinary signature packet (I5)", config.I5, "Optional entropy packet (use JSON for long signatures)")
-		} else {
-			fmt.Println("Skipping I2-I5 (I1 is empty - standard WireGuard compatibility mode)")
-		}
-	} else {
-		return fmt.Errorf("usage: tailscale amnezia-wg set [json-string]")
-	}
-
-	// Apply the configuration
-	maskedPrefs := &ipn.MaskedPrefs{
-		Prefs: ipn.Prefs{
-			AmneziaWG: config,
-		},
-		AmneziaWGSet: true,
-	}
-
-	_, err := localClient.EditPrefs(ctx, maskedPrefs)
+	config, err := parseConfigFromArgs(ctx, args)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("Amnezia-WG configuration updated successfully.")
-
-	// Ask user if they want to restart tailscaled
-	fmt.Print("Restart tailscaled now to apply changes? [Y/n]: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if scanner.Scan() {
-		response := strings.TrimSpace(strings.ToLower(scanner.Text()))
-		if response == "" || response == "y" || response == "yes" {
-			fmt.Println("Restarting tailscaled...")
-			if err := restartTailscaled(); err != nil {
-				fmt.Printf("Warning: Failed to restart tailscaled: %v\n", err)
-				fmt.Println("You may need to restart tailscaled manually for changes to take effect.")
-			} else {
-				fmt.Println("tailscaled restarted successfully.")
-			}
-		} else {
-			fmt.Println("Skipped restart. Please restart tailscaled manually for changes to take effect.")
-		}
+	if err := applyAmneziaWGConfig(ctx, config); err != nil {
+		return err
 	}
 
-	return nil
+	fmt.Println("Amnezia-WG configuration updated successfully.")
+	return restartTailscaledWithPrompt()
+}
+
+// parseConfigFromArgs parses Amnezia-WG configuration from command line arguments or prompts interactively.
+func parseConfigFromArgs(ctx context.Context, args []string) (ipn.AmneziaWGPrefs, error) {
+	var config ipn.AmneziaWGPrefs
+
+	switch len(args) {
+	case 1:
+		// Parse JSON argument
+		if err := json.Unmarshal([]byte(args[0]), &config); err != nil {
+			return config, fmt.Errorf("invalid JSON: %w", err)
+		}
+	case 0:
+		// Interactive configuration
+		var err error
+		config, err = promptInteractiveConfig(ctx)
+		if err != nil {
+			return config, err
+		}
+	default:
+		return config, formatUsageError("tailscale amnezia-wg set [json-string]")
+	}
+
+	return config, nil
+}
+
+// promptInteractiveConfig prompts the user to configure Amnezia-WG parameters interactively.
+func promptInteractiveConfig(ctx context.Context) (ipn.AmneziaWGPrefs, error) {
+	curPrefs, err := localClient.GetPrefs(ctx)
+	if err != nil {
+		return ipn.AmneziaWGPrefs{}, err
+	}
+	config := curPrefs.AmneziaWG
+
+	printInteractiveConfigHeader()
+	scanner := bufio.NewScanner(os.Stdin)
+
+	// Basic parameters
+	config.JC = promptUint16WithRange(scanner, "Junk packet count", config.JC, "0-10", "Recommended: 3-6 for basic DPI evasion")
+	config.JMin = promptUint16WithRange(scanner, "Min junk packet size (bytes)", config.JMin, "64-1024", "Recommended: 64-128; must be ≥64 and ≤ JMax")
+	config.JMax = promptUint16WithRange(scanner, "Max junk packet size (bytes)", config.JMax, "64-1024", "Recommended: 128-256; must be ≥ JMin")
+	config.S1 = promptUint16WithRange(scanner, "Init packet prefix length (S1)", config.S1, "0-64", "Recommended: 10-20, breaks standard WG compatibility, MUST match all nodes")
+	config.S2 = promptUint16WithRange(scanner, "Response packet prefix length (S2)", config.S2, "0-64", "Recommended: 10-20, breaks standard WG compatibility, MUST match all nodes")
+
+	// Header parameters
+	promptHeaderParameters(scanner, &config)
+
+	// CPS parameters
+	promptCPSParameters(scanner, &config)
+
+	return config, nil
+}
+
+// printInteractiveConfigHeader prints the header information for interactive configuration.
+func printInteractiveConfigHeader() {
+	fmt.Println("Configure Amnezia-WG parameters (press Enter to keep current value, 0 or empty to disable):")
+	fmt.Println("⚠️  H1-H4 and S1/S2 must be IDENTICAL on all nodes. I1-I5, JC, JMin, JMax can differ.")
+	fmt.Println("Tip: For maximum compatibility, use junk packets only. For advanced DPI evasion, add CPS signatures.")
+}
+
+// promptHeaderParameters prompts for header field parameters (H1-H4).
+func promptHeaderParameters(scanner *bufio.Scanner, config *ipn.AmneziaWGPrefs) {
+	printSectionHeader("Header Field Parameters (h1-h4)")
+	fmt.Println("These parameters provide basic protocol obfuscation using 32-bit random values.")
+	fmt.Println("💡 Tip: Enter 'random' to auto-generate a 32-bit random number")
+	fmt.Println("⚠️  If ANY node sets these values, ALL nodes in the network must use IDENTICAL values!")
+	fmt.Println("👉  All-or-none: If H1 is 0 (disabled), H2-H4 will also be disabled & skipped.")
+
+	config.H1 = promptUint32WithHint(scanner, "Header field 1 (H1)", config.H1, "32-bit random number (0-4294967295); enter 0 to disable all header fields")
+	if config.H1 == 0 {
+		config.H2, config.H3, config.H4 = 0, 0, 0
+		fmt.Println("H1 disabled -> Skipping H2-H4 (all header fields disabled).")
+	} else {
+		for i, field := range []*uint32{&config.H2, &config.H3, &config.H4} {
+			*field = promptUint32WithHint(scanner, fmt.Sprintf("Header field %d (H%d)", i+2, i+2), *field, "32-bit random number (0-4294967295)")
+		}
+	}
+}
+
+// promptCPSParameters prompts for Custom Protocol Signature parameters (I1-I5).
+func promptCPSParameters(scanner *bufio.Scanner, config *ipn.AmneziaWGPrefs) {
+	printSectionHeader("Custom Protocol Signature (CPS) Packets - Advanced Protocol Masking")
+	printCPSInstructions()
+
+	config.I1 = promptStringWithExample(scanner, "Primary signature packet (I1)", config.I1, "Leave empty for standard WireGuard compatibility (use JSON for long signatures >1000 chars)")
+	if config.I1 != "" {
+		names := []string{"Secondary", "Tertiary", "Quaternary", "Quinary"}
+		for i, field := range []*string{&config.I2, &config.I3, &config.I4, &config.I5} {
+			prompt := fmt.Sprintf("%s signature packet (I%d)", names[i], i+2)
+			*field = promptStringWithExample(scanner, prompt, *field, "Optional entropy packet (use JSON for long signatures)")
+		}
+	} else {
+		fmt.Println("Skipping I2-I5 (I1 is empty - standard WireGuard compatibility mode)")
+	}
+}
+
+// printSectionHeader prints a section header with consistent formatting.
+func printSectionHeader(title string) {
+	fmt.Println("\n" + strings.Repeat("=", 70))
+	fmt.Println(title)
+	fmt.Println(strings.Repeat("=", 70))
+}
+
+// printCPSInstructions prints detailed instructions for CPS configuration.
+func printCPSInstructions() {
+	instructions := []string{
+		"Format: <b hex_data> | <c> (counter) | <t> (timestamp) | <r length> (random)",
+		"Note: If I1 is empty, signature chain (I2-I5) is skipped",
+		"\nTo create effective CPS signatures:",
+		"1. Capture real protocol packets with Wireshark or tcpdump",
+		"2. Extract hex patterns from packet headers",
+		"3. Use <b hex_pattern> for static protocol headers",
+		"4. Add <c>, <t>, <r length> for dynamic fields",
+		"",
+		"📖 Complete guide: https://docs.amnezia.org/documentation/instructions/new-amneziawg-selfhosted",
+		"",
+		"💡 For long CPS signatures (real packet captures), use JSON mode:",
+		"   tailscale amnezia-wg set '{\"i1\":\"<b 0x...very_long_hex...>\"}'",
+		"",
+		"Basic format examples:",
+		"  Static header only:     <b 0xc0000000>",
+		"  With random padding:    <b 0x1234><r 16>",
+		"  With counter+timestamp: <b 0xabcd><c><t>",
+		"",
+		"⚠️  Terminal Input Limitation:",
+		"  For long CPS signatures (>1000 chars), terminal input may be truncated.",
+		"  Use JSON mode instead: tailscale amnezia-wg set '{\"i1\":\"<your_long_cps>\"}'",
+		"",
+	}
+	for _, line := range instructions {
+		fmt.Println(line)
+	}
+}
+
+// applyAmneziaWGConfig applies the Amnezia-WG configuration.
+func applyAmneziaWGConfig(ctx context.Context, config ipn.AmneziaWGPrefs) error {
+	maskedPrefs := createMaskedPrefs(config)
+	_, err := localClient.EditPrefs(ctx, maskedPrefs)
+	return err
 }
 
 func runAmneziaWGGet(ctx context.Context, args []string) error {
 	if len(args) != 0 {
-		return fmt.Errorf("usage: tailscale amnezia-wg get")
+		return formatUsageError("tailscale amnezia-wg get")
 	}
 
 	prefs, err := localClient.GetPrefs(ctx)
@@ -224,36 +272,10 @@ func runAmneziaWGGet(ctx context.Context, args []string) error {
 	}
 
 	config := prefs.AmneziaWG
-	fmt.Printf("Current Amnezia-WG configuration:\n")
-	fmt.Printf("  JC (junk packet count): %d\n", config.JC)
-	fmt.Printf("  JMin (min junk size): %d\n", config.JMin)
-	fmt.Printf("  JMax (max junk size): %d\n", config.JMax)
-	fmt.Printf("  S1 (init packet prefix length): %d\n", config.S1)
-	fmt.Printf("  S2 (response packet prefix length): %d\n", config.S2)
-	fmt.Printf("  I1 (primary signature packet): %s\n", config.I1)
-	fmt.Printf("  I2 (secondary signature packet): %s\n", config.I2)
-	fmt.Printf("  I3 (tertiary signature packet): %s\n", config.I3)
-	fmt.Printf("  I4 (quaternary signature packet): %s\n", config.I4)
-	fmt.Printf("  I5 (quinary signature packet): %s\n", config.I5)
-	fmt.Printf("  H1 (header field 1): %d\n", config.H1)
-	fmt.Printf("  H2 (header field 2): %d\n", config.H2)
-	fmt.Printf("  H3 (header field 3): %d\n", config.H3)
-	fmt.Printf("  H4 (header field 4): %d\n", config.H4)
+	printAmneziaWGConfig(config)
 
-	// Print as JSON for easy copy-paste
-	isZero := config.JC == 0 && config.JMin == 0 && config.JMax == 0 &&
-		config.S1 == 0 && config.S2 == 0 &&
-		config.I1 == "" && config.I2 == "" && config.I3 == "" && config.I4 == "" && config.I5 == "" &&
-		config.H1 == 0 && config.H2 == 0 && config.H3 == 0 && config.H4 == 0
-
-	if !isZero {
-		var buf bytes.Buffer
-		encoder := json.NewEncoder(&buf)
-		encoder.SetEscapeHTML(false)
-		encoder.SetIndent("", "")
-		if err := encoder.Encode(config); err == nil {
-			// Remove the trailing newline that Encode adds
-			jsonStr := strings.TrimRight(buf.String(), "\n")
+	if !isConfigZero(config) {
+		if jsonStr, err := formatConfigAsJSON(config); err == nil {
 			fmt.Printf("\nJSON format:\n%s\n", jsonStr)
 		}
 	}
@@ -261,77 +283,96 @@ func runAmneziaWGGet(ctx context.Context, args []string) error {
 	return nil
 }
 
+// printAmneziaWGConfig prints the Amnezia-WG configuration in a formatted way.
+func printAmneziaWGConfig(config ipn.AmneziaWGPrefs) {
+	fmt.Printf("Current Amnezia-WG configuration:\n")
+
+	// Basic parameters
+	fmt.Printf("  JC (junk packet count): %d\n", config.JC)
+	fmt.Printf("  JMin (min junk size): %d\n", config.JMin)
+	fmt.Printf("  JMax (max junk size): %d\n", config.JMax)
+	fmt.Printf("  S1 (init packet prefix length): %d\n", config.S1)
+	fmt.Printf("  S2 (response packet prefix length): %d\n", config.S2)
+
+	// Signature parameters
+	fmt.Printf("  I1 (primary signature packet): %s\n", config.I1)
+	fmt.Printf("  I2 (secondary signature packet): %s\n", config.I2)
+	fmt.Printf("  I3 (tertiary signature packet): %s\n", config.I3)
+	fmt.Printf("  I4 (quaternary signature packet): %s\n", config.I4)
+	fmt.Printf("  I5 (quinary signature packet): %s\n", config.I5)
+
+	// Header parameters
+	fmt.Printf("  H1 (header field 1): %d\n", config.H1)
+	fmt.Printf("  H2 (header field 2): %d\n", config.H2)
+	fmt.Printf("  H3 (header field 3): %d\n", config.H3)
+	fmt.Printf("  H4 (header field 4): %d\n", config.H4)
+}
+
+// isConfigZero checks if the Amnezia-WG configuration is all zero values.
+func isConfigZero(config ipn.AmneziaWGPrefs) bool {
+	return config.JC == 0 && config.JMin == 0 && config.JMax == 0 &&
+		config.S1 == 0 && config.S2 == 0 &&
+		config.I1 == "" && config.I2 == "" && config.I3 == "" && config.I4 == "" && config.I5 == "" &&
+		config.H1 == 0 && config.H2 == 0 && config.H3 == 0 && config.H4 == 0
+}
+
+// formatConfigAsJSON formats the configuration as a compact JSON string.
+func formatConfigAsJSON(config ipn.AmneziaWGPrefs) (string, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "")
+	if err := encoder.Encode(config); err != nil {
+		return "", err
+	}
+	// Remove the trailing newline that Encode adds
+	return strings.TrimRight(buf.String(), "\n"), nil
+}
+
 func runAmneziaWGReset(ctx context.Context, args []string) error {
 	if len(args) != 0 {
-		return fmt.Errorf("usage: tailscale amnezia-wg reset")
+		return formatUsageError("tailscale amnezia-wg reset")
 	}
 
 	// Reset to all zeros (standard WireGuard)
-	maskedPrefs := &ipn.MaskedPrefs{
-		Prefs: ipn.Prefs{
-			AmneziaWG: ipn.AmneziaWGPrefs{}, // All zero values
-		},
-		AmneziaWGSet: true,
-	}
-
-	_, err := localClient.EditPrefs(ctx, maskedPrefs)
-	if err != nil {
+	config := ipn.AmneziaWGPrefs{} // All zero values
+	if err := applyAmneziaWGConfig(ctx, config); err != nil {
 		return err
 	}
 
 	fmt.Println("Amnezia-WG configuration reset to standard WireGuard.")
-
-	// Ask user if they want to restart tailscaled
-	fmt.Print("Restart tailscaled now to apply changes? [Y/n]: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if scanner.Scan() {
-		response := strings.TrimSpace(strings.ToLower(scanner.Text()))
-		if response == "" || response == "y" || response == "yes" {
-			fmt.Println("Restarting tailscaled...")
-			if err := restartTailscaled(); err != nil {
-				fmt.Printf("Warning: Failed to restart tailscaled: %v\n", err)
-				fmt.Println("You may need to restart tailscaled manually for changes to take effect.")
-			} else {
-				fmt.Println("tailscaled restarted successfully.")
-			}
-		} else {
-			fmt.Println("Skipped restart. Please restart tailscaled manually for changes to take effect.")
-		}
-	}
-
-	return nil
+	return restartTailscaledWithPrompt()
 }
 
 func promptUint16(scanner *bufio.Scanner, prompt string, current uint16) uint16 {
-	fmt.Printf("%s [%d]: ", prompt, current)
-	if !scanner.Scan() {
-		return current
-	}
-	text := strings.TrimSpace(scanner.Text())
-	if text == "" {
-		return current
-	}
-	if val, err := strconv.ParseUint(text, 10, 16); err == nil {
+	if val, err := promptUintGeneric(scanner, prompt, uint64(current), 16); err == nil {
 		return uint16(val)
 	}
-	fmt.Printf("Invalid value, keeping current: %d\n", current)
 	return current
 }
 
 func promptUint32(scanner *bufio.Scanner, prompt string, current uint32) uint32 {
+	if val, err := promptUintGeneric(scanner, prompt, uint64(current), 32); err == nil {
+		return uint32(val)
+	}
+	return current
+}
+
+// promptUintGeneric handles both uint16 and uint32 prompting with common logic
+func promptUintGeneric(scanner *bufio.Scanner, prompt string, current uint64, bitSize int) (uint64, error) {
 	fmt.Printf("%s [%d]: ", prompt, current)
 	if !scanner.Scan() {
-		return current
+		return current, nil
 	}
 	text := strings.TrimSpace(scanner.Text())
 	if text == "" {
-		return current
+		return current, nil
 	}
-	if val, err := strconv.ParseUint(text, 10, 32); err == nil {
-		return uint32(val)
+	if val, err := strconv.ParseUint(text, 10, bitSize); err == nil {
+		return val, nil
 	}
 	fmt.Printf("Invalid value, keeping current: %d\n", current)
-	return current
+	return current, fmt.Errorf("invalid value")
 }
 
 func promptUint32WithHint(scanner *bufio.Scanner, prompt string, current uint32, hint string) uint32 {
@@ -372,56 +413,7 @@ func promptUint32WithHint(scanner *bufio.Scanner, prompt string, current uint32,
 }
 
 func promptString(scanner *bufio.Scanner, prompt string, current string) string {
-	displayValue := current
-	if displayValue == "" {
-		displayValue = "(empty)"
-	}
-	fmt.Printf("%s [%s]: ", prompt, displayValue)
-	if !scanner.Scan() {
-		return current
-	}
-	text := strings.TrimSpace(scanner.Text())
-	if text == "" {
-		return current
-	}
-	return text
-}
-
-func promptUint16WithRange(scanner *bufio.Scanner, prompt string, current uint16, validRange string, hint string) uint16 {
-	displayValue := fmt.Sprintf("%d", current)
-	if current == 0 {
-		displayValue = "0 (disabled)"
-	}
-
-	fmt.Printf("%s (%s) [%s]: ", prompt, validRange, displayValue)
-	if hint != "" {
-		fmt.Printf("\n  💡 %s\n  > ", hint)
-	}
-
-	if !scanner.Scan() {
-		return current
-	}
-	text := strings.TrimSpace(scanner.Text())
-	if text == "" {
-		return current
-	}
-
-	if val, err := strconv.ParseUint(text, 10, 16); err == nil {
-		result := uint16(val)
-		// Validate ranges based on official documentation
-		switch {
-		case strings.Contains(prompt, "Junk packet count") && result > 10:
-			fmt.Printf("Warning: Value %d exceeds recommended range (0-10), but continuing...\n", result)
-		case strings.Contains(prompt, "junk packet size") && result > 0 && (result < 64 || result > 1024):
-			fmt.Printf("Warning: Value %d is outside recommended range (64-1024), but continuing...\n", result)
-		case (strings.Contains(prompt, "prefix length")) && result > 64:
-			fmt.Printf("Warning: Value %d exceeds maximum (64), but continuing...\n", result)
-		}
-		return result
-	}
-
-	fmt.Printf("Invalid value '%s', keeping current: %d\n", text, current)
-	return current
+	return promptStringWithExample(scanner, prompt, current, "")
 }
 
 func promptStringWithExample(scanner *bufio.Scanner, prompt string, current string, hint string) string {
@@ -442,13 +434,47 @@ func promptStringWithExample(scanner *bufio.Scanner, prompt string, current stri
 	if text == "" {
 		return current
 	}
-
 	return text
+}
+
+func promptUint16WithRange(scanner *bufio.Scanner, prompt string, current uint16, validRange string, hint string) uint16 {
+	displayValue := "0 (disabled)"
+	if current != 0 {
+		displayValue = fmt.Sprintf("%d", current)
+	}
+
+	fmt.Printf("%s (%s) [%s]: ", prompt, validRange, displayValue)
+	if hint != "" {
+		fmt.Printf("\n  💡 %s\n  > ", hint)
+	}
+
+	if !scanner.Scan() {
+		return current
+	}
+	text := strings.TrimSpace(scanner.Text())
+	if text == "" {
+		return current
+	}
+
+	val, err := strconv.ParseUint(text, 10, 16)
+	if err != nil {
+		fmt.Printf("Invalid value '%s', keeping current: %d\n", text, current)
+		return current
+	}
+
+	result := uint16(val)
+	// Simplified range validation
+	if (strings.Contains(prompt, "Junk packet count") && result > 10) ||
+		(strings.Contains(prompt, "junk packet size") && result > 0 && (result < 64 || result > 1024)) ||
+		(strings.Contains(prompt, "prefix length") && result > 64) {
+		fmt.Printf("Warning: Value %d is outside recommended range, but continuing...\n", result)
+	}
+	return result
 }
 
 func runAmneziaWGValidate(ctx context.Context, args []string) error {
 	if len(args) != 0 {
-		return fmt.Errorf("usage: tailscale amnezia-wg validate")
+		return formatUsageError("tailscale amnezia-wg validate")
 	}
 
 	prefs, err := localClient.GetPrefs(ctx)
@@ -460,94 +486,56 @@ func runAmneziaWGValidate(ctx context.Context, args []string) error {
 	fmt.Println("Amnezia-WG Configuration Validation")
 	fmt.Println("===================================")
 
-	// Check if configuration is completely zero (standard WireGuard)
-	isStandardWG := config.JC == 0 && config.JMin == 0 && config.JMax == 0 &&
-		config.S1 == 0 && config.S2 == 0 &&
-		config.I1 == "" && config.I2 == "" && config.I3 == "" && config.I4 == "" && config.I5 == "" &&
-		config.H1 == 0 && config.H2 == 0 && config.H3 == 0 && config.H4 == 0
-
-	if isStandardWG {
+	if isConfigZero(config) {
 		fmt.Println("✅ Status: Standard WireGuard mode (all parameters disabled)")
 		fmt.Println("✅ Compatibility: Full compatibility with all WireGuard clients")
 		fmt.Println("✅ Network requirement: No special configuration needed on other nodes")
 		return nil
 	}
 
-	// Check for mixed versions
-	hasHeaderParams := config.H1 != 0 || config.H2 != 0 || config.H3 != 0 || config.H4 != 0
-	hasSignatureParams := config.I1 != "" || config.I2 != "" || config.I3 != "" || config.I4 != "" || config.I5 != ""
-	hasJunkParams := config.JC != 0 || config.JMin != 0 || config.JMax != 0
-	hasPrefixParams := config.S1 != 0 || config.S2 != 0
+	printValidationSummary(config)
+	printValidationWarnings(config)
+	return nil
+}
 
-	fmt.Printf("⚠️  Status: Amnezia-WG mode enabled\n")
-	fmt.Printf("📊 Parameter Summary:\n")
-	fmt.Printf("   - Junk packets: %s\n", formatEnabled(hasJunkParams))
-	fmt.Printf("   - Prefix lengths (S1/S2): %s\n", formatEnabled(hasPrefixParams))
-	fmt.Printf("   - Header parameters (H1-H4): %s\n", formatEnabled(hasHeaderParams))
-	fmt.Printf("   - Signature parameters (I1-I5): %s\n", formatEnabled(hasSignatureParams))
-	fmt.Printf("\n")
+func printValidationSummary(config ipn.AmneziaWGPrefs) {
+	hasHeader := config.H1 != 0 || config.H2 != 0 || config.H3 != 0 || config.H4 != 0
+	hasSignature := config.I1 != "" || config.I2 != "" || config.I3 != "" || config.I4 != "" || config.I5 != ""
+	hasJunk := config.JC != 0 || config.JMin != 0 || config.JMax != 0
+	hasPrefix := config.S1 != 0 || config.S2 != 0
 
-	// Compatibility analysis
+	fmt.Printf("⚠️  Status: Amnezia-WG mode enabled\n📊 Parameter Summary:\n")
+	fmt.Printf("   - Junk packets: %s\n", formatEnabled(hasJunk))
+	fmt.Printf("   - Prefix lengths (S1/S2): %s\n", formatEnabled(hasPrefix))
+	fmt.Printf("   - Header parameters (H1-H4): %s\n", formatEnabled(hasHeader))
+	fmt.Printf("   - Signature parameters (I1-I5): %s\n\n", formatEnabled(hasSignature))
+
 	fmt.Printf("🔍 Compatibility Analysis:\n")
-
-	if hasJunkParams && !hasPrefixParams && !hasHeaderParams && !hasSignatureParams {
-		fmt.Printf("✅ Junk packets only: Compatible with standard WireGuard clients\n")
-		fmt.Printf("✅ Low impact: Should work with most configurations\n")
+	if hasJunk && !hasPrefix && !hasHeader && !hasSignature {
+		fmt.Printf("✅ Junk packets only: Compatible with standard WireGuard clients\n✅ Low impact: Should work with most configurations\n")
 	} else {
-		fmt.Printf("⚠️  Protocol modification: NOT compatible with standard WireGuard\n")
-		fmt.Printf("❌ Breaking changes: S1/S2, H1-H4, or I1-I5 parameters are set\n")
+		fmt.Printf("⚠️  Protocol modification: NOT compatible with standard WireGuard\n❌ Breaking changes: S1/S2, H1-H4, or I1-I5 parameters are set\n")
 	}
 
-	if hasHeaderParams && hasSignatureParams {
-		fmt.Printf("⚠️  Mixed parameter types: Both header (H1-H4) and signature (I1-I5) parameters detected\n")
-		fmt.Printf("💡 Recommendation: Use either header OR signature parameters, not both\n")
+	if hasHeader && hasSignature {
+		fmt.Printf("⚠️  Mixed parameter types: Both header (H1-H4) and signature (I1-I5) parameters detected\n💡 Recommendation: Use either header OR signature parameters, not both\n")
 	}
 
-	if hasHeaderParams {
-		// Check if header values look random (basic heuristic)
-		headerValues := []uint32{config.H1, config.H2, config.H3, config.H4}
-		hasSmallValues := false
-		for _, val := range headerValues {
-			if val > 0 && val < 1000000 { // Values that look too simple
-				hasSmallValues = true
-				break
-			}
-		}
-		if hasSmallValues {
-			fmt.Printf("💡 Note: H1-H4 should use 32-bit random numbers for better obfuscation\n")
-			fmt.Printf("   Consider using larger random values (e.g., 3847291638)\n")
-		}
+	if hasHeader && config.H1 > 0 && config.H1 < 1000000 {
+		fmt.Printf("💡 Note: H1-H4 should use 32-bit random numbers for better obfuscation\n   Consider using larger random values (e.g., 3847291638)\n")
 	}
 
-	fmt.Printf("\n")
-	fmt.Printf("🚨 CRITICAL NETWORK REQUIREMENT:\n")
-	fmt.Printf("   These parameters MUST be IDENTICAL on ALL nodes:\n")
-	fmt.Printf("   - H1-H4 (header fields)\n")
-	fmt.Printf("   - S1/S2 (prefix lengths)\n")
-	fmt.Printf("\n")
-	fmt.Printf("   These parameters CAN differ between nodes:\n")
-	fmt.Printf("   - I1-I5 (signature packets)\n")
-	fmt.Printf("   - JC, JMin, JMax (junk packets)\n")
-	fmt.Printf("\n")
-	fmt.Printf("📋 Required Actions for H1-H4 and S1/S2:\n")
-	fmt.Printf("   1. Copy these critical values to ALL other nodes:\n")
-	fmt.Printf("      tailscale amnezia-wg get  # (note H1-H4 and S1/S2 values)\n")
-	fmt.Printf("   2. Apply matching values on each node:\n")
-	fmt.Printf("      tailscale amnezia-wg set  # (enter same H1-H4 and S1/S2)\n")
-	fmt.Printf("   3. Restart tailscaled on ALL nodes\n")
-	fmt.Printf("   4. Test connectivity between all node pairs\n")
-	fmt.Printf("\n")
+	fmt.Printf("\n🚨 CRITICAL NETWORK REQUIREMENT:\n   These parameters MUST be IDENTICAL on ALL nodes: H1-H4, S1/S2\n   These parameters CAN differ between nodes: I1-I5, JC/JMin/JMax\n\n")
+	fmt.Printf("📋 Required Actions for H1-H4 and S1/S2:\n   1. Get values: tailscale amnezia-wg get\n   2. Apply on all nodes: tailscale amnezia-wg set\n   3. Restart tailscaled on ALL nodes\n   4. Test connectivity\n\n")
+}
 
-	// Validation warnings
+func printValidationWarnings(config ipn.AmneziaWGPrefs) {
 	if config.JMin > 0 && config.JMax > 0 && config.JMin > config.JMax {
 		fmt.Printf("❌ Error: JMin (%d) is greater than JMax (%d)\n", config.JMin, config.JMax)
 	}
-
 	if config.JC > 10 {
 		fmt.Printf("⚠️  Warning: JC (%d) is very high, may impact performance\n", config.JC)
 	}
-
-	return nil
 }
 
 func formatEnabled(enabled bool) string {
@@ -555,4 +543,315 @@ func formatEnabled(enabled bool) string {
 		return "Enabled ⚠️"
 	}
 	return "Disabled ✅"
+}
+
+// runAmneziaWGSync implements the sync logic using disco protocol to request AWG configs from peers.
+func runAmneziaWGSync(ctx context.Context, args []string) error {
+	st, err := localClient.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get status: %w", err)
+	}
+
+	peers := collectOnlinePeersForDiscoSync(st)
+	if len(peers) == 0 {
+		fmt.Println("No online peers found.")
+		return nil
+	}
+
+	fmt.Printf("Found %d online peers. Requesting AWG configurations via disco protocol...\n\n", len(peers))
+
+	// Request AWG configs from all online peers (with structured output & stats)
+	peerConfigs, stats, err := requestAWGConfigsFromPeers(ctx, peers)
+	if err != nil {
+		return fmt.Errorf("failed to request AWG configs: %w", err)
+	}
+
+	fmt.Printf("\nDiscovery summary: %d total | %d with AWG config | %d standard | %d failed | duration %.2fs\n\n",
+		stats.Total, stats.WithConfig, stats.Standard, stats.Failed, stats.Duration.Seconds())
+
+	if len(peerConfigs) == 0 {
+		fmt.Println("No AWG configurations found on online peers.")
+		fmt.Println("All peers are using standard WireGuard (no Amnezia-WG parameters).")
+		return nil
+	}
+
+	// Display found configurations and let user choose (compact list)
+	fmt.Printf("Found AWG configurations on %d peer(s):\n\n", len(peerConfigs))
+	for i, pc := range peerConfigs {
+		fmt.Printf("[%d] %s (%s)\n", i+1, pc.PeerName, pc.PeerIP)
+		printCompactAWGConfig(pc.Config)
+		fmt.Println()
+	}
+
+	// Interactive selection and sync
+	return handleInteractiveConfigSync(ctx, peerConfigs)
+}
+
+// collectOnlinePeersForDiscoSync collects all online peers for potential disco-based sync
+func collectOnlinePeersForDiscoSync(st *ipnstate.Status) []peerInfo {
+	var peers []peerInfo
+	for _, k := range st.Peers() {
+		ps := st.Peer[k]
+		if !ps.Online || ps.ShareeNode {
+			continue
+		}
+		ip := ""
+		if len(ps.TailscaleIPs) > 0 {
+			ip = ps.TailscaleIPs[0].String()
+		}
+		peers = append(peers, peerInfo{
+			IP:      ip,
+			Name:    ps.HostName,
+			NodeKey: ps.PublicKey, // Use NodeKey for now, disco key lookup needs different approach
+		})
+	}
+	return peers
+}
+
+type peerInfo struct {
+	IP      string
+	Name    string
+	NodeKey key.NodePublic // Node public key, will be used to lookup disco key
+}
+
+type peerAWGConfig struct {
+	PeerName string
+	PeerIP   string
+	Config   ipn.AmneziaWGPrefs
+}
+
+// awgDiscoveryStats captures statistics from the discovery phase.
+type awgDiscoveryStats struct {
+	Total      int
+	WithConfig int
+	Standard   int
+	Failed     int
+	Duration   time.Duration
+}
+
+const (
+	awgSyncMaxConcurrent  = 10              // max concurrent disco requests
+	awgSyncPerPeerTimeout = 5 * time.Second // per peer request timeout
+)
+
+// requestAWGConfigsFromPeers requests AWG configurations from all peers using disco protocol
+// and prints per-peer results in a deterministic order while still performing requests concurrently.
+func requestAWGConfigsFromPeers(ctx context.Context, peers []peerInfo) ([]peerAWGConfig, awgDiscoveryStats, error) {
+	start := time.Now()
+	var (
+		wg      sync.WaitGroup
+		configs []peerAWGConfig
+		mu      sync.Mutex
+	)
+
+	type result struct {
+		idx    int
+		peer   peerInfo
+		cfg    ipn.AmneziaWGPrefs
+		err    error
+		dur    time.Duration
+		zero   bool
+		failed bool
+	}
+
+	resultsCh := make(chan result, len(peers))
+	sem := make(chan struct{}, awgSyncMaxConcurrent)
+
+	for i, p := range peers {
+		peer := p
+		idx := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			peerCtx, cancel := context.WithTimeout(ctx, awgSyncPerPeerTimeout)
+			defer cancel()
+			reqStart := time.Now()
+			cfg, err := requestAWGConfigFromPeer(peerCtx, peer.NodeKey)
+			zero := isConfigZero(cfg)
+			failed := err != nil
+			if err == nil && !zero {
+				mu.Lock()
+				configs = append(configs, peerAWGConfig{PeerName: peer.Name, PeerIP: peer.IP, Config: cfg})
+				mu.Unlock()
+			}
+			resultsCh <- result{idx: idx, peer: peer, cfg: cfg, err: err, dur: time.Since(reqStart), zero: zero, failed: failed}
+		}()
+	}
+
+	// Close results channel after all goroutines finish
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+
+	// Collect results into slice indexed by original order for stable printing
+	ordered := make([]result, len(peers))
+	for r := range resultsCh {
+		ordered[r.idx] = r
+	}
+
+	var stats awgDiscoveryStats
+	stats.Total = len(peers)
+
+	for _, r := range ordered {
+		if r.failed {
+			stats.Failed++
+			fmt.Printf("[ERR] %s (%s): %v\n", r.peer.Name, r.peer.IP, r.err)
+			continue
+		}
+		if r.zero {
+			stats.Standard++
+			fmt.Printf("[--] %s (%s): standard WireGuard\n", r.peer.Name, r.peer.IP)
+		} else {
+			stats.WithConfig++
+			fmt.Printf("[OK] %s (%s): AWG config found (%.0fms)\n", r.peer.Name, r.peer.IP, float64(r.dur.Milliseconds()))
+		}
+	}
+
+	stats.Duration = time.Since(start)
+	return configs, stats, nil
+}
+
+// requestAWGConfigFromPeer requests AWG configuration from a specific peer using disco protocol
+func requestAWGConfigFromPeer(ctx context.Context, nodeKey key.NodePublic) (ipn.AmneziaWGPrefs, error) {
+	return localClient.RequestAmneziaWGConfig(ctx, nodeKey)
+}
+
+// printCompactAWGConfig prints a compact summary of AWG configuration
+func printCompactAWGConfig(config ipn.AmneziaWGPrefs) {
+	var parts []string
+	if config.JC > 0 {
+		parts = append(parts, fmt.Sprintf("JC=%d", config.JC))
+	}
+	if config.JMin > 0 {
+		parts = append(parts, fmt.Sprintf("JMin=%d", config.JMin))
+	}
+	if config.JMax > 0 {
+		parts = append(parts, fmt.Sprintf("JMax=%d", config.JMax))
+	}
+	if config.S1 > 0 {
+		parts = append(parts, fmt.Sprintf("S1=%d", config.S1))
+	}
+	if config.S2 > 0 {
+		parts = append(parts, fmt.Sprintf("S2=%d", config.S2))
+	}
+	if config.H1 > 0 {
+		parts = append(parts, fmt.Sprintf("H1=%d", config.H1))
+	}
+	if config.H2 > 0 {
+		parts = append(parts, fmt.Sprintf("H2=%d", config.H2))
+	}
+	if config.H3 > 0 {
+		parts = append(parts, fmt.Sprintf("H3=%d", config.H3))
+	}
+	if config.H4 > 0 {
+		parts = append(parts, fmt.Sprintf("H4=%d", config.H4))
+	}
+	if config.I1 != "" {
+		parts = append(parts, fmt.Sprintf("I1=%s", truncateString(config.I1, 20)))
+	}
+
+	if len(parts) > 0 {
+		fmt.Printf("   Parameters: %s\n", strings.Join(parts, ", "))
+	} else {
+		fmt.Printf("   Parameters: (standard WireGuard)\n")
+	}
+}
+
+// handleInteractiveConfigSync handles interactive selection and syncing of AWG configs
+func handleInteractiveConfigSync(ctx context.Context, peerConfigs []peerAWGConfig) error {
+	scanner := bufio.NewScanner(os.Stdin)
+
+selectionLoop:
+	for {
+		fmt.Println("Select a configuration to sync to this node:")
+		fmt.Println("0. Cancel (keep current configuration)")
+		for i, pc := range peerConfigs {
+			fmt.Printf("%d. Sync from %s (%s)\n", i+1, pc.PeerName, pc.PeerIP)
+		}
+
+		fmt.Print("\nChoice [0]: ")
+		if !scanner.Scan() { // EOF or error -> treat as cancel
+			fmt.Println("\nCancelled.")
+			return nil
+		}
+		choice := strings.TrimSpace(scanner.Text())
+		if choice == "" || choice == "0" {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+
+		idx, err := strconv.Atoi(choice)
+		if err != nil || idx < 1 || idx > len(peerConfigs) {
+			fmt.Printf("Invalid choice: %s\n\n", choice)
+			continue selectionLoop
+		}
+		selected := peerConfigs[idx-1]
+		fmt.Printf("\nSelected configuration from %s:\n", selected.PeerName)
+		printAmneziaWGConfig(selected.Config)
+
+		// Confirm/apply loop
+		for {
+			fmt.Print("\nApply this configuration? [Y/n=return to list]: ")
+			if !scanner.Scan() {
+				fmt.Println("\nCancelled.")
+				return nil
+			}
+			ansRaw := strings.TrimSpace(scanner.Text())
+			if ansRaw == "" { // default yes
+				ansRaw = "y"
+			}
+			ans := strings.ToLower(ansRaw)
+
+			switch ans {
+			case "y", "yes":
+				if err := applyAmneziaWGConfig(ctx, selected.Config); err != nil {
+					return fmt.Errorf("failed to apply configuration: %w", err)
+				}
+				fmt.Printf("✓ AWG configuration synced from %s\n", selected.PeerName)
+				return restartTailscaledWithPrompt()
+			case "n", "no":
+				fmt.Println("Not applied. Returning to list.")
+				continue selectionLoop
+			default:
+				fmt.Println("Please answer Y (apply) or N (return to list).")
+			}
+		}
+	}
+}
+
+// restartTailscaledWithPrompt asks user if they want to restart tailscaled and handles the restart.
+func restartTailscaledWithPrompt() error {
+	fmt.Print("Restart tailscaled now to apply changes? [Y/n]: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	if scanner.Scan() {
+		response := strings.TrimSpace(strings.ToLower(scanner.Text()))
+		if response == "" || response == "y" || response == "yes" {
+			fmt.Println("Restarting tailscaled...")
+			if err := restartTailscaled(); err != nil {
+				return fmt.Errorf("failed to restart tailscaled: %w\nPlease restart tailscaled manually for changes to take effect", err)
+			}
+			fmt.Println("tailscaled restarted successfully.")
+		} else {
+			fmt.Println("Skipped restart. Please restart tailscaled manually for changes to take effect.")
+		}
+	}
+	return nil
+}
+
+// formatUsageError formats usage error messages consistently.
+func formatUsageError(usage string) error {
+	return fmt.Errorf("usage: %s", usage)
+}
+
+// createMaskedPrefs creates a MaskedPrefs with AmneziaWG configuration.
+func createMaskedPrefs(config ipn.AmneziaWGPrefs) *ipn.MaskedPrefs {
+	return &ipn.MaskedPrefs{
+		Prefs: ipn.Prefs{
+			AmneziaWG: config,
+		},
+		AmneziaWGSet: true,
+	}
 }

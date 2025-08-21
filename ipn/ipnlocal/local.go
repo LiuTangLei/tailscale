@@ -5166,6 +5166,8 @@ func (b *LocalBackend) authReconfig() {
 	}
 
 	cfg, err := nmcfg.WGCfg(nm, b.logf, flags, prefs.ExitNodeID(), prefs.AmneziaWG())
+	// Update magicsock Amnezia-WG provider so disco requests can return current prefs.
+	b.MagicConn().SetAmneziaWGConfigProvider(func() ipn.AmneziaWGPrefs { return prefs.AmneziaWG() })
 	if err != nil {
 		b.logf("wgcfg: %v", err)
 		return

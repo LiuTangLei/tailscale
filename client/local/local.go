@@ -1811,3 +1811,27 @@ func (lc *Client) SuggestExitNode(ctx context.Context) (apitype.ExitNodeSuggesti
 	}
 	return decodeJSON[apitype.ExitNodeSuggestionResponse](body)
 }
+
+// RequestAmneziaWGConfig requests AWG configuration from the specified peer using disco protocol.
+// It returns the peer's Amnezia-WG configuration or an error if the request fails or times out.
+func (lc *Client) RequestAmneziaWGConfig(ctx context.Context, nodeKey key.NodePublic) (ipn.AmneziaWGPrefs, error) {
+	reqBody := struct {
+		NodeKey key.NodePublic `json:"nodeKey"`
+		Timeout int            `json:"timeout"` // timeout in seconds
+	}{
+		NodeKey: nodeKey,
+		Timeout: 10, // 10 seconds default timeout
+	}
+
+	reqJSON, err := json.Marshal(reqBody)
+	if err != nil {
+		return ipn.AmneziaWGPrefs{}, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	body, err := lc.send(ctx, "POST", "/localapi/v0/request-amnezia-wg-config", 200, bytes.NewReader(reqJSON))
+	if err != nil {
+		return ipn.AmneziaWGPrefs{}, fmt.Errorf("error %w: %s", err, body)
+	}
+
+	return decodeJSON[ipn.AmneziaWGPrefs](body)
+}

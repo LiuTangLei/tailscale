@@ -119,6 +119,7 @@ var handler = map[string]LocalAPIHandler{
 	"ping":                         (*Handler).servePing,
 	"pprof":                        (*Handler).servePprof,
 	"prefs":                        (*Handler).servePrefs,
+	"request-amnezia-wg-config":    (*Handler).serveRequestAmneziaWGConfig,
 	"query-feature":                (*Handler).serveQueryFeature,
 	"reload-config":                (*Handler).reloadConfig,
 	"reset-auth":                   (*Handler).serveResetAuth,
@@ -2823,4 +2824,101 @@ func (h *Handler) serveSuggestExitNode(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
+}
+
+// serveRequestAmneziaWGConfig serves a POST endpoint for requesting AWG configuration from a peer via disco protocol.
+func (h *Handler) serveRequestAmneziaWGConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != httpm.POST {
+		http.Error(w, "only POST allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !h.PermitWrite {
+		http.Error(w, "disco protocol requests are not permitted in this mode", http.StatusForbidden)
+		return
+	}
+
+	var req struct {
+		NodeKey key.NodePublic `json:"nodeKey"`
+		Timeout int            `json:"timeout"` // timeout in seconds, default 10
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.NodeKey.IsZero() {
+		http.Error(w, "nodeKey is required", http.StatusBadRequest)
+		return
+	}
+
+	timeout := 10 * time.Second
+	if req.Timeout > 0 && req.Timeout <= 60 {
+		timeout = time.Duration(req.Timeout) * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	// Get the magicsock connection to make the disco request
+	ms := h.b.MagicConn()
+	if ms == nil {
+		http.Error(w, "magicsock not available", http.StatusInternalServerError)
+		return
+	}
+
+	// Look up the disco key for this node key
+	// We need to get the peer info from the netmap
+	netMap := h.b.NetMap()
+	if netMap == nil {
+		http.Error(w, "no netmap available", http.StatusInternalServerError)
+		return
+	}
+
+	var discoKey key.DiscoPublic
+	var found bool
+	for _, peer := range netMap.Peers {
+		if peer.Key() == req.NodeKey {
+			discoKey = peer.DiscoKey()
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		http.Error(w, "peer not found in netmap", http.StatusNotFound)
+		return
+	}
+
+	// Create a response channel
+	respCh := make(chan *magicsock.AmneziaWGConfigData, 1)
+	defer close(respCh)
+
+	// Send the disco request
+	if err := ms.RequestAmneziaWGConfigCtx(ctx, discoKey, respCh); err != nil {
+		http.Error(w, "failed to send disco request: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Wait for response or timeout
+	select {
+	case resp := <-respCh:
+		// Parse the received JSON config
+		var config ipn.AmneziaWGPrefs
+		if err := json.Unmarshal(resp.ConfigJSON, &config); err != nil {
+			http.Error(w, "failed to parse received config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Return the config as JSON
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(config); err != nil {
+			h.Logf("failed to encode response: %v", err)
+		}
+
+	case <-ctx.Done():
+		http.Error(w, "request timed out", http.StatusRequestTimeout)
+		return
+	}
 }

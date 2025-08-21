@@ -262,6 +262,7 @@ change in the future.
 			idTokenCmd,
 			configureHostCmd(),
 			amneziaCmd,
+			awgCmd,
 		),
 		FlagSet: rootfs,
 		Exec: func(ctx context.Context, args []string) error {
