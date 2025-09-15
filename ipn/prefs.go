@@ -295,9 +295,30 @@ type Prefs struct {
 	//  We can maybe do that once we're sure which module should persist
 	//  it (backend or frontend?)
 	Persist *persist.Persist `json:"Config"`
+
+	// AmneziaWG contains Amnezia-WG specific configuration
+	AmneziaWG AmneziaWGPrefs `json:",omitempty"`
 }
 
-// AutoUpdatePrefs are the auto update settings for the node agent.
+// AmneziaWGPrefs contains Amnezia-WG configuration parameters.
+// Zero values for all parameters mean standard WireGuard behavior.
+// Network-wide consistency is required: all nodes must use identical parameters.
+type AmneziaWGPrefs struct {
+	JC   uint16 `json:",omitempty"` // Junk packet count (0 = disabled)
+	JMin uint16 `json:",omitempty"` // Min junk size (0 = disabled)
+	JMax uint16 `json:",omitempty"` // Max junk size (0 = disabled)
+	S1   uint16 `json:",omitempty"` // Init packet prefix length (0 = disabled)
+	S2   uint16 `json:",omitempty"` // Response packet prefix length (0 = disabled)
+	I1   string `json:",omitempty"` // Primary signature packet (CPS format, e.g., "<b 0xf6ab3267fa><c><t><r 10>")
+	I2   string `json:",omitempty"` // Secondary signature packet (CPS format)
+	I3   string `json:",omitempty"` // Tertiary signature packet (CPS format)
+	I4   string `json:",omitempty"` // Quaternary signature packet (CPS format)
+	I5   string `json:",omitempty"` // Quinary signature packet (CPS format)
+	H1   uint32 `json:",omitempty"` // Header field 1
+	H2   uint32 `json:",omitempty"` // Header field 2
+	H3   uint32 `json:",omitempty"` // Header field 3
+	H4   uint32 `json:",omitempty"` // Header field 4
+} // AutoUpdatePrefs are the auto update settings for the node agent.
 type AutoUpdatePrefs struct {
 	// Check specifies whether background checks for updates are enabled. When
 	// enabled, tailscaled will periodically check for available updates and
@@ -372,6 +393,7 @@ type MaskedPrefs struct {
 	NetfilterKindSet          bool                `json:",omitempty"`
 	DriveSharesSet            bool                `json:",omitempty"`
 	RelayServerPortSet        bool                `json:",omitempty"`
+	AmneziaWGSet              bool                `json:",omitempty"`
 }
 
 // SetsInternal reports whether mp has any of the Internal*Set field bools set
@@ -659,7 +681,8 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
 		p.PostureChecking == p2.PostureChecking &&
 		slices.EqualFunc(p.DriveShares, p2.DriveShares, drive.SharesEqual) &&
 		p.NetfilterKind == p2.NetfilterKind &&
-		compareIntPtrs(p.RelayServerPort, p2.RelayServerPort)
+		compareIntPtrs(p.RelayServerPort, p2.RelayServerPort) &&
+		p.AmneziaWG == p2.AmneziaWG
 }
 
 func (au AutoUpdatePrefs) Pretty() string {

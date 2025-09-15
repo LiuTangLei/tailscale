@@ -125,7 +125,53 @@ func (cfg *Config) handleDeviceLine(k, value mem.RO, valueBytes []byte) error {
 			return err
 		}
 	case k.EqualString("listen_port") || k.EqualString("fwmark"):
-	// ignore
+		// ignore
+	case k.EqualString("jc"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaJC = uint16(v)
+		}
+	case k.EqualString("jmin"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaJMin = uint16(v)
+		}
+	case k.EqualString("jmax"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaJMax = uint16(v)
+		}
+	case k.EqualString("s1"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaS1 = uint16(v)
+		}
+	case k.EqualString("s2"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaS2 = uint16(v)
+		}
+	case k.EqualString("i1"):
+		cfg.AmneziaI1 = string(valueBytes)
+	case k.EqualString("i2"):
+		cfg.AmneziaI2 = string(valueBytes)
+	case k.EqualString("i3"):
+		cfg.AmneziaI3 = string(valueBytes)
+	case k.EqualString("i4"):
+		cfg.AmneziaI4 = string(valueBytes)
+	case k.EqualString("i5"):
+		cfg.AmneziaI5 = string(valueBytes)
+	case k.EqualString("h1"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
+			cfg.AmneziaH1 = uint32(v)
+		}
+	case k.EqualString("h2"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
+			cfg.AmneziaH2 = uint32(v)
+		}
+	case k.EqualString("h3"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
+			cfg.AmneziaH3 = uint32(v)
+		}
+	case k.EqualString("h4"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 32); err == nil {
+			cfg.AmneziaH4 = uint32(v)
+		}
 	default:
 		return fmt.Errorf("unexpected IpcGetOperation key: %q", k.StringCopy())
 	}
