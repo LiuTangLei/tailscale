@@ -72,8 +72,8 @@ github.com/GaijinEntertainment/go-exhaustruct/v3 v3.2.0 h1:sATXp1x6/axKxz2Gjxv8M
 github.com/GaijinEntertainment/go-exhaustruct/v3 v3.2.0/go.mod h1:Nl76DrGNJTA1KJ0LePKBw/vznBX1EHbAZX8mwjR82nI=
 github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9 h1:1ltqoej5GtaWF8jaiA49HwsZD459jqm9YFz9ZtMFpQA=
 github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9/go.mod h1:7uhhqiBaR4CpN0k9rMjOtjpcfGd6DG2m04zQxKnWQ0I=
-github.com/LiuTangLei/wireguard-go v0.0.18 h1:Xj4W3lJc1lf6nylcZEefhIShWAA8hv8L2NHmFPU0lRY=
-github.com/LiuTangLei/wireguard-go v0.0.18/go.mod h1:wLk6KUNzvGd0XxKG7mXAxgKKwBDTPWlR4ddwXnfPMZQ=
+github.com/LiuTangLei/wireguard-go v0.0.19 h1:c68w2onO1eEtwl/hMsjHYOdbTh7uFio7sttY07NDHsE=
+github.com/LiuTangLei/wireguard-go v0.0.19/go.mod h1:B97Kech6uisykxbDUyZd8wD1pGu/VUxnPymfSiznrO8=
 github.com/Masterminds/goutils v1.1.1 h1:5nUrii3FMTL5diU80unEVvNevw1nH4+ZV4DSLVJLSYI=
 github.com/Masterminds/goutils v1.1.1/go.mod h1:8cTjp+g8YejhMuvIA5y2vz3BpJxksy863GQaJW2MFNU=
 github.com/Masterminds/semver v1.5.0 h1:H65muMkzWKEuNDnfl9d70GUjFniHKHRbFPGBuZ3QEww=

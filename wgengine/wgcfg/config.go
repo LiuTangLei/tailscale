@@ -7,6 +7,7 @@ package wgcfg
 import (
 	"net/netip"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logid"
@@ -26,20 +27,22 @@ type Config struct {
 	Peers      []Peer
 
 	// Amnezia-WG parameters (zero/empty values mean standard WireGuard)
-	AmneziaJC   uint16 `json:",omitempty"` // Junk packet count
-	AmneziaJMin uint16 `json:",omitempty"` // Min junk size
-	AmneziaJMax uint16 `json:",omitempty"` // Max junk size
-	AmneziaS1   uint16 `json:",omitempty"` // Init packet prefix length
-	AmneziaS2   uint16 `json:",omitempty"` // Response packet prefix length
-	AmneziaI1   string `json:",omitempty"` // Primary signature packet (CPS format)
-	AmneziaI2   string `json:",omitempty"` // Secondary signature packet (CPS format)
-	AmneziaI3   string `json:",omitempty"` // Tertiary signature packet (CPS format)
-	AmneziaI4   string `json:",omitempty"` // Quaternary signature packet (CPS format)
-	AmneziaI5   string `json:",omitempty"` // Quinary signature packet (CPS format)
-	AmneziaH1   uint32 `json:",omitempty"` // Header field 1
-	AmneziaH2   uint32 `json:",omitempty"` // Header field 2
-	AmneziaH3   uint32 `json:",omitempty"` // Header field 3
-	AmneziaH4   uint32 `json:",omitempty"` // Header field 4
+	AmneziaJC   uint16               `json:",omitempty"` // Junk packet count
+	AmneziaJMin uint16               `json:",omitempty"` // Min junk size
+	AmneziaJMax uint16               `json:",omitempty"` // Max junk size
+	AmneziaS1   uint16               `json:",omitempty"` // Init packet prefix length
+	AmneziaS2   uint16               `json:",omitempty"` // Response packet prefix length
+	AmneziaS3   uint16               `json:",omitempty"` // Cookie packet prefix length
+	AmneziaS4   uint16               `json:",omitempty"` // Transport packet prefix length
+	AmneziaI1   string               `json:",omitempty"` // Primary signature packet (CPS format)
+	AmneziaI2   string               `json:",omitempty"` // Secondary signature packet (CPS format)
+	AmneziaI3   string               `json:",omitempty"` // Tertiary signature packet (CPS format)
+	AmneziaI4   string               `json:",omitempty"` // Quaternary signature packet (CPS format)
+	AmneziaI5   string               `json:",omitempty"` // Quinary signature packet (CPS format)
+	AmneziaH1   ipn.MagicHeaderRange `json:",omitempty"` // Header field 1
+	AmneziaH2   ipn.MagicHeaderRange `json:",omitempty"` // Header field 2
+	AmneziaH3   ipn.MagicHeaderRange `json:",omitempty"` // Header field 3
+	AmneziaH4   ipn.MagicHeaderRange `json:",omitempty"` // Header field 4
 
 	// NetworkLogging enables network logging.
 	// It is disabled if either ID is the zero value.

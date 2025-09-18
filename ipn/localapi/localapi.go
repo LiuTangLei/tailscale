@@ -3099,7 +3099,8 @@ func (h *Handler) requestPeerAmneziaWGConfig(ctx context.Context, discoKey key.D
 
 // isAmneziaWGZero reports whether all fields are zero/empty.
 func isAmneziaWGZero(p ipn.AmneziaWGPrefs) bool {
-	return p.JC == 0 && p.JMin == 0 && p.JMax == 0 && p.S1 == 0 && p.S2 == 0 &&
+	return p.JC == 0 && p.JMin == 0 && p.JMax == 0 && p.S1 == 0 && p.S2 == 0 && p.S3 == 0 && p.S4 == 0 &&
 		p.I1 == "" && p.I2 == "" && p.I3 == "" && p.I4 == "" && p.I5 == "" &&
-		p.H1 == 0 && p.H2 == 0 && p.H3 == 0 && p.H4 == 0
+		(p.H1.Min == 0 && p.H1.Max == 0) && (p.H2.Min == 0 && p.H2.Max == 0) &&
+		(p.H3.Min == 0 && p.H3.Max == 0) && (p.H4.Min == 0 && p.H4.Max == 0)
 }

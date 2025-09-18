@@ -30,7 +30,7 @@ Amnezia-WG is backward compatible with standard WireGuard when all parameters ar
 
 ⚠️  CRITICAL: Certain parameters require network-wide consistency!
 - H1-H4 (header fields): ALL nodes must use IDENTICAL values
-- S1/S2 (prefix lengths): ALL nodes must use IDENTICAL values
+- S1-S4 (prefix lengths): ALL nodes must use IDENTICAL values
 - I1-I5, JC, JMin, JMax: Can differ between nodes
 
 Use 'tailscale amnezia-wg get' on one node and 'tailscale amnezia-wg set' on others to maintain consistency for required parameters.`,
@@ -51,7 +51,7 @@ After applying changes, you will be prompted to restart tailscaled.
 
 ⚠️  Network consistency requirements:
 - H1-H4 (header fields): Must be IDENTICAL on ALL nodes
-- S1/S2 (prefix lengths): Must be IDENTICAL on ALL nodes
+- S1-S4 (prefix lengths): Must be IDENTICAL on ALL nodes
 - I1-I5, JC, JMin, JMax: Can differ between nodes
 
 Examples:
@@ -61,8 +61,11 @@ Examples:
 	# Advanced protocol masking with captured protocol header
 	tailscale amnezia-wg set '{"jc":4,"jmin":64,"jmax":96,"s1":10,"s2":15,"i1":"<b 0xc0000000><c><t>"}'
 
-	# Header field parameters with junk packets
+	# Header field parameters with junk packets (single values)
 	tailscale amnezia-wg set '{"jc":4,"jmin":64,"jmax":96,"h1":3847291638,"h2":1029384756,"h3":2847291047,"h4":3918472658}'
+
+	# Header field parameters with range values
+	tailscale amnezia-wg set '{"jc":4,"jmin":64,"jmax":96,"h1":{"min":100,"max":200},"h2":{"min":300,"max":400}}'
 
 	# Combined header fields and signature parameters
 	tailscale amnezia-wg set '{"jc":4,"h1":3847291638,"h2":1029384756,"i1":"<b 0x12345678><r 16>"}'
@@ -161,8 +164,9 @@ func promptInteractiveConfig(ctx context.Context) (ipn.AmneziaWGPrefs, error) {
 	config.JC = promptUint16WithRange(scanner, "Junk packet count", config.JC, "0-10", "Recommended: 3-6 for basic DPI evasion")
 	config.JMin = promptUint16WithRange(scanner, "Min junk packet size (bytes)", config.JMin, "64-1024", "Recommended: 64-128; must be ≥64 and ≤ JMax")
 	config.JMax = promptUint16WithRange(scanner, "Max junk packet size (bytes)", config.JMax, "64-1024", "Recommended: 128-256; must be ≥ JMin")
-	config.S1 = promptUint16WithRange(scanner, "Init packet prefix length (S1)", config.S1, "0-64", "Recommended: 10-20, breaks standard WG compatibility, MUST match all nodes")
-	config.S2 = promptUint16WithRange(scanner, "Response packet prefix length (S2)", config.S2, "0-64", "Recommended: 10-20, breaks standard WG compatibility, MUST match all nodes")
+
+	// Prefix parameters - with random support
+	promptPrefixParameters(scanner, &config)
 
 	// Header parameters
 	promptHeaderParameters(scanner, &config)
@@ -176,27 +180,146 @@ func promptInteractiveConfig(ctx context.Context) (ipn.AmneziaWGPrefs, error) {
 // printInteractiveConfigHeader prints the header information for interactive configuration.
 func printInteractiveConfigHeader() {
 	fmt.Println("Configure Amnezia-WG parameters (press Enter to keep current value, 0 or empty to disable):")
-	fmt.Println("⚠️  H1-H4 and S1/S2 must be IDENTICAL on all nodes. I1-I5, JC, JMin, JMax can differ.")
+	fmt.Println("⚠️  H1-H4 and S1-S4 must be IDENTICAL on all nodes. I1-I5, JC, JMin, JMax can differ.")
 	fmt.Println("Tip: For maximum compatibility, use junk packets only. For advanced DPI evasion, add CPS signatures.")
 }
 
 // promptHeaderParameters prompts for header field parameters (H1-H4).
 func promptHeaderParameters(scanner *bufio.Scanner, config *ipn.AmneziaWGPrefs) {
 	printSectionHeader("Header Field Parameters (h1-h4)")
-	fmt.Println("These parameters provide basic protocol obfuscation using 32-bit random values.")
-	fmt.Println("💡 Tip: Enter 'random' to auto-generate a 32-bit random number")
+	fmt.Println("These parameters provide basic protocol obfuscation using 32-bit random values or ranges.")
+	fmt.Println("💡 Tip: Enter 'random' at any prompt to auto-generate all H1-H4 min/max values")
 	fmt.Println("⚠️  If ANY node sets these values, ALL nodes in the network must use IDENTICAL values!")
-	fmt.Println("👉  All-or-none: If H1 is 0 (disabled), H2-H4 will also be disabled & skipped.")
+	fmt.Println("👉  All-or-none: If H1-min is 0 (disabled), all header fields will be disabled & skipped.")
 
-	config.H1 = promptUint32WithHint(scanner, "Header field 1 (H1)", config.H1, "32-bit random number (0-4294967295); enter 0 to disable all header fields")
-	if config.H1 == 0 {
-		config.H2, config.H3, config.H4 = 0, 0, 0
-		fmt.Println("H1 disabled -> Skipping H2-H4 (all header fields disabled).")
-	} else {
-		for i, field := range []*uint32{&config.H2, &config.H3, &config.H4} {
-			*field = promptUint32WithHint(scanner, fmt.Sprintf("Header field %d (H%d)", i+2, i+2), *field, "32-bit random number (0-4294967295)")
-		}
+	// H1 Min
+	h1Min := promptUint32ForHeaderField(scanner, "Header field 1 Min (H1-min)", config.H1.Min, "32-bit random number (0-4294967295); enter 0 to disable all header fields")
+	if h1Min == 0 {
+		config.H1, config.H2, config.H3, config.H4 = ipn.MagicHeaderRange{}, ipn.MagicHeaderRange{}, ipn.MagicHeaderRange{}, ipn.MagicHeaderRange{}
+		fmt.Println("H1-min disabled -> Skipping all header fields (all disabled).")
+		return
 	}
+
+	// Check if user entered "random" and generate all values
+	if h1Min == 0xFFFFFFFF { // Special marker for "random" input
+		generateAllRandomHeaderFields(config)
+		return
+	}
+
+	// H1 Max
+	h1Max := promptUint32ForHeaderField(scanner, "Header field 1 Max (H1-max)", config.H1.Max, "32-bit random number (>= H1-min)")
+	if h1Max == 0xFFFFFFFF { // Special marker for "random" input
+		generateAllRandomHeaderFields(config)
+		return
+	}
+	if h1Max < h1Min {
+		h1Max = h1Min
+		fmt.Printf("H1-max adjusted to H1-min: %d\n", h1Max)
+	}
+	config.H1 = ipn.MagicHeaderRange{Min: h1Min, Max: h1Max}
+
+	// H2 Min
+	h2Min := promptUint32ForHeaderField(scanner, "Header field 2 Min (H2-min)", config.H2.Min, "32-bit random number (0-4294967295)")
+	if h2Min == 0xFFFFFFFF { // Special marker for "random" input
+		generateAllRandomHeaderFields(config)
+		return
+	}
+
+	// H2 Max
+	h2Max := promptUint32ForHeaderField(scanner, "Header field 2 Max (H2-max)", config.H2.Max, "32-bit random number (>= H2-min)")
+	if h2Max == 0xFFFFFFFF { // Special marker for "random" input
+		generateAllRandomHeaderFields(config)
+		return
+	}
+	if h2Max < h2Min {
+		h2Max = h2Min
+		fmt.Printf("H2-max adjusted to H2-min: %d\n", h2Max)
+	}
+	config.H2 = ipn.MagicHeaderRange{Min: h2Min, Max: h2Max}
+
+	// H3 Min
+	h3Min := promptUint32ForHeaderField(scanner, "Header field 3 Min (H3-min)", config.H3.Min, "32-bit random number (0-4294967295)")
+	if h3Min == 0xFFFFFFFF { // Special marker for "random" input
+		generateAllRandomHeaderFields(config)
+		return
+	}
+
+	// H3 Max
+	h3Max := promptUint32ForHeaderField(scanner, "Header field 3 Max (H3-max)", config.H3.Max, "32-bit random number (>= H3-min)")
+	if h3Max == 0xFFFFFFFF { // Special marker for "random" input
+		generateAllRandomHeaderFields(config)
+		return
+	}
+	if h3Max < h3Min {
+		h3Max = h3Min
+		fmt.Printf("H3-max adjusted to H3-min: %d\n", h3Max)
+	}
+	config.H3 = ipn.MagicHeaderRange{Min: h3Min, Max: h3Max}
+
+	// H4 Min
+	h4Min := promptUint32ForHeaderField(scanner, "Header field 4 Min (H4-min)", config.H4.Min, "32-bit random number (0-4294967295)")
+	if h4Min == 0xFFFFFFFF { // Special marker for "random" input
+		generateAllRandomHeaderFields(config)
+		return
+	}
+
+	// H4 Max
+	h4Max := promptUint32ForHeaderField(scanner, "Header field 4 Max (H4-max)", config.H4.Max, "32-bit random number (>= H4-min)")
+	if h4Max == 0xFFFFFFFF { // Special marker for "random" input
+		generateAllRandomHeaderFields(config)
+		return
+	}
+	if h4Max < h4Min {
+		h4Max = h4Min
+		fmt.Printf("H4-max adjusted to H4-min: %d\n", h4Max)
+	}
+	config.H4 = ipn.MagicHeaderRange{Min: h4Min, Max: h4Max}
+}
+
+// promptPrefixParameters prompts for prefix parameters (S1-S4) with random support.
+func promptPrefixParameters(scanner *bufio.Scanner, config *ipn.AmneziaWGPrefs) {
+	printSectionHeader("Prefix Parameters (s1-s4)")
+	fmt.Println("These parameters add pseudorandom prefixes to different packet types.")
+	fmt.Println("💡 Tip: Enter 'random' at any prompt to auto-generate all S1-S4 values")
+	fmt.Println("⚠️  If ANY node sets these values, ALL nodes in the network must use IDENTICAL values!")
+	fmt.Println("👉  All-or-none: If S1 is 0 (disabled), all prefix fields will be disabled & skipped.")
+
+	// S1
+	s1 := promptUint16ForPrefixField(scanner, "Init packet prefix length (S1)", config.S1, "0-64, recommended: 1-15, breaks standard WG compatibility, MUST match all nodes")
+	if s1 == 0xFFFF { // Special marker for "random" input
+		generateAllRandomPrefixFields(config)
+		return
+	}
+	if s1 == 0 {
+		config.S1, config.S2, config.S3, config.S4 = 0, 0, 0, 0
+		fmt.Println("S1 disabled -> Skipping all prefix fields (all disabled).")
+		return
+	}
+	config.S1 = s1
+
+	// S2
+	s2 := promptUint16ForPrefixField(scanner, "Response packet prefix length (S2)", config.S2, "0-64, recommended: 1-15, breaks standard WG compatibility, MUST match all nodes")
+	if s2 == 0xFFFF { // Special marker for "random" input
+		generateAllRandomPrefixFields(config)
+		return
+	}
+	config.S2 = s2
+
+	// S3
+	s3 := promptUint16ForPrefixField(scanner, "Cookie packet prefix length (S3)", config.S3, "0-64, recommended: 1-15, MUST match all nodes")
+	if s3 == 0xFFFF { // Special marker for "random" input
+		generateAllRandomPrefixFields(config)
+		return
+	}
+	config.S3 = s3
+
+	// S4
+	s4 := promptUint16ForPrefixField(scanner, "Transport packet prefix length (S4)", config.S4, "0-64, recommended: 1-15, MUST match all nodes")
+	if s4 == 0xFFFF { // Special marker for "random" input
+		generateAllRandomPrefixFields(config)
+		return
+	}
+	config.S4 = s4
 }
 
 // promptCPSParameters prompts for Custom Protocol Signature parameters (I1-I5).
@@ -293,6 +416,8 @@ func printAmneziaWGConfig(config ipn.AmneziaWGPrefs) {
 	fmt.Printf("  JMax (max junk size): %d\n", config.JMax)
 	fmt.Printf("  S1 (init packet prefix length): %d\n", config.S1)
 	fmt.Printf("  S2 (response packet prefix length): %d\n", config.S2)
+	fmt.Printf("  S3 (cookie packet prefix length): %d\n", config.S3)
+	fmt.Printf("  S4 (transport packet prefix length): %d\n", config.S4)
 
 	// Signature parameters
 	fmt.Printf("  I1 (primary signature packet): %s\n", config.I1)
@@ -302,18 +427,35 @@ func printAmneziaWGConfig(config ipn.AmneziaWGPrefs) {
 	fmt.Printf("  I5 (quinary signature packet): %s\n", config.I5)
 
 	// Header parameters
-	fmt.Printf("  H1 (header field 1): %d\n", config.H1)
-	fmt.Printf("  H2 (header field 2): %d\n", config.H2)
-	fmt.Printf("  H3 (header field 3): %d\n", config.H3)
-	fmt.Printf("  H4 (header field 4): %d\n", config.H4)
+	if config.H1.Min == config.H1.Max {
+		fmt.Printf("  H1 (header field 1): %d\n", config.H1.Min)
+	} else {
+		fmt.Printf("  H1 (header field 1): %d-%d\n", config.H1.Min, config.H1.Max)
+	}
+	if config.H2.Min == config.H2.Max {
+		fmt.Printf("  H2 (header field 2): %d\n", config.H2.Min)
+	} else {
+		fmt.Printf("  H2 (header field 2): %d-%d\n", config.H2.Min, config.H2.Max)
+	}
+	if config.H3.Min == config.H3.Max {
+		fmt.Printf("  H3 (header field 3): %d\n", config.H3.Min)
+	} else {
+		fmt.Printf("  H3 (header field 3): %d-%d\n", config.H3.Min, config.H3.Max)
+	}
+	if config.H4.Min == config.H4.Max {
+		fmt.Printf("  H4 (header field 4): %d\n", config.H4.Min)
+	} else {
+		fmt.Printf("  H4 (header field 4): %d-%d\n", config.H4.Min, config.H4.Max)
+	}
 }
 
 // isConfigZero checks if the Amnezia-WG configuration is all zero values.
 func isConfigZero(config ipn.AmneziaWGPrefs) bool {
 	return config.JC == 0 && config.JMin == 0 && config.JMax == 0 &&
-		config.S1 == 0 && config.S2 == 0 &&
+		config.S1 == 0 && config.S2 == 0 && config.S3 == 0 && config.S4 == 0 &&
 		config.I1 == "" && config.I2 == "" && config.I3 == "" && config.I4 == "" && config.I5 == "" &&
-		config.H1 == 0 && config.H2 == 0 && config.H3 == 0 && config.H4 == 0
+		(config.H1.Min == 0 && config.H1.Max == 0) && (config.H2.Min == 0 && config.H2.Max == 0) &&
+		(config.H3.Min == 0 && config.H3.Max == 0) && (config.H4.Min == 0 && config.H4.Max == 0)
 }
 
 // formatConfigAsJSON formats the configuration as a compact JSON string.
@@ -412,6 +554,243 @@ func promptUint32WithHint(scanner *bufio.Scanner, prompt string, current uint32,
 	return current
 }
 
+func promptMagicHeaderRangeWithHint(scanner *bufio.Scanner, prompt string, current ipn.MagicHeaderRange, hint string) ipn.MagicHeaderRange {
+	var displayValue string
+	if current.Min == 0 && current.Max == 0 {
+		displayValue = "0 (disabled)"
+	} else if current.Min == current.Max {
+		displayValue = fmt.Sprintf("%d", current.Min)
+	} else {
+		displayValue = fmt.Sprintf("%d-%d", current.Min, current.Max)
+	}
+
+	fmt.Printf("%s [%s]: ", prompt, displayValue)
+	if hint != "" {
+		fmt.Printf("\n  💡 %s\n  > ", hint)
+	}
+
+	if !scanner.Scan() {
+		return current
+	}
+	text := strings.TrimSpace(scanner.Text())
+	if text == "" {
+		return current
+	}
+
+	// Check for special keywords
+	if strings.ToLower(text) == "random" || strings.ToLower(text) == "rand" {
+		// Generate two random 32-bit numbers for a range
+		rand1 := uint32(time.Now().UnixNano() & 0xFFFFFFFF)
+		// Use a different approach for second random to ensure different values
+		rand2 := uint32(((time.Now().UnixNano() >> 16) ^ 0x5A5A5A5A) & 0xFFFFFFFF)
+
+		// Ensure min <= max
+		var min, max uint32
+		if rand1 <= rand2 {
+			min, max = rand1, rand2
+		} else {
+			min, max = rand2, rand1
+		}
+
+		// If by chance they're the same, adjust max
+		if min == max && max < 0xFFFFFFFF {
+			max++
+		} else if min == max && max == 0xFFFFFFFF {
+			min--
+		}
+
+		fmt.Printf("Generated random range: %d-%d\n", min, max)
+		return ipn.MagicHeaderRange{Min: min, Max: max}
+	}
+
+	if strings.ToLower(text) == "random-single" {
+		// Generate a single random 32-bit number
+		randomValue := uint32(time.Now().UnixNano() & 0xFFFFFFFF)
+		fmt.Printf("Generated random single value: %d\n", randomValue)
+		return ipn.MagicHeaderRange{Min: randomValue, Max: randomValue}
+	}
+
+	// Parse range format "min-max" or single value
+	parts := strings.SplitN(text, "-", 2)
+	var min, max uint64
+	var err error
+
+	if len(parts) == 2 {
+		min, err = strconv.ParseUint(parts[0], 10, 32)
+		if err != nil {
+			fmt.Printf("Invalid min value '%s', keeping current: %s\n", parts[0], displayValue)
+			return current
+		}
+		max, err = strconv.ParseUint(parts[1], 10, 32)
+		if err != nil {
+			fmt.Printf("Invalid max value '%s', keeping current: %s\n", parts[1], displayValue)
+			return current
+		}
+		if min > max {
+			fmt.Printf("Min (%d) cannot be greater than max (%d), keeping current: %s\n", min, max, displayValue)
+			return current
+		}
+	} else {
+		min, err = strconv.ParseUint(text, 10, 32)
+		if err != nil {
+			fmt.Printf("Invalid value '%s', keeping current: %s\n", text, displayValue)
+			fmt.Println("Tip: Enter 'random' for random range, 'random-single' for single value, or use range format like '100-200'")
+			return current
+		}
+		max = min
+	}
+
+	return ipn.MagicHeaderRange{Min: uint32(min), Max: uint32(max)}
+}
+
+// promptUint32ForHeaderField prompts for a single uint32 header field value with "random" support.
+// Returns 0xFFFFFFFF as a special marker when user enters "random".
+func promptUint32ForHeaderField(scanner *bufio.Scanner, prompt string, current uint32, hint string) uint32 {
+	displayValue := fmt.Sprintf("%d", current)
+	if current == 0 {
+		displayValue = "0 (disabled)"
+	}
+
+	fmt.Printf("%s [%s]: ", prompt, displayValue)
+	if hint != "" {
+		fmt.Printf("\n  💡 %s\n  > ", hint)
+	}
+
+	if !scanner.Scan() {
+		return current
+	}
+	text := strings.TrimSpace(scanner.Text())
+	if text == "" {
+		return current
+	}
+
+	// Check for special keywords
+	if strings.ToLower(text) == "random" || strings.ToLower(text) == "rand" {
+		return 0xFFFFFFFF // Special marker for "random" input
+	}
+
+	if val, err := strconv.ParseUint(text, 10, 32); err == nil {
+		return uint32(val)
+	}
+
+	fmt.Printf("Invalid value '%s', keeping current: %d\n", text, current)
+	fmt.Println("Tip: Enter 'random' to auto-generate all H1-H4 min/max values")
+	return current
+}
+
+// generateAllRandomHeaderFields generates random min/max values for all H1-H4 header fields.
+// Ensures all ranges are non-overlapping as required by WireGuard-go.
+func generateAllRandomHeaderFields(config *ipn.AmneziaWGPrefs) {
+	fmt.Println("Generating random values for all H1-H4 header fields...")
+
+	// Total range: 5 to 0xFFFFFFFF (avoiding 0-4 for compatibility)
+	// Divide into 4 non-overlapping segments to prevent range conflicts
+	const totalRange = uint64(0xFFFFFFFF - 4) // 4294967291
+	const segmentSize = totalRange / 4        // ~1073741822 per segment
+	const baseValue = uint64(5)
+
+	// Use better randomness with multiple seeds
+	seed := time.Now().UnixNano()
+
+	// Segment 1: H1 range [5, ~1073741827]
+	h1Start := baseValue
+	h1End := h1Start + segmentSize
+	h1Min := uint32(h1Start + uint64((seed^0x12345678)%int64(segmentSize/2)))
+	h1Max := h1Min + uint32((seed^0x87654321)%(int64(h1End)-int64(h1Min)))
+
+	// Segment 2: H2 range [~1073741828, ~2147483649]
+	h2Start := h1End + 1
+	h2End := h2Start + segmentSize
+	h2Min := uint32(h2Start + uint64((seed^0xABCDEF00)%int64(segmentSize/2)))
+	h2Max := h2Min + uint32((seed^0x00FEDCBA)%(int64(h2End)-int64(h2Min)))
+
+	// Segment 3: H3 range [~2147483650, ~3221225471]
+	h3Start := h2End + 1
+	h3End := h3Start + segmentSize
+	h3Min := uint32(h3Start + uint64((seed^0x13579BDF)%int64(segmentSize/2)))
+	h3Max := h3Min + uint32((seed^0xFDB97531)%(int64(h3End)-int64(h3Min)))
+
+	// Segment 4: H4 range [~3221225472, 0xFFFFFFFF]
+	h4Start := h3End + 1
+	h4End := baseValue + totalRange
+	h4Min := uint32(h4Start + uint64((seed^0x2468ACE0)%int64(segmentSize/2)))
+	h4Max := h4Min + uint32((seed^0x0ECA8642)%(int64(h4End)-int64(h4Min)))
+
+	config.H1 = ipn.MagicHeaderRange{Min: h1Min, Max: h1Max}
+	config.H2 = ipn.MagicHeaderRange{Min: h2Min, Max: h2Max}
+	config.H3 = ipn.MagicHeaderRange{Min: h3Min, Max: h3Max}
+	config.H4 = ipn.MagicHeaderRange{Min: h4Min, Max: h4Max}
+
+	fmt.Printf("Generated values (non-overlapping ranges):\n")
+	fmt.Printf("  H1: %d-%d (segment 1)\n", h1Min, h1Max)
+	fmt.Printf("  H2: %d-%d (segment 2)\n", h2Min, h2Max)
+	fmt.Printf("  H3: %d-%d (segment 3)\n", h3Min, h3Max)
+	fmt.Printf("  H4: %d-%d (segment 4)\n", h4Min, h4Max)
+}
+
+// promptUint16ForPrefixField prompts for a single uint16 prefix field value with "random" support.
+// Returns 0xFFFF as a special marker when user enters "random".
+func promptUint16ForPrefixField(scanner *bufio.Scanner, prompt string, current uint16, hint string) uint16 {
+	displayValue := fmt.Sprintf("%d", current)
+	if current == 0 {
+		displayValue = "0 (disabled)"
+	}
+
+	fmt.Printf("%s [%s]: ", prompt, displayValue)
+	if hint != "" {
+		fmt.Printf("\n  💡 %s\n  > ", hint)
+	}
+
+	if !scanner.Scan() {
+		return current
+	}
+	text := strings.TrimSpace(scanner.Text())
+	if text == "" {
+		return current
+	}
+
+	// Check for special keywords
+	if strings.ToLower(text) == "random" || strings.ToLower(text) == "rand" {
+		return 0xFFFF // Special marker for "random" input
+	}
+
+	if val, err := strconv.ParseUint(text, 10, 16); err == nil {
+		result := uint16(val)
+		if result > 64 {
+			fmt.Printf("Warning: Value %d is outside recommended range (0-64), but continuing...\n", result)
+		}
+		return result
+	}
+
+	fmt.Printf("Invalid value '%s', keeping current: %d\n", text, current)
+	fmt.Println("Tip: Enter 'random' to auto-generate all S1-S4 values")
+	return current
+}
+
+// generateAllRandomPrefixFields generates random values for all S1-S4 prefix fields.
+func generateAllRandomPrefixFields(config *ipn.AmneziaWGPrefs) {
+	fmt.Println("Generating random values for all S1-S4 prefix fields...")
+
+	// Generate random values in the range 1-15 for all S1-S4
+	baseTime := time.Now().UnixNano()
+
+	s1 := uint16((baseTime % 15) + 1)         // 1-15
+	s2 := uint16(((baseTime >> 8) % 15) + 1)  // 1-15
+	s3 := uint16(((baseTime >> 16) % 15) + 1) // 1-15
+	s4 := uint16(((baseTime >> 24) % 15) + 1) // 1-15
+
+	config.S1 = s1
+	config.S2 = s2
+	config.S3 = s3
+	config.S4 = s4
+
+	fmt.Printf("Generated values:\n")
+	fmt.Printf("  S1: %d\n", s1)
+	fmt.Printf("  S2: %d\n", s2)
+	fmt.Printf("  S3: %d\n", s3)
+	fmt.Printf("  S4: %d\n", s4)
+}
+
 func promptString(scanner *bufio.Scanner, prompt string, current string) string {
 	return promptStringWithExample(scanner, prompt, current, "")
 }
@@ -499,10 +878,11 @@ func runAmneziaWGValidate(ctx context.Context, args []string) error {
 }
 
 func printValidationSummary(config ipn.AmneziaWGPrefs) {
-	hasHeader := config.H1 != 0 || config.H2 != 0 || config.H3 != 0 || config.H4 != 0
+	hasHeader := (config.H1.Min != 0 || config.H1.Max != 0) || (config.H2.Min != 0 || config.H2.Max != 0) ||
+		(config.H3.Min != 0 || config.H3.Max != 0) || (config.H4.Min != 0 || config.H4.Max != 0)
 	hasSignature := config.I1 != "" || config.I2 != "" || config.I3 != "" || config.I4 != "" || config.I5 != ""
 	hasJunk := config.JC != 0 || config.JMin != 0 || config.JMax != 0
-	hasPrefix := config.S1 != 0 || config.S2 != 0
+	hasPrefix := config.S1 != 0 || config.S2 != 0 || config.S3 != 0 || config.S4 != 0
 
 	fmt.Printf("⚠️  Status: Amnezia-WG mode enabled\n📊 Parameter Summary:\n")
 	fmt.Printf("   - Junk packets: %s\n", formatEnabled(hasJunk))
@@ -521,12 +901,12 @@ func printValidationSummary(config ipn.AmneziaWGPrefs) {
 		fmt.Printf("⚠️  Mixed parameter types: Both header (H1-H4) and signature (I1-I5) parameters detected\n💡 Recommendation: Use either header OR signature parameters, not both\n")
 	}
 
-	if hasHeader && config.H1 > 0 && config.H1 < 1000000 {
+	if hasHeader && (config.H1.Min > 0 || config.H1.Max > 0) && (config.H1.Min < 1000000 && config.H1.Max < 1000000) {
 		fmt.Printf("💡 Note: H1-H4 should use 32-bit random numbers for better obfuscation\n   Consider using larger random values (e.g., 3847291638)\n")
 	}
 
-	fmt.Printf("\n🚨 CRITICAL NETWORK REQUIREMENT:\n   These parameters MUST be IDENTICAL on ALL nodes: H1-H4, S1/S2\n   These parameters CAN differ between nodes: I1-I5, JC/JMin/JMax\n\n")
-	fmt.Printf("📋 Required Actions for H1-H4 and S1/S2:\n   1. Get values: tailscale amnezia-wg get\n   2. Apply on all nodes: tailscale amnezia-wg set\n   3. Restart tailscaled on ALL nodes\n   4. Test connectivity\n\n")
+	fmt.Printf("\n🚨 CRITICAL NETWORK REQUIREMENT:\n   These parameters MUST be IDENTICAL on ALL nodes: H1-H4, S1-S4\n   These parameters CAN differ between nodes: I1-I5, JC/JMin/JMax\n\n")
+	fmt.Printf("📋 Required Actions for H1-H4 and S1-S4:\n   1. Get values: tailscale amnezia-wg get\n   2. Apply on all nodes: tailscale amnezia-wg set\n   3. Restart tailscaled on ALL nodes\n   4. Test connectivity\n\n")
 }
 
 func printValidationWarnings(config ipn.AmneziaWGPrefs) {
@@ -737,17 +1117,39 @@ func printCompactAWGConfig(config ipn.AmneziaWGPrefs) {
 	if config.S2 > 0 {
 		parts = append(parts, fmt.Sprintf("S2=%d", config.S2))
 	}
-	if config.H1 > 0 {
-		parts = append(parts, fmt.Sprintf("H1=%d", config.H1))
+	if config.S3 > 0 {
+		parts = append(parts, fmt.Sprintf("S3=%d", config.S3))
 	}
-	if config.H2 > 0 {
-		parts = append(parts, fmt.Sprintf("H2=%d", config.H2))
+	if config.S4 > 0 {
+		parts = append(parts, fmt.Sprintf("S4=%d", config.S4))
 	}
-	if config.H3 > 0 {
-		parts = append(parts, fmt.Sprintf("H3=%d", config.H3))
+	if config.H1.Min > 0 || config.H1.Max > 0 {
+		if config.H1.Min == config.H1.Max {
+			parts = append(parts, fmt.Sprintf("H1=%d", config.H1.Min))
+		} else {
+			parts = append(parts, fmt.Sprintf("H1=%d-%d", config.H1.Min, config.H1.Max))
+		}
 	}
-	if config.H4 > 0 {
-		parts = append(parts, fmt.Sprintf("H4=%d", config.H4))
+	if config.H2.Min > 0 || config.H2.Max > 0 {
+		if config.H2.Min == config.H2.Max {
+			parts = append(parts, fmt.Sprintf("H2=%d", config.H2.Min))
+		} else {
+			parts = append(parts, fmt.Sprintf("H2=%d-%d", config.H2.Min, config.H2.Max))
+		}
+	}
+	if config.H3.Min > 0 || config.H3.Max > 0 {
+		if config.H3.Min == config.H3.Max {
+			parts = append(parts, fmt.Sprintf("H3=%d", config.H3.Min))
+		} else {
+			parts = append(parts, fmt.Sprintf("H3=%d-%d", config.H3.Min, config.H3.Max))
+		}
+	}
+	if config.H4.Min > 0 || config.H4.Max > 0 {
+		if config.H4.Min == config.H4.Max {
+			parts = append(parts, fmt.Sprintf("H4=%d", config.H4.Min))
+		} else {
+			parts = append(parts, fmt.Sprintf("H4=%d-%d", config.H4.Min, config.H4.Max))
+		}
 	}
 	if config.I1 != "" {
 		parts = append(parts, fmt.Sprintf("I1=%s", truncateString(config.I1, 20)))

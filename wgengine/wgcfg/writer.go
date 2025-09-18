@@ -10,19 +10,22 @@ import (
 	"strconv"
 
 	"tailscale.com/envknob"
+	"tailscale.com/ipn"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
 
 var (
 	// Amnezia-WG 1.5 environment knobs
-	// JC, JMin, JMax, S1, S2 default to 0 for standard WireGuard compatibility
+	// JC, JMin, JMax, S1, S2, S3, S4 default to 0 for standard WireGuard compatibility
 	// I1-I5 are Custom Protocol Signature (CPS) packets for protocol masking
 	amneziaJC   = envknob.RegisterInt("TS_AMNEZIA_JC")
 	amneziaJMin = envknob.RegisterInt("TS_AMNEZIA_JMIN")
 	amneziaJMax = envknob.RegisterInt("TS_AMNEZIA_JMAX")
 	amneziaS1   = envknob.RegisterInt("TS_AMNEZIA_S1")
 	amneziaS2   = envknob.RegisterInt("TS_AMNEZIA_S2")
+	amneziaS3   = envknob.RegisterInt("TS_AMNEZIA_S3")
+	amneziaS4   = envknob.RegisterInt("TS_AMNEZIA_S4")
 	amneziaI1   = envknob.RegisterString("TS_AMNEZIA_I1")
 	amneziaI2   = envknob.RegisterString("TS_AMNEZIA_I2")
 	amneziaI3   = envknob.RegisterString("TS_AMNEZIA_I3")
@@ -55,8 +58,12 @@ func (cfg *Config) ToUAPI(logf logger.Logf, w io.Writer, prev *Config) error {
 	setUint16 := func(key string, value uint16) {
 		set(key, strconv.FormatUint(uint64(value), 10))
 	}
-	setUint32 := func(key string, value uint32) {
-		set(key, strconv.FormatUint(uint64(value), 10))
+	setMagicHeaderRange := func(key string, value ipn.MagicHeaderRange) {
+		if value.Min == value.Max {
+			set(key, strconv.FormatUint(uint64(value.Min), 10))
+		} else {
+			set(key, fmt.Sprintf("%d-%d", value.Min, value.Max))
+		}
 	}
 	setPeer := func(peer Peer) {
 		set("public_key", peer.PublicKey.UntypedHexString())
@@ -107,6 +114,22 @@ func (cfg *Config) ToUAPI(logf logger.Logf, w io.Writer, prev *Config) error {
 			setUint16("s2", s2)
 		}
 
+		s3 := cfg.AmneziaS3
+		if s3 == 0 {
+			s3 = uint16(amneziaS3())
+		}
+		if s3 > 0 {
+			setUint16("s3", s3)
+		}
+
+		s4 := cfg.AmneziaS4
+		if s4 == 0 {
+			s4 = uint16(amneziaS4())
+		}
+		if s4 > 0 {
+			setUint16("s4", s4)
+		}
+
 		// Custom Protocol Signature (CPS) packets for AmneziaWG 1.5
 		// If I1 is missing, the entire signature chain (I2-I5) is skipped for 1.0 compatibility
 		i1 := cfg.AmneziaI1
@@ -151,35 +174,47 @@ func (cfg *Config) ToUAPI(logf logger.Logf, w io.Writer, prev *Config) error {
 
 		// Header field parameters (H1-H4)
 		h1 := cfg.AmneziaH1
-		if h1 == 0 {
-			h1 = uint32(amneziaH1())
+		if h1.Min == 0 && h1.Max == 0 {
+			h1Val := uint32(amneziaH1())
+			if h1Val > 0 {
+				h1 = ipn.MagicHeaderRange{Min: h1Val, Max: h1Val}
+			}
 		}
-		if h1 > 0 {
-			setUint32("h1", h1)
+		if h1.Min > 0 || h1.Max > 0 {
+			setMagicHeaderRange("h1", h1)
 		}
 
 		h2 := cfg.AmneziaH2
-		if h2 == 0 {
-			h2 = uint32(amneziaH2())
+		if h2.Min == 0 && h2.Max == 0 {
+			h2Val := uint32(amneziaH2())
+			if h2Val > 0 {
+				h2 = ipn.MagicHeaderRange{Min: h2Val, Max: h2Val}
+			}
 		}
-		if h2 > 0 {
-			setUint32("h2", h2)
+		if h2.Min > 0 || h2.Max > 0 {
+			setMagicHeaderRange("h2", h2)
 		}
 
 		h3 := cfg.AmneziaH3
-		if h3 == 0 {
-			h3 = uint32(amneziaH3())
+		if h3.Min == 0 && h3.Max == 0 {
+			h3Val := uint32(amneziaH3())
+			if h3Val > 0 {
+				h3 = ipn.MagicHeaderRange{Min: h3Val, Max: h3Val}
+			}
 		}
-		if h3 > 0 {
-			setUint32("h3", h3)
+		if h3.Min > 0 || h3.Max > 0 {
+			setMagicHeaderRange("h3", h3)
 		}
 
 		h4 := cfg.AmneziaH4
-		if h4 == 0 {
-			h4 = uint32(amneziaH4())
+		if h4.Min == 0 && h4.Max == 0 {
+			h4Val := uint32(amneziaH4())
+			if h4Val > 0 {
+				h4 = ipn.MagicHeaderRange{Min: h4Val, Max: h4Val}
+			}
 		}
-		if h4 > 0 {
-			setUint32("h4", h4)
+		if h4.Min > 0 || h4.Max > 0 {
+			setMagicHeaderRange("h4", h4)
 		}
 	}
 

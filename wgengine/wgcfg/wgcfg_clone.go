@@ -8,6 +8,7 @@ package wgcfg
 import (
 	"net/netip"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logid"
@@ -47,15 +48,17 @@ var _ConfigCloneNeedsRegeneration = Config(struct {
 	AmneziaJMax    uint16
 	AmneziaS1      uint16
 	AmneziaS2      uint16
+	AmneziaS3      uint16
+	AmneziaS4      uint16
 	AmneziaI1      string
 	AmneziaI2      string
 	AmneziaI3      string
 	AmneziaI4      string
 	AmneziaI5      string
-	AmneziaH1      uint32
-	AmneziaH2      uint32
-	AmneziaH3      uint32
-	AmneziaH4      uint32
+	AmneziaH1      ipn.MagicHeaderRange
+	AmneziaH2      ipn.MagicHeaderRange
+	AmneziaH3      ipn.MagicHeaderRange
+	AmneziaH4      ipn.MagicHeaderRange
 	NetworkLogging struct {
 		NodeID             logid.PrivateID
 		DomainID           logid.PrivateID

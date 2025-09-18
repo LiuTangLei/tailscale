@@ -457,8 +457,9 @@ func (v PrefsView) AllowSingleHosts() marshalAsTrueInJSON { return v.ж.AllowSin
 //	We can maybe do that once we're sure which module should persist
 //	it (backend or frontend?)
 func (v PrefsView) Persist() persist.PersistView { return v.ж.Persist.View() }
-func (v PrefsView) Persist() persist.PersistView          { return v.ж.Persist.View() }
-func (v PrefsView) AmneziaWG() AmneziaWGPrefs             { return v.ж.AmneziaWG }
+
+// AmneziaWG contains Amnezia-WG specific configuration
+func (v PrefsView) AmneziaWG() AmneziaWGPrefs { return v.ж.AmneziaWG }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _PrefsViewNeedsRegeneration = Prefs(struct {
