@@ -160,10 +160,34 @@ func promptInteractiveConfig(ctx context.Context) (ipn.AmneziaWGPrefs, error) {
 	printInteractiveConfigHeader()
 	scanner := bufio.NewScanner(os.Stdin)
 
+	// Ask if user wants random generation
+	fmt.Println("\n🎲 Quick Setup Option:")
+	fmt.Print("Do you want to generate random AWG parameters automatically? [Y/n]: ")
+	if scanner.Scan() {
+		response := strings.TrimSpace(strings.ToLower(scanner.Text()))
+		if response == "" || response == "y" || response == "yes" {
+			config = generateRandomAWGConfig()
+			fmt.Println("\n✅ Random configuration generated successfully!")
+			fmt.Println("💡 You can still customize I1-I5 signature parameters below if needed.\n")
+			// Only ask for I1-I5 parameters in random mode
+			promptCPSParameters(scanner, &config)
+			return config, nil
+		}
+	}
+
+	fmt.Println("\n📝 Manual Configuration Mode:")
 	// Basic parameters
 	config.JC = promptUint16WithRange(scanner, "Junk packet count", config.JC, "0-10", "Recommended: 3-6 for basic DPI evasion")
-	config.JMin = promptUint16WithRange(scanner, "Min junk packet size (bytes)", config.JMin, "64-1024", "Recommended: 64-128; must be ≥64 and ≤ JMax")
-	config.JMax = promptUint16WithRange(scanner, "Max junk packet size (bytes)", config.JMax, "64-1024", "Recommended: 128-256; must be ≥ JMin")
+	
+	// Only prompt for JMin/JMax if JC > 0
+	if config.JC > 0 {
+		config.JMin = promptUint16WithRange(scanner, "Min junk packet size (bytes)", config.JMin, "64-1024", "Recommended: 64-128; must be ≥64 and ≤ JMax")
+		config.JMax = promptUint16WithRange(scanner, "Max junk packet size (bytes)", config.JMax, "64-1024", "Recommended: 128-256; must be ≥ JMin")
+	} else {
+		config.JMin = 0
+		config.JMax = 0
+		fmt.Println("📌 JC=0: Skipping JMin/JMax (no junk packets)")
+	}
 
 	// Prefix parameters - with random support
 	promptPrefixParameters(scanner, &config)
@@ -181,7 +205,8 @@ func promptInteractiveConfig(ctx context.Context) (ipn.AmneziaWGPrefs, error) {
 func printInteractiveConfigHeader() {
 	fmt.Println("Configure Amnezia-WG parameters (press Enter to keep current value, 0 or empty to disable):")
 	fmt.Println("⚠️  H1-H4 and S1-S4 must be IDENTICAL on all nodes. I1-I5, JC, JMin, JMax can differ.")
-	fmt.Println("Tip: For maximum compatibility, use junk packets only. For advanced DPI evasion, add CPS signatures.")
+	fmt.Println("💡 Quick tip: Choose random generation for instant setup, or manual for full control.")
+	fmt.Println("📖 For maximum compatibility, use junk packets only. For advanced DPI evasion, add CPS signatures.")
 }
 
 // promptHeaderParameters prompts for header field parameters (H1-H4).
@@ -676,6 +701,48 @@ func promptUint32ForHeaderField(scanner *bufio.Scanner, prompt string, current u
 	fmt.Printf("Invalid value '%s', keeping current: %d\n", text, current)
 	fmt.Println("Tip: Enter 'random' to auto-generate all H1-H4 min/max values")
 	return current
+}
+
+// generateRandomAWGConfig generates a complete random Amnezia-WG configuration with sensible defaults.
+// Generates JC (2-6), JMin/JMax (recommended ranges), S1-S4, and H1-H4 parameters.
+// Does not generate I1-I5 signature parameters as they are user-defined.
+func generateRandomAWGConfig() ipn.AmneziaWGPrefs {
+	baseTime := time.Now().UnixNano()
+	
+	// Generate JC between 2-6
+	jc := uint16((baseTime % 5) + 2) // 2-6
+	
+	// Generate JMin and JMax in recommended ranges
+	// JMin: 64-128, JMax: 128-256, ensure JMax >= JMin
+	jminBase := uint16(64 + ((baseTime >> 8) % 65)) // 64-128
+	jmaxBase := uint16(128 + ((baseTime >> 16) % 129)) // 128-256
+	if jmaxBase < jminBase {
+		jmaxBase = jminBase + uint16((baseTime >> 24) % 64) // ensure JMax >= JMin
+	}
+	
+	config := ipn.AmneziaWGPrefs{
+		JC:   jc,
+		JMin: jminBase,
+		JMax: jmaxBase,
+	}
+	
+	// Generate random S1-S4 values (1-15)
+	generateAllRandomPrefixFields(&config)
+	
+	// Generate random H1-H4 values
+	generateAllRandomHeaderFields(&config)
+	
+	// I1-I5 remain empty (user-defined)
+	
+	fmt.Printf("Generated random AWG configuration:\n")
+	fmt.Printf("  JC=%d, JMin=%d, JMax=%d\n", config.JC, config.JMin, config.JMax)
+	fmt.Printf("  S1=%d, S2=%d, S3=%d, S4=%d\n", config.S1, config.S2, config.S3, config.S4)
+	fmt.Printf("  H1=%d-%d, H2=%d-%d, H3=%d-%d, H4=%d-%d\n",
+		config.H1.Min, config.H1.Max, config.H2.Min, config.H2.Max,
+		config.H3.Min, config.H3.Max, config.H4.Min, config.H4.Max)
+	fmt.Printf("  I1-I5: (empty - user-defined)\n")
+	
+	return config
 }
 
 // generateAllRandomHeaderFields generates random min/max values for all H1-H4 header fields.
