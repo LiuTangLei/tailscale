@@ -178,7 +178,7 @@ func promptInteractiveConfig(ctx context.Context) (ipn.AmneziaWGPrefs, error) {
 	fmt.Println("\n📝 Manual Configuration Mode:")
 	// Basic parameters
 	config.JC = promptUint16WithRange(scanner, "Junk packet count", config.JC, "0-10", "Recommended: 3-6 for basic DPI evasion")
-	
+
 	// Only prompt for JMin/JMax if JC > 0
 	if config.JC > 0 {
 		config.JMin = promptUint16WithRange(scanner, "Min junk packet size (bytes)", config.JMin, "64-1024", "Recommended: 64-128; must be ≥64 and ≤ JMax")
@@ -708,32 +708,32 @@ func promptUint32ForHeaderField(scanner *bufio.Scanner, prompt string, current u
 // Does not generate I1-I5 signature parameters as they are user-defined.
 func generateRandomAWGConfig() ipn.AmneziaWGPrefs {
 	baseTime := time.Now().UnixNano()
-	
+
 	// Generate JC between 2-6
 	jc := uint16((baseTime % 5) + 2) // 2-6
-	
+
 	// Generate JMin and JMax in recommended ranges
 	// JMin: 64-128, JMax: 128-256, ensure JMax >= JMin
-	jminBase := uint16(64 + ((baseTime >> 8) % 65)) // 64-128
+	jminBase := uint16(64 + ((baseTime >> 8) % 65))    // 64-128
 	jmaxBase := uint16(128 + ((baseTime >> 16) % 129)) // 128-256
 	if jmaxBase < jminBase {
-		jmaxBase = jminBase + uint16((baseTime >> 24) % 64) // ensure JMax >= JMin
+		jmaxBase = jminBase + uint16((baseTime>>24)%64) // ensure JMax >= JMin
 	}
-	
+
 	config := ipn.AmneziaWGPrefs{
 		JC:   jc,
 		JMin: jminBase,
 		JMax: jmaxBase,
 	}
-	
+
 	// Generate random S1-S4 values (1-15)
 	generateAllRandomPrefixFields(&config)
-	
+
 	// Generate random H1-H4 values
 	generateAllRandomHeaderFields(&config)
-	
+
 	// I1-I5 remain empty (user-defined)
-	
+
 	fmt.Printf("Generated random AWG configuration:\n")
 	fmt.Printf("  JC=%d, JMin=%d, JMax=%d\n", config.JC, config.JMin, config.JMax)
 	fmt.Printf("  S1=%d, S2=%d, S3=%d, S4=%d\n", config.S1, config.S2, config.S3, config.S4)
@@ -741,7 +741,7 @@ func generateRandomAWGConfig() ipn.AmneziaWGPrefs {
 		config.H1.Min, config.H1.Max, config.H2.Min, config.H2.Max,
 		config.H3.Min, config.H3.Max, config.H4.Min, config.H4.Max)
 	fmt.Printf("  I1-I5: (empty - user-defined)\n")
-	
+
 	return config
 }
 
