@@ -838,13 +838,13 @@ func promptUint16ForPrefixField(scanner *bufio.Scanner, prompt string, current u
 func generateAllRandomPrefixFields(config *ipn.AmneziaWGPrefs) {
 	fmt.Println("Generating random values for all S1-S4 prefix fields...")
 
-	// Generate random values in the range 1-15 for all S1-S4
+	// Generate random values in the range 1-7 for all S1-S4
 	baseTime := time.Now().UnixNano()
 
-	s1 := uint16((baseTime % 15) + 1)         // 1-15
-	s2 := uint16(((baseTime >> 8) % 15) + 1)  // 1-15
-	s3 := uint16(((baseTime >> 16) % 15) + 1) // 1-15
-	s4 := uint16(((baseTime >> 24) % 15) + 1) // 1-15
+	s1 := uint16((baseTime % 7) + 1)         // 1-7
+	s2 := uint16(((baseTime >> 8) % 7) + 1)  // 1-7
+	s3 := uint16(((baseTime >> 16) % 7) + 1) // 1-7
+	s4 := uint16(((baseTime >> 24) % 7) + 1) // 1-7
 
 	config.S1 = s1
 	config.S2 = s2
