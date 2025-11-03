@@ -27,9 +27,9 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	wgconn "github.com/tailscale/wireguard-go/conn"
-	"github.com/tailscale/wireguard-go/device"
-	"github.com/tailscale/wireguard-go/tun"
+	wgconn "github.com/LiuTangLei/wireguard-go/conn"
+	"github.com/LiuTangLei/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"go4.org/netipx"
 	"tailscale.com/client/local"
 	"tailscale.com/derp"

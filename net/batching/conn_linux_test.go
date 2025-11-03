@@ -8,7 +8,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/tailscale/wireguard-go/conn"
+	"github.com/LiuTangLei/wireguard-go/conn"
 	"golang.org/x/net/ipv6"
 	"tailscale.com/net/packet"
 )

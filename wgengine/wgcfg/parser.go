@@ -13,8 +13,41 @@ import (
 	"strings"
 
 	"go4.org/mem"
+	"tailscale.com/ipn"
 	"tailscale.com/types/key"
 )
+
+// parseMagicHeaderRange parses a string in the format "min-max" or a single value.
+// Returns MagicHeaderRange with Min and Max values.
+func parseMagicHeaderRange(value []byte) (ipn.MagicHeaderRange, error) {
+	valStr := string(value)
+	parts := strings.SplitN(valStr, "-", 2)
+	var min, max uint64
+	var err error
+
+	if len(parts) == 2 {
+		min, err = strconv.ParseUint(parts[0], 10, 32)
+		if err != nil {
+			return ipn.MagicHeaderRange{}, fmt.Errorf("invalid min value in '%s': %w", valStr, err)
+		}
+		max, err = strconv.ParseUint(parts[1], 10, 32)
+		if err != nil {
+			return ipn.MagicHeaderRange{}, fmt.Errorf("invalid max value in '%s': %w", valStr, err)
+		}
+	} else {
+		min, err = strconv.ParseUint(valStr, 10, 32)
+		if err != nil {
+			return ipn.MagicHeaderRange{}, fmt.Errorf("invalid value in '%s': %w", valStr, err)
+		}
+		max = min
+	}
+
+	if min > max {
+		return ipn.MagicHeaderRange{}, fmt.Errorf("min (%d) cannot be greater than max (%d)", min, max)
+	}
+
+	return ipn.MagicHeaderRange{Min: uint32(min), Max: uint32(max)}, nil
+}
 
 type ParseError struct {
 	why      string
@@ -125,7 +158,61 @@ func (cfg *Config) handleDeviceLine(k, value mem.RO, valueBytes []byte) error {
 			return err
 		}
 	case k.EqualString("listen_port") || k.EqualString("fwmark"):
-	// ignore
+		// ignore
+	case k.EqualString("jc"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaJC = uint16(v)
+		}
+	case k.EqualString("jmin"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaJMin = uint16(v)
+		}
+	case k.EqualString("jmax"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaJMax = uint16(v)
+		}
+	case k.EqualString("s1"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaS1 = uint16(v)
+		}
+	case k.EqualString("s2"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaS2 = uint16(v)
+		}
+	case k.EqualString("s3"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaS3 = uint16(v)
+		}
+	case k.EqualString("s4"):
+		if v, err := strconv.ParseUint(string(valueBytes), 10, 16); err == nil {
+			cfg.AmneziaS4 = uint16(v)
+		}
+	case k.EqualString("i1"):
+		cfg.AmneziaI1 = string(valueBytes)
+	case k.EqualString("i2"):
+		cfg.AmneziaI2 = string(valueBytes)
+	case k.EqualString("i3"):
+		cfg.AmneziaI3 = string(valueBytes)
+	case k.EqualString("i4"):
+		cfg.AmneziaI4 = string(valueBytes)
+	case k.EqualString("i5"):
+		cfg.AmneziaI5 = string(valueBytes)
+	case k.EqualString("h1"):
+		if v, err := parseMagicHeaderRange(valueBytes); err == nil {
+			cfg.AmneziaH1 = v
+		}
+	case k.EqualString("h2"):
+		if v, err := parseMagicHeaderRange(valueBytes); err == nil {
+			cfg.AmneziaH2 = v
+		}
+	case k.EqualString("h3"):
+		if v, err := parseMagicHeaderRange(valueBytes); err == nil {
+			cfg.AmneziaH3 = v
+		}
+	case k.EqualString("h4"):
+		if v, err := parseMagicHeaderRange(valueBytes); err == nil {
+			cfg.AmneziaH4 = v
+		}
 	default:
 		return fmt.Errorf("unexpected IpcGetOperation key: %q", k.StringCopy())
 	}

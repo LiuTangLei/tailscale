@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/tailscale/wireguard-go/tun"
+	"github.com/LiuTangLei/wireguard-go/tun"
 )
 
 type fakeTUN struct {
