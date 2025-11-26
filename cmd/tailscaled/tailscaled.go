@@ -178,6 +178,10 @@ type proxyStartFunc = func(logf logger.Logf, dialer *tsdial.Dialer)
 
 func main() {
 	envknob.PanicIfAnyEnvCheckedInInit()
+	if len(os.Args) > 1 && runtime.GOOS == "android" && filepath.IsAbs(os.Args[1]) && strings.Contains(os.Args[1], "tailscale") {
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+	}
+
 	if shouldRunCLI() {
 		beCLI()
 		return
