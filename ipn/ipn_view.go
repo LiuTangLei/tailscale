@@ -471,8 +471,12 @@ func (v PrefsView) AllowSingleHosts() marshalAsTrueInJSON { return v.ж.AllowSin
 //	it (backend or frontend?)
 func (v PrefsView) Persist() persist.PersistView { return v.ж.Persist.View() }
 
+// AmneziaWG contains Amnezia-WG specific configuration
+func (v PrefsView) AmneziaWG() AmneziaWGPrefs { return v.ж.AmneziaWG }
+
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _PrefsViewNeedsRegeneration = Prefs(struct {
+	AmneziaWG                  AmneziaWGPrefs
 	ControlURL                 string
 	RouteAll                   bool
 	ExitNodeID                 tailcfg.StableNodeID

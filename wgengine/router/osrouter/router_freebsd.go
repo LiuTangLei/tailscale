@@ -4,6 +4,8 @@
 package osrouter
 
 import (
+	"github.com/LiuTangLei/wireguard-go/tun"
+	"tailscale.com/health"
 	"tailscale.com/net/netmon"
 	"tailscale.com/types/logger"
 	"tailscale.com/wgengine/router"
