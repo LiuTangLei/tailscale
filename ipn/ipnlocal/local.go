@@ -1194,7 +1194,6 @@ func stripKeysFromPrefs(p ipn.PrefsView) ipn.PrefsView {
 	p2.Persist.PrivateNodeKey = key.NodePrivate{}
 	p2.Persist.OldPrivateNodeKey = key.NodePrivate{}
 	p2.Persist.NetworkLockKey = key.NLPrivate{}
-	p2.Persist.AttestationKey = nil
 	return p2.View()
 }
 
@@ -5066,7 +5065,7 @@ func (b *LocalBackend) authReconfigLocked() {
 		priv = key.NodePrivate{}
 	}
 
-	cfg, err := nmcfg.WGCfg(priv, nm, b.logf, flags, prefs.ExitNodeID())
+	cfg, err := nmcfg.WGCfg(priv, nm, b.logf, flags, prefs.ExitNodeID(), prefs.AmneziaWG())
 	if err != nil {
 		b.logf("wgcfg: %v", err)
 		return

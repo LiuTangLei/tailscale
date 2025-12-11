@@ -106,6 +106,7 @@ var _PrefsCloneNeedsRegeneration = Prefs(struct {
 	RelayServerStaticEndpoints []netip.AddrPort
 	AllowSingleHosts           marshalAsTrueInJSON
 	Persist                    *persist.Persist
+	AmneziaWG                  AmneziaWGPrefs
 }{})
 
 // Clone makes a deep copy of ServeConfig.
