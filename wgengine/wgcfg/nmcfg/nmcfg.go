@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
@@ -42,11 +43,28 @@ func cidrIsSubnet(node tailcfg.NodeView, cidr netip.Prefix) bool {
 }
 
 // WGCfg returns the NetworkMaps's WireGuard configuration.
-func WGCfg(pk key.NodePrivate, nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags, exitNode tailcfg.StableNodeID) (*wgcfg.Config, error) {
+func WGCfg(pk key.NodePrivate, nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags, exitNode tailcfg.StableNodeID, amneziaWG ipn.AmneziaWGPrefs) (*wgcfg.Config, error) {
 	cfg := &wgcfg.Config{
 		PrivateKey: pk,
 		Addresses:  nm.GetAddresses().AsSlice(),
 		Peers:      make([]wgcfg.Peer, 0, len(nm.Peers)),
+		// Apply Amnezia-WG parameters from prefs
+		AmneziaJC:   amneziaWG.JC,
+		AmneziaJMin: amneziaWG.JMin,
+		AmneziaJMax: amneziaWG.JMax,
+		AmneziaS1:   amneziaWG.S1,
+		AmneziaS2:   amneziaWG.S2,
+		AmneziaS3:   amneziaWG.S3,
+		AmneziaS4:   amneziaWG.S4,
+		AmneziaI1:   amneziaWG.I1,
+		AmneziaI2:   amneziaWG.I2,
+		AmneziaI3:   amneziaWG.I3,
+		AmneziaI4:   amneziaWG.I4,
+		AmneziaI5:   amneziaWG.I5,
+		AmneziaH1:   amneziaWG.H1,
+		AmneziaH2:   amneziaWG.H2,
+		AmneziaH3:   amneziaWG.H3,
+		AmneziaH4:   amneziaWG.H4,
 	}
 
 	// Setup log IDs for data plane audit logging.

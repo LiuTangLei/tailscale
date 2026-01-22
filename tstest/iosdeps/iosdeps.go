@@ -33,8 +33,8 @@ import (
 	_ "time"
 	_ "unsafe"
 
-	_ "github.com/tailscale/wireguard-go/device"
-	_ "github.com/tailscale/wireguard-go/tun"
+	_ "github.com/LiuTangLei/wireguard-go/device"
+	_ "github.com/LiuTangLei/wireguard-go/tun"
 	_ "go4.org/mem"
 	_ "golang.org/x/sys/unix"
 	_ "tailscale.com/hostinfo"

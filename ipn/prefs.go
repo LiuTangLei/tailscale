@@ -307,9 +307,80 @@ type Prefs struct {
 	//  We can maybe do that once we're sure which module should persist
 	//  it (backend or frontend?)
 	Persist *persist.Persist `json:"Config"`
+
+	// AmneziaWG contains Amnezia-WG specific configuration
+	AmneziaWG AmneziaWGPrefs `json:",omitempty"`
 }
 
-// AutoUpdatePrefs are the auto update settings for the node agent.
+// MagicHeaderRange represents a range of values for magic header fields.
+// If Min equals Max, it represents a single value.
+type MagicHeaderRange struct {
+	Min uint32 `json:"min"`
+	Max uint32 `json:"max"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling to handle backward compatibility.
+// It supports both the old uint32 format and the new MagicHeaderRange format.
+func (m *MagicHeaderRange) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as a simple uint32 first (backward compatibility)
+	var singleValue uint32
+	if err := json.Unmarshal(data, &singleValue); err == nil {
+		m.Min = singleValue
+		m.Max = singleValue
+		return nil
+	}
+
+	// Try to unmarshal as the full structure
+	type Alias MagicHeaderRange
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(m),
+	}
+	return json.Unmarshal(data, &aux)
+}
+
+// AmneziaWGPrefs contains Amnezia-WG configuration parameters.
+// Zero values for all parameters mean standard WireGuard behavior.
+// Network-wide consistency is required: all nodes must use identical parameters.
+type AmneziaWGPrefs struct {
+	JC   uint16           `json:",omitempty"` // Junk packet count (0 = disabled)
+	JMin uint16           `json:",omitempty"` // Min junk size (0 = disabled)
+	JMax uint16           `json:",omitempty"` // Max junk size (0 = disabled)
+	S1   uint16           `json:",omitempty"` // Init packet prefix length (0 = disabled)
+	S2   uint16           `json:",omitempty"` // Response packet prefix length (0 = disabled)
+	S3   uint16           `json:",omitempty"` // Cookie packet prefix length (0 = disabled)
+	S4   uint16           `json:",omitempty"` // Transport packet prefix length (0 = disabled)
+	I1   string           `json:",omitempty"` // Primary signature packet (CPS format, e.g., "<b 0xf6ab3267fa><c><t><r 10>")
+	I2   string           `json:",omitempty"` // Secondary signature packet (CPS format)
+	I3   string           `json:",omitempty"` // Tertiary signature packet (CPS format)
+	I4   string           `json:",omitempty"` // Quaternary signature packet (CPS format)
+	I5   string           `json:",omitempty"` // Quinary signature packet (CPS format)
+	H1   MagicHeaderRange `json:",omitempty"` // Header field 1
+	H2   MagicHeaderRange `json:",omitempty"` // Header field 2
+	H3   MagicHeaderRange `json:",omitempty"` // Header field 3
+	H4   MagicHeaderRange `json:",omitempty"` // Header field 4
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for AmneziaWGPrefs to handle
+// backward compatibility. If parsing fails due to incompatible old format,
+// it returns a zero value to avoid startup errors.
+func (a *AmneziaWGPrefs) UnmarshalJSON(data []byte) error {
+	// Define a type alias to avoid infinite recursion
+	type Alias AmneziaWGPrefs
+	aux := &Alias{}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		// If unmarshaling fails (likely due to old format), log and return zero value
+		// This prevents tailscaled from crashing on startup with old configurations
+		log.Printf("tailscale: resetting incompatible Amnezia-WG configuration to avoid startup error: %v", err)
+		*a = AmneziaWGPrefs{} // Reset to zero value
+		return nil            // Don't return error to prevent startup failure
+	}
+
+	*a = AmneziaWGPrefs(*aux)
+	return nil
+} // AutoUpdatePrefs are the auto update settings for the node agent.
 type AutoUpdatePrefs struct {
 	// Check specifies whether background checks for updates are enabled. When
 	// enabled, tailscaled will periodically check for available updates and
@@ -353,6 +424,7 @@ type AppConnectorPrefs struct {
 type MaskedPrefs struct {
 	Prefs
 
+	AmneziaWGSet                  bool                `json:",omitempty"`
 	ControlURLSet                 bool                `json:",omitempty"`
 	RouteAllSet                   bool                `json:",omitempty"`
 	ExitNodeIDSet                 bool                `json:",omitempty"`
@@ -693,7 +765,8 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
 		slices.EqualFunc(p.DriveShares, p2.DriveShares, drive.SharesEqual) &&
 		p.NetfilterKind == p2.NetfilterKind &&
 		compareUint16Ptrs(p.RelayServerPort, p2.RelayServerPort) &&
-		slices.Equal(p.RelayServerStaticEndpoints, p2.RelayServerStaticEndpoints)
+		slices.Equal(p.RelayServerStaticEndpoints, p2.RelayServerStaticEndpoints) &&
+        p.AmneziaWG == p2.AmneziaWG
 }
 
 func (au AutoUpdatePrefs) Pretty() string {

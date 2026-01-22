@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tailscale/wireguard-go/tun"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"tailscale.com/feature"
 	"tailscale.com/feature/buildfeatures"
 	"tailscale.com/types/logger"
