@@ -9,7 +9,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,8 +26,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tailscale/wireguard-go/conn"
-	"github.com/tailscale/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/conn"
+	"github.com/LiuTangLei/wireguard-go/device"
 	"go4.org/mem"
 	"golang.org/x/net/ipv6"
 	"tailscale.com/control/controlknobs"
@@ -35,6 +37,7 @@ import (
 	"tailscale.com/feature/condlite/expvar"
 	"tailscale.com/health"
 	"tailscale.com/hostinfo"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/batching"
 	"tailscale.com/net/netcheck"
@@ -71,6 +74,13 @@ import (
 	"tailscale.com/wgengine/router"
 	"tailscale.com/wgengine/wgint"
 )
+
+// AmneziaWGConfigData represents a received Amnezia-WG configuration response.
+type AmneziaWGConfigData struct {
+	RequestID  [8]byte
+	DiscoKey   key.DiscoPublic
+	ConfigJSON []byte
+}
 
 const (
 	// These are disco.Magic in big-endian form, 4 then 2 bytes. The
@@ -596,6 +606,7 @@ type UDPRelayAllocResp struct {
 func newConn(logf logger.Logf) *Conn {
 	discoPrivate := key.NewDisco()
 	c := &Conn{
+	    amneziaWGConfigWaiters: make(map[[8]byte]chan *AmneziaWGConfigData),
 		logf:         logf,
 		derpRecvCh:   make(chan derpReadResult, 1), // must be buffered, see issue 3736
 		derpStarted:  make(chan struct{}),
@@ -1482,7 +1493,7 @@ func (c *Conn) networkDown() bool { return !c.networkUp.Load() }
 
 // Send implements conn.Bind.
 //
-// See https://pkg.go.dev/github.com/tailscale/wireguard-go/conn#Bind.Send
+// See https://pkg.go.dev/github.com/LiuTangLei/wireguard-go/conn#Bind.Send
 func (c *Conn) Send(buffs [][]byte, ep conn.Endpoint, offset int) (err error) {
 	n := int64(len(buffs))
 	defer func() {
@@ -1869,7 +1880,7 @@ func (c *Conn) receiveIP(b []byte, ipp netip.AddrPort, cache *epAddrEndpointCach
 		// Strip away the Geneve header before returning the packet to
 		// wireguard-go.
 		//
-		// TODO(jwhited): update [github.com/tailscale/wireguard-go/conn.ReceiveFunc]
+		// TODO(jwhited): update [github.com/LiuTangLei/wireguard-go/conn.ReceiveFunc]
 		//  to support returning start offset in order to get rid of this memmove perf
 		//  penalty.
 		size = copy(b, b[packet.GeneveFixedHeaderLength:])
@@ -2480,6 +2491,10 @@ func (c *Conn) handleDiscoMessage(msg []byte, src epAddr, shouldBeRelayHandshake
 			RxFromNodeKey:  nodeKey,
 			Message:        req,
 		})
+	case *disco.AmneziaWGConfigRequest:
+		c.handleAmneziaWGConfigRequestLocked(dm, src, di, derpNodeSrc)
+	case *disco.AmneziaWGConfigResponse:
+		c.handleAmneziaWGConfigResponseLocked(dm, src, di, derpNodeSrc)
 	}
 	return
 }
@@ -2706,6 +2721,15 @@ func (c *Conn) SetNetworkUp(up bool) {
 		}
 		c.closeAllDerpLocked("network-down")
 	}
+}
+
+// SetAmneziaWGConfigProvider installs a provider function that returns the
+// current local Amnezia-WG preferences for disco config requests. It is safe
+// to call multiple times; passing nil disables responses (will send zeros).
+func (c *Conn) SetAmneziaWGConfigProvider(p func() ipn.AmneziaWGPrefs) {
+	c.mu.Lock()
+	c.amneziaWGConfigProvider = p
+	c.mu.Unlock()
 }
 
 // SetPreferredPort sets the connection's preferred local port.

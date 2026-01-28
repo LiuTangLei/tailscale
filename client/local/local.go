@@ -1436,3 +1436,65 @@ func (lc *Client) GetAppConnectorRouteInfo(ctx context.Context) (appctype.RouteI
 	}
 	return decodeJSON[appctype.RouteInfo](body)
 }
+
+// RequestAmneziaWGConfig requests AWG configuration from the specified peer using disco protocol.
+// It returns the peer's Amnezia-WG configuration or an error if the request fails or times out.
+func (lc *Client) RequestAmneziaWGConfig(ctx context.Context, nodeKey key.NodePublic) (ipn.AmneziaWGPrefs, error) {
+	reqBody := struct {
+		NodeKey key.NodePublic `json:"nodeKey"`
+		Timeout int            `json:"timeout"` // timeout in seconds
+	}{
+		NodeKey: nodeKey,
+		Timeout: 10, // 10 seconds default timeout
+	}
+
+	reqJSON, err := json.Marshal(reqBody)
+	if err != nil {
+		return ipn.AmneziaWGPrefs{}, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	body, err := lc.send(ctx, "POST", "/localapi/v0/request-amnezia-wg-config", 200, bytes.NewReader(reqJSON))
+	if err != nil {
+		return ipn.AmneziaWGPrefs{}, fmt.Errorf("error %w: %s", err, body)
+	}
+
+	return decodeJSON[ipn.AmneziaWGPrefs](body)
+}
+
+// AWGSyncPeers returns peers that have non-zero Amnezia-WG configuration.
+// Endpoint: GET /localapi/v0/awg-sync-peers
+func (lc *Client) AWGSyncPeers(ctx context.Context) ([]struct {
+	NodeKey     string             `json:"nodeKey"`
+	Hostname    string             `json:"hostname"`
+	TailscaleIP string             `json:"tailscaleIP"`
+	Config      ipn.AmneziaWGPrefs `json:"config"`
+}, error) {
+	body, err := lc.get200(ctx, "/localapi/v0/awg-sync-peers")
+	if err != nil {
+		return nil, err
+	}
+	return decodeJSON[[]struct {
+		NodeKey     string             `json:"nodeKey"`
+		Hostname    string             `json:"hostname"`
+		TailscaleIP string             `json:"tailscaleIP"`
+		Config      ipn.AmneziaWGPrefs `json:"config"`
+	}](body)
+}
+
+// AWGSyncApply fetches AWG config from a peer and applies it locally.
+// Endpoint: POST /localapi/v0/awg-sync-apply {nodeKey, timeout}
+func (lc *Client) AWGSyncApply(ctx context.Context, nodeKey key.NodePublic) (ipn.AmneziaWGPrefs, error) {
+	reqBody := struct {
+		NodeKey key.NodePublic `json:"nodeKey"`
+		Timeout int            `json:"timeout"`
+	}{NodeKey: nodeKey, Timeout: 10}
+	j, err := json.Marshal(reqBody)
+	if err != nil {
+		return ipn.AmneziaWGPrefs{}, err
+	}
+	body, err := lc.send(ctx, "POST", "/localapi/v0/awg-sync-apply", 200, bytes.NewReader(j))
+	if err != nil {
+		return ipn.AmneziaWGPrefs{}, fmt.Errorf("error %w: %s", err, body)
+	}
+	return decodeJSON[ipn.AmneziaWGPrefs](body)
+}

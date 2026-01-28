@@ -5113,7 +5113,8 @@ func (b *LocalBackend) authReconfigLocked() {
 		priv = key.NodePrivate{}
 	}
 
-	cfg, err := nmcfg.WGCfg(priv, nm, b.logf, flags, prefs.ExitNodeID())
+	cfg, err := nmcfg.WGCfg(priv, nm, b.logf, flags, prefs.ExitNodeID(), prefs.AmneziaWG())
+	b.MagicConn().SetAmneziaWGConfigProvider(func() ipn.AmneziaWGPrefs { return prefs.AmneziaWG() })
 	if err != nil {
 		b.logf("wgcfg: %v", err)
 		return
