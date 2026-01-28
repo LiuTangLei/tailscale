@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"tailscale.com/ipn"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"

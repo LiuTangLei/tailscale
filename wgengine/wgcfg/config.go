@@ -61,7 +61,23 @@ func (c *Config) Equal(o *Config) bool {
 		c.NetworkLogging == o.NetworkLogging &&
 		slices.Equal(c.Addresses, o.Addresses) &&
 		slices.Equal(c.DNS, o.DNS) &&
-		slices.EqualFunc(c.Peers, o.Peers, Peer.Equal)
+		slices.EqualFunc(c.Peers, o.Peers, Peer.Equal) &&
+		c.AmneziaJC == o.AmneziaJC &&
+		c.AmneziaJMin == o.AmneziaJMin &&
+		c.AmneziaJMax == o.AmneziaJMax &&
+		c.AmneziaS1 == o.AmneziaS1 &&
+		c.AmneziaS2 == o.AmneziaS2 &&
+		c.AmneziaS3 == o.AmneziaS3 &&
+		c.AmneziaS4 == o.AmneziaS4 &&
+		c.AmneziaI1 == o.AmneziaI1 &&
+		c.AmneziaI2 == o.AmneziaI2 &&
+		c.AmneziaI3 == o.AmneziaI3 &&
+		c.AmneziaI4 == o.AmneziaI4 &&
+		c.AmneziaI5 == o.AmneziaI5 &&
+		c.AmneziaH1 == o.AmneziaH1 &&
+		c.AmneziaH2 == o.AmneziaH2 &&
+		c.AmneziaH3 == o.AmneziaH3 &&
+		c.AmneziaH4 == o.AmneziaH4
 }
 
 type Peer struct {

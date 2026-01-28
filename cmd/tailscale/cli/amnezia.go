@@ -108,7 +108,23 @@ var awgCmd = &ffcli.Command{
 	ShortUsage:  "tailscale awg [subcommand]",
 	ShortHelp:   "Configure Amnezia-WG parameters (alias for amnezia-wg)",
 	LongHelp:    amneziaCmd.LongHelp,
-	Subcommands: amneziaCmd.Subcommands,
+	Subcommands: cloneAWGSubcommands(amneziaCmd.Subcommands),
+}
+
+func cloneAWGSubcommands(cmds []*ffcli.Command) []*ffcli.Command {
+	if len(cmds) == 0 {
+		return nil
+	}
+	cloned := make([]*ffcli.Command, len(cmds))
+	for i, cmd := range cmds {
+		clonedCmd := *cmd
+		if strings.HasPrefix(clonedCmd.ShortUsage, "tailscale amnezia-wg") {
+			clonedCmd.ShortUsage = strings.Replace(clonedCmd.ShortUsage, "tailscale amnezia-wg", "tailscale awg", 1)
+		}
+		clonedCmd.Subcommands = cloneAWGSubcommands(cmd.Subcommands)
+		cloned[i] = &clonedCmd
+	}
+	return cloned
 }
 
 func runAmneziaWGSet(ctx context.Context, args []string) error {
@@ -168,7 +184,7 @@ func promptInteractiveConfig(ctx context.Context) (ipn.AmneziaWGPrefs, error) {
 		if response == "" || response == "y" || response == "yes" {
 			config = generateRandomAWGConfig()
 			fmt.Println("\n✅ Random configuration generated successfully!")
-			fmt.Println("💡 You can still customize I1-I5 signature parameters below if needed.\n")
+			fmt.Println("💡 You can still customize I1-I5 signature parameters below if needed.")
 			// Only ask for I1-I5 parameters in random mode
 			promptCPSParameters(scanner, &config)
 			return config, nil

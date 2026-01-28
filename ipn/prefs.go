@@ -423,8 +423,6 @@ type AppConnectorPrefs struct {
 // Prefs (see AutoUpdateSet for example).
 type MaskedPrefs struct {
 	Prefs
-
-	AmneziaWGSet                  bool                `json:",omitempty"`
 	ControlURLSet                 bool                `json:",omitempty"`
 	RouteAllSet                   bool                `json:",omitempty"`
 	ExitNodeIDSet                 bool                `json:",omitempty"`
@@ -458,6 +456,7 @@ type MaskedPrefs struct {
 	DriveSharesSet                bool                `json:",omitempty"`
 	RelayServerPortSet            bool                `json:",omitempty"`
 	RelayServerStaticEndpointsSet bool                `json:",omitzero"`
+	AmneziaWGSet                  bool                `json:",omitempty"`
 }
 
 // SetsInternal reports whether mp has any of the Internal*Set field bools set

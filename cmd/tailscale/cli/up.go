@@ -885,6 +885,8 @@ func init() {
 	addPrefFlagMapping("relay-server-port", "RelayServerPort")
 	addPrefFlagMapping("sync", "Sync")
 	addPrefFlagMapping("relay-server-static-endpoints", "RelayServerStaticEndpoints")
+	addPrefFlagMapping("amnezia-wg", "AmneziaWG")
+	addPrefFlagMapping("amnezia-wg-config", "AmneziaWG")
 }
 
 func addPrefFlagMapping(flagName string, prefNames ...string) {

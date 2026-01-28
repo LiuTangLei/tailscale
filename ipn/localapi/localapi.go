@@ -74,9 +74,8 @@ var handler = map[string]LocalAPIHandler{
 
 	// The other /localapi/v0/NAME handlers are exact matches and contain only NAME
 	// without a trailing slash:
-	"request-amnezia-wg-config":    (*Handler).serveRequestAmneziaWGConfig,
-	"awg-sync-peers":               (*Handler).serveAWGSyncPeers,
-	"awg-sync-apply":               (*Handler).serveAWGSyncApply,
+	"awg-sync-apply":        (*Handler).serveAWGSyncApply,
+	"awg-sync-peers":        (*Handler).serveAWGSyncPeers,
 	"check-prefs":          (*Handler).serveCheckPrefs,
 	"check-so-mark-in-use": (*Handler).serveCheckSOMarkInUse,
 	"derpmap":              (*Handler).serveDERPMap,
@@ -86,6 +85,7 @@ var handler = map[string]LocalAPIHandler{
 	"ping":                 (*Handler).servePing,
 	"prefs":                (*Handler).servePrefs,
 	"reload-config":        (*Handler).reloadConfig,
+	"request-amnezia-wg-config": (*Handler).serveRequestAmneziaWGConfig,
 	"reset-auth":           (*Handler).serveResetAuth,
 	"set-expiry-sooner":    (*Handler).serveSetExpirySooner,
 	"shutdown":             (*Handler).serveShutdown,
