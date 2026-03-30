@@ -22,7 +22,7 @@ import (
 	"tailscale.com/wgengine/winnet"
 
 	ole "github.com/go-ole/go-ole"
-	"github.com/tailscale/wireguard-go/tun"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"go4.org/netipx"
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
