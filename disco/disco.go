@@ -51,6 +51,9 @@ const (
 	TypeCallMeMaybeVia                   = MessageType(0x07)
 	TypeAllocateUDPRelayEndpointRequest  = MessageType(0x08)
 	TypeAllocateUDPRelayEndpointResponse = MessageType(0x09)
+
+	TypeAmneziaWGConfigRequest  = MessageType(0xEA)
+	TypeAmneziaWGConfigResponse = MessageType(0xEB)
 )
 
 const v0 = byte(0)
@@ -103,6 +106,10 @@ func Parse(p []byte) (Message, error) {
 		return parseAllocateUDPRelayEndpointRequest(ver, p)
 	case TypeAllocateUDPRelayEndpointResponse:
 		return parseAllocateUDPRelayEndpointResponse(ver, p)
+	case TypeAmneziaWGConfigRequest:
+		return parseAmneziaWGConfigRequest(ver, p)
+	case TypeAmneziaWGConfigResponse:
+		return parseAmneziaWGConfigResponse(ver, p)
 	default:
 		return nil, fmt.Errorf("unknown message type 0x%02x", byte(t))
 	}
@@ -299,6 +306,10 @@ func MessageSummary(m Message) string {
 		return "allocate-udp-relay-endpoint-request"
 	case *AllocateUDPRelayEndpointResponse:
 		return "allocate-udp-relay-endpoint-response"
+	case *AmneziaWGConfigRequest:
+		return fmt.Sprintf("amnezia-wg-config-request tx=%x", m.RequestID[:4])
+	case *AmneziaWGConfigResponse:
+		return fmt.Sprintf("amnezia-wg-config-response tx=%x", m.RequestID[:4])
 	default:
 		return fmt.Sprintf("%#v", m)
 	}
@@ -651,4 +662,54 @@ func parseCallMeMaybeVia(ver uint8, p []byte) (m *CallMeMaybeVia, err error) {
 	}
 	err = m.decode(p)
 	return m, err
+}
+
+// AmneziaWGConfigRequest is a message sent to request Amnezia-WG configuration
+// from a peer. It can be sent via DERP or direct UDP connection.
+type AmneziaWGConfigRequest struct {
+	// RequestID is a random identifier to match request with response
+	RequestID [8]byte
+}
+
+func (m *AmneziaWGConfigRequest) AppendMarshal(b []byte) []byte {
+	ret, d := appendMsgHeader(b, TypeAmneziaWGConfigRequest, v0, 8)
+	copy(d, m.RequestID[:])
+	return ret
+}
+
+func parseAmneziaWGConfigRequest(ver uint8, p []byte) (m *AmneziaWGConfigRequest, err error) {
+	if len(p) < 8 {
+		return nil, errShort
+	}
+	m = new(AmneziaWGConfigRequest)
+	copy(m.RequestID[:], p[:8])
+	return m, nil
+}
+
+// AmneziaWGConfigResponse is a message sent in response to AmneziaWGConfigRequest
+// containing the sender's Amnezia-WG configuration.
+type AmneziaWGConfigResponse struct {
+	// RequestID is copied from the request to match response with request
+	RequestID [8]byte
+	// ConfigJSON contains the AmneziaWGPrefs in JSON format
+	ConfigJSON []byte
+}
+
+func (m *AmneziaWGConfigResponse) AppendMarshal(b []byte) []byte {
+	dataLen := 8 + len(m.ConfigJSON)
+	ret, d := appendMsgHeader(b, TypeAmneziaWGConfigResponse, v0, dataLen)
+	copy(d, m.RequestID[:])
+	copy(d[8:], m.ConfigJSON)
+	return ret
+}
+
+func parseAmneziaWGConfigResponse(ver uint8, p []byte) (m *AmneziaWGConfigResponse, err error) {
+	if len(p) < 8 {
+		return nil, errShort
+	}
+	m = new(AmneziaWGConfigResponse)
+	copy(m.RequestID[:], p[:8])
+	m.ConfigJSON = make([]byte, len(p)-8)
+	copy(m.ConfigJSON, p[8:])
+	return m, nil
 }

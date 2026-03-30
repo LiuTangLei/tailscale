@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"tailscale.com/cmd/tailscale/cli"
@@ -16,6 +17,9 @@ import (
 
 func main() {
 	args := os.Args[1:]
+	if len(args) > 0 && runtime.GOOS == "android" && filepath.IsAbs(args[0]) && strings.Contains(args[0], "tailscale") {
+		args = args[1:]
+	}
 	if name, _ := os.Executable(); strings.HasSuffix(filepath.Base(name), ".cgi") {
 		args = []string{"web", "-cgi"}
 	}

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"tailscale.com/ipn"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logid"
 )
@@ -22,6 +23,24 @@ type Config struct {
 	MTU        uint16
 	DNS        []netip.Addr
 	Peers      []Peer
+
+	// Amnezia-WG parameters (zero/empty values mean standard WireGuard)
+	AmneziaJC   uint16               `json:",omitempty"` // Junk packet count
+	AmneziaJMin uint16               `json:",omitempty"` // Min junk size
+	AmneziaJMax uint16               `json:",omitempty"` // Max junk size
+	AmneziaS1   uint16               `json:",omitempty"` // Init packet prefix length
+	AmneziaS2   uint16               `json:",omitempty"` // Response packet prefix length
+	AmneziaS3   uint16               `json:",omitempty"` // Cookie packet prefix length
+	AmneziaS4   uint16               `json:",omitempty"` // Transport packet prefix length
+	AmneziaI1   string               `json:",omitempty"` // Primary signature packet (CPS format)
+	AmneziaI2   string               `json:",omitempty"` // Secondary signature packet (CPS format)
+	AmneziaI3   string               `json:",omitempty"` // Tertiary signature packet (CPS format)
+	AmneziaI4   string               `json:",omitempty"` // Quaternary signature packet (CPS format)
+	AmneziaI5   string               `json:",omitempty"` // Quinary signature packet (CPS format)
+	AmneziaH1   ipn.MagicHeaderRange `json:",omitempty"` // Header field 1
+	AmneziaH2   ipn.MagicHeaderRange `json:",omitempty"` // Header field 2
+	AmneziaH3   ipn.MagicHeaderRange `json:",omitempty"` // Header field 3
+	AmneziaH4   ipn.MagicHeaderRange `json:",omitempty"` // Header field 4
 
 	// NetworkLogging enables network logging.
 	// It is disabled if either ID is the zero value.
@@ -42,7 +61,23 @@ func (c *Config) Equal(o *Config) bool {
 		c.NetworkLogging == o.NetworkLogging &&
 		slices.Equal(c.Addresses, o.Addresses) &&
 		slices.Equal(c.DNS, o.DNS) &&
-		slices.EqualFunc(c.Peers, o.Peers, Peer.Equal)
+		slices.EqualFunc(c.Peers, o.Peers, Peer.Equal) &&
+		c.AmneziaJC == o.AmneziaJC &&
+		c.AmneziaJMin == o.AmneziaJMin &&
+		c.AmneziaJMax == o.AmneziaJMax &&
+		c.AmneziaS1 == o.AmneziaS1 &&
+		c.AmneziaS2 == o.AmneziaS2 &&
+		c.AmneziaS3 == o.AmneziaS3 &&
+		c.AmneziaS4 == o.AmneziaS4 &&
+		c.AmneziaI1 == o.AmneziaI1 &&
+		c.AmneziaI2 == o.AmneziaI2 &&
+		c.AmneziaI3 == o.AmneziaI3 &&
+		c.AmneziaI4 == o.AmneziaI4 &&
+		c.AmneziaI5 == o.AmneziaI5 &&
+		c.AmneziaH1 == o.AmneziaH1 &&
+		c.AmneziaH2 == o.AmneziaH2 &&
+		c.AmneziaH3 == o.AmneziaH3 &&
+		c.AmneziaH4 == o.AmneziaH4
 }
 
 type Peer struct {

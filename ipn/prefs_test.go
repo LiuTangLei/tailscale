@@ -72,6 +72,7 @@ func TestPrefsEqual(t *testing.T) {
 		"RelayServerStaticEndpoints",
 		"AllowSingleHosts",
 		"Persist",
+		"AmneziaWG",
 	}
 	if have := fieldsOf(reflect.TypeFor[Prefs]()); !reflect.DeepEqual(have, prefsHandles) {
 		t.Errorf("Prefs.Equal check might be out of sync\nfields: %q\nhandled: %q\n",
@@ -744,17 +745,30 @@ func TestMaskedPrefsFields(t *testing.T) {
 	// ApplyEdits assumes.
 	pt := reflect.TypeFor[Prefs]()
 	mt := reflect.TypeFor[MaskedPrefs]()
-	for i := range mt.NumField() {
-		name := mt.Field(i).Name
-		if i == 0 {
-			if name != "Prefs" {
-				t.Errorf("first field of MaskedPrefs should be Prefs")
-			}
+	maskedIndex := 1
+	for i := range pt.NumField() {
+		prefName := pt.Field(i).Name
+		switch prefName {
+		case "Persist", "AllowSingleHosts":
+			// These can't be edited; no corresponding mask fields.
 			continue
 		}
-		prefName := pt.Field(i - 1).Name
-		if prefName+"Set" != name {
-			t.Errorf("MaskedField[%d] = %s; want %sSet", i-1, name, prefName)
+		if maskedIndex >= mt.NumField() {
+			t.Errorf("missing MaskedPrefs.%sSet for Prefs.%s", prefName, prefName)
+			break
+		}
+		maskName := mt.Field(maskedIndex).Name
+		if maskName != prefName+"Set" {
+			t.Errorf("MaskedField[%d] = %s; want %sSet", maskedIndex-1, maskName, prefName)
+		}
+		maskedIndex++
+	}
+	if maskedIndex != mt.NumField() {
+		for i := maskedIndex; i < mt.NumField(); i++ {
+			name := mt.Field(i).Name
+			if name != "Prefs" {
+				t.Errorf("unexpected extra MaskedPrefs field %q", name)
+			}
 		}
 	}
 }

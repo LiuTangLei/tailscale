@@ -5,7 +5,7 @@
 
 package tstun
 
-import "github.com/tailscale/wireguard-go/tun"
+import "github.com/LiuTangLei/wireguard-go/tun"
 
 func interfaceName(dev tun.Device) (string, error) {
 	return dev.Name()

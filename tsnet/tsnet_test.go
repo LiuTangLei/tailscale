@@ -39,7 +39,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
-	"github.com/tailscale/wireguard-go/tun"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"golang.org/x/net/proxy"
 
 	"tailscale.com/client/local"

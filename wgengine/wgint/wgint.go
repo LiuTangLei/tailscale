@@ -11,7 +11,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/tailscale/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/device"
 )
 
 var (
