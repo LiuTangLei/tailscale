@@ -15,7 +15,10 @@ func TestConfigEqual(t *testing.T) {
 	for sf := range rt.Fields() {
 		switch sf.Name {
 		case "Name", "NodeID", "PrivateKey", "MTU", "Addresses", "DNS", "Peers",
-			"NetworkLogging":
+			"NetworkLogging",
+			"AmneziaJC", "AmneziaJMin", "AmneziaJMax", "AmneziaS1", "AmneziaS2",
+			"AmneziaS3", "AmneziaS4", "AmneziaI1", "AmneziaI2", "AmneziaI3",
+			"AmneziaI4", "AmneziaI5", "AmneziaH1", "AmneziaH2", "AmneziaH3", "AmneziaH4":
 			// These are compared in [Config.Equal].
 		default:
 			t.Errorf("Have you added field %q to Config.Equal? Do so if not, and then update TestConfigEqual", sf.Name)

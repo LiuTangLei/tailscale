@@ -299,6 +299,8 @@ change in the future.
 			idTokenCmd,
 			configureHostCmd(),
 			systrayCmd,
+			amneziaCmd,
+			awgCmd,
 			appcRoutesCmd,
 			waitCmd,
 		),

@@ -18,9 +18,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LiuTangLei/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"github.com/gaissmai/bart"
-	"github.com/tailscale/wireguard-go/device"
-	"github.com/tailscale/wireguard-go/tun"
 	"tailscale.com/control/controlknobs"
 	"tailscale.com/drive"
 	"tailscale.com/envknob"
