@@ -4394,27 +4394,78 @@ func (c *Conn) handleAmneziaWGConfigRequestLocked(dm *disco.AmneziaWGConfigReque
 		ConfigJSON: configJSON,
 	}
 
-	// Send response via DERP only (must use correct region port, not port 0)
-	if !derpNodeSrc.IsZero() {
-		// Look up endpoint to find its derpAddr (contains region ID in port).
-		var derpAddr netip.AddrPort
-		if ep, ok := c.peerMap.endpointForNodeKey(derpNodeSrc); ok && ep != nil && ep.derpAddr.IsValid() {
-			derpAddr = ep.derpAddr
-		} else {
-			// Fallback: use src.ap if it looks like DERP (should, since derpNodeSrc non-zero)
-			if src.ap.Addr() == tailcfg.DerpMagicIPAddr {
-				derpAddr = src.ap
+	// Send response via all available paths (DERP + direct UDP) for reliability.
+	// Duplicate responses are safe: the waiter deduplicates by RequestID.
+	responseSent := false
+
+	// Resolve the nodeKey of the requester for endpoint lookup.
+	// derpNodeSrc is set when the request arrived via DERP; for direct UDP it's zero.
+	requesterNodeKey := derpNodeSrc
+	if requesterNodeKey.IsZero() {
+		// Request arrived via direct UDP. Resolve nodeKey from disco key only if
+		// the disco key maps unambiguously to a single node.
+		var numRequesterNodes int
+		c.peerMap.forEachEndpointWithDiscoKey(di.discoKey, func(ep *endpoint) bool {
+			numRequesterNodes++
+			if numRequesterNodes == 1 {
+				requesterNodeKey = ep.publicKey
 			}
+			return true
+		})
+		if numRequesterNodes > 1 {
+			requesterNodeKey = key.NodePublic{}
+		}
+	}
+
+	if requesterNodeKey.IsZero() {
+		c.logf("magicsock: disco: cannot resolve nodeKey for AmneziaWG config response tx=%x from disco=%v",
+			dm.RequestID[:4], di.discoKey.ShortString())
+	} else {
+		// Try DERP path
+		var derpAddr netip.AddrPort
+		if ep, ok := c.peerMap.endpointForNodeKey(requesterNodeKey); ok && ep != nil && ep.derpAddr.IsValid() {
+			derpAddr = ep.derpAddr
+		} else if src.ap.Addr() == tailcfg.DerpMagicIPAddr {
+			// Fallback: use the DERP region the request arrived on
+			derpAddr = src.ap
 		}
 		if derpAddr.IsValid() {
 			c.dlogf("[v1] magicsock: disco: sending AmneziaWG config response tx=%x to %v via DERP region=%d size=%d",
-				dm.RequestID[:4], derpNodeSrc.ShortString(), derpAddr.Port(), len(configJSON))
-			go c.sendDiscoMessage(epAddr{ap: derpAddr}, derpNodeSrc, di.discoKey, resp, discoLog)
-		} else {
-			c.logf("magicsock: disco: cannot determine DERP addr (region) to send AmneziaWG config response tx=%x to %v", dm.RequestID[:4], derpNodeSrc.ShortString())
+				dm.RequestID[:4], requesterNodeKey.ShortString(), derpAddr.Port(), len(configJSON))
+			go c.sendDiscoMessage(epAddr{ap: derpAddr}, requesterNodeKey, di.discoKey, resp, discoLog)
+			responseSent = true
 		}
-	} else {
-		c.logf("magicsock: disco: cannot send AmneziaWG config response, derpNodeSrc is zero")
+
+		// Also try direct UDP path (bestAddr) if available.
+		if ep, ok := c.peerMap.endpointForNodeKey(requesterNodeKey); ok && ep != nil {
+			ep.mu.Lock()
+			ba := ep.bestAddr
+			trust := ep.trustBestAddrUntil
+			ep.mu.Unlock()
+			if ba.ap.IsValid() && ba.ap.Addr() != tailcfg.DerpMagicIPAddr && mono.Now().Before(trust) {
+				c.dlogf("[v1] magicsock: disco: sending AmneziaWG config response tx=%x to %v via direct %v size=%d",
+					dm.RequestID[:4], requesterNodeKey.ShortString(), ba.ap, len(configJSON))
+				go c.sendDiscoMessage(ba.epAddr, requesterNodeKey, di.discoKey, resp, discoLog)
+				responseSent = true
+			}
+		}
+
+	}
+
+	// If request arrived via direct UDP and we haven't sent via direct yet,
+	// respond back to the source address. This works even when requesterNodeKey
+	// is zero (ambiguous disco key), because sendDiscoMessage / sendAddr does not
+	// require a valid nodeKey for direct UDP sends.
+	if !responseSent && src.isDirect() {
+		c.dlogf("[v1] magicsock: disco: sending AmneziaWG config response tx=%x to %v via source addr %v size=%d",
+			dm.RequestID[:4], requesterNodeKey.ShortString(), src.ap, len(configJSON))
+		go c.sendDiscoMessage(src, requesterNodeKey, di.discoKey, resp, discoLog)
+		responseSent = true
+	}
+
+	if !responseSent {
+		c.logf("magicsock: disco: no path available to send AmneziaWG config response tx=%x (derpNodeSrc=%v, src=%v)",
+			dm.RequestID[:4], derpNodeSrc.ShortString(), src)
 	}
 
 	c.dlogf("[v1] magicsock: disco: completed handling AmneziaWG config request tx=%x from %v",
@@ -4497,22 +4548,35 @@ func (c *Conn) RequestAmneziaWGConfigCtx(ctx context.Context, discoKey key.Disco
 		return fmt.Errorf("unknown peer with disco key %v", discoKey)
 	}
 
-	// Send over DERP using endpoint derpAddr (with region port)
+	// Send via all available paths (DERP + direct UDP) for reliability.
+	// Duplicate requests are safe: the response handler deduplicates by RequestID.
 	sent := false
 	c.peerMap.forEachEndpointWithDiscoKey(discoKey, func(ep *endpoint) bool {
+		// Try DERP path
 		if ep.derpAddr.IsValid() {
 			c.dlogf("[v1] magicsock: disco: sending AmneziaWG config request tx=%x to %v via DERP region=%d (nodeKey=%v)",
 				requestID[:4], discoKey.ShortString(), ep.derpAddr.Port(), ep.publicKey.ShortString())
 			go c.sendDiscoMessage(epAddr{ap: ep.derpAddr}, ep.publicKey, discoKey, req, discoLog)
 			sent = true
-			return false
 		}
-		return true
+		// Also try direct UDP path if a trusted bestAddr exists.
+		// Lock ordering: Conn.mu (held) -> endpoint.mu is safe.
+		ep.mu.Lock()
+		ba := ep.bestAddr
+		trust := ep.trustBestAddrUntil
+		ep.mu.Unlock()
+		if ba.ap.IsValid() && ba.ap.Addr() != tailcfg.DerpMagicIPAddr && mono.Now().Before(trust) {
+			c.dlogf("[v1] magicsock: disco: sending AmneziaWG config request tx=%x to %v via direct %v (nodeKey=%v)",
+				requestID[:4], discoKey.ShortString(), ba.ap, ep.publicKey.ShortString())
+			go c.sendDiscoMessage(ba.epAddr, ep.publicKey, discoKey, req, discoLog)
+			sent = true
+		}
+		return false
 	})
 
 	if !sent {
 		delete(c.amneziaWGConfigWaiters, requestID)
-		return fmt.Errorf("no DERP endpoint available for peer %v", discoKey.ShortString())
+		return fmt.Errorf("no path available for peer %v", discoKey.ShortString())
 	}
 
 	return nil
