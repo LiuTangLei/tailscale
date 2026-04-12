@@ -2119,8 +2119,8 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			// Derive timeout per peer
-			peerCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			// Derive timeout per peer; use 8s to tolerate high-RTT DERP paths
+			peerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 			defer cancel()
 			cfg, err := h.requestPeerAmneziaWGConfig(peerCtx, p.DiscoKey(), p.Key())
 			hn := p.Hostinfo().Hostname()
@@ -2146,10 +2146,11 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 		close(resCh)
 	}()
 
-	var collected []peerResult
+	collected := make([]peerResult, 0)
 	for pr := range resCh {
 		if pr.Err != "" {
-			continue // ignore errors; could log if desired
+			h.Logf("awg-sync-peers: skipping peer %s (%s): %s", pr.Hostname, pr.NodeKey, pr.Err)
+			continue
 		}
 		if isAmneziaWGZero(pr.Config) { // only return peers with non-zero config
 			continue
