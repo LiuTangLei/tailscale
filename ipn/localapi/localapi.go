@@ -2120,10 +2120,28 @@ func (h *Handler) serveAWGSyncApply(w http.ResponseWriter, r *http.Request) {
 }
 
 // requestPeerAmneziaWGConfig is a helper to disco-request AWG config for a tailcfg.Node.
+// It first sends a disco ping to the peer to trigger NAT traversal and establish
+// direct UDP paths; without this, idle peers have no bestAddr and the AWG config
+// request can only reach them via DERP, which may be unavailable.
 func (h *Handler) requestPeerAmneziaWGConfig(ctx context.Context, discoKey key.DiscoPublic, nodeKey key.NodePublic) (ipn.AmneziaWGPrefs, error) {
 	if discoKey.IsZero() {
 		return ipn.AmneziaWGPrefs{}, errors.New("peer has no disco key")
 	}
+
+	// Pre-ping: trigger disco handshake to open NAT holes and establish bestAddr.
+	if nm := h.b.NetMap(); nm != nil {
+		for _, p := range nm.Peers {
+			if p.Key() == nodeKey {
+				if addrs := p.Addresses(); addrs.Len() > 0 {
+					pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
+					_, _ = h.b.Ping(pingCtx, addrs.At(0).Addr(), tailcfg.PingDisco, 0)
+					pingCancel()
+				}
+				break
+			}
+		}
+	}
+
 	ms := h.b.MagicConn()
 	if ms == nil {
 		return ipn.AmneziaWGPrefs{}, errors.New("magicsock not available")
