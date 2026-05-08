@@ -15,9 +15,9 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/tailscale/wireguard-go/conn"
-	"github.com/tailscale/wireguard-go/device"
-	"github.com/tailscale/wireguard-go/tun"
+	"github.com/LiuTangLei/wireguard-go/conn"
+	"github.com/LiuTangLei/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"golang.org/x/crypto/curve25519"
 	"tailscale.com/wgengine/wgcfg"
 )
