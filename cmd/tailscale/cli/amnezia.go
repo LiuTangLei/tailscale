@@ -1309,18 +1309,23 @@ selectionLoop:
 
 // restartTailscaledWithPrompt asks user if they want to restart tailscaled and handles the restart.
 func restartTailscaledWithPrompt() error {
-	fmt.Print("Restart tailscaled now to apply changes? [Y/n]: ")
+	if !canRestartTailscaledAutomatically() {
+		fmt.Println(tailscaledManualRestartHint())
+		return nil
+	}
+
+	fmt.Print("Restart Tailscale now to apply changes? [Y/n]: ")
 	scanner := bufio.NewScanner(os.Stdin)
 	if scanner.Scan() {
 		response := strings.TrimSpace(strings.ToLower(scanner.Text()))
 		if response == "" || response == "y" || response == "yes" {
-			fmt.Println("Restarting tailscaled...")
+			fmt.Println("Restarting Tailscale...")
 			if err := restartTailscaled(); err != nil {
-				return fmt.Errorf("failed to restart tailscaled: %w\nPlease restart tailscaled manually for changes to take effect", err)
+				return fmt.Errorf("failed to restart Tailscale: %w\n%s", err, tailscaledManualRestartHint())
 			}
-			fmt.Println("tailscaled restarted successfully.")
+			fmt.Println("Tailscale restarted successfully.")
 		} else {
-			fmt.Println("Skipped restart. Please restart tailscaled manually for changes to take effect.")
+			fmt.Printf("Skipped restart. %s\n", tailscaledManualRestartHint())
 		}
 	}
 	return nil

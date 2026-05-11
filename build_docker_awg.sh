@@ -27,8 +27,9 @@ PUSH="${PUSH:-true}"                                   # true -> push to registr
 TARGET="${TARGET:-client}"                             # client | k8s-operator | ...
 REPOS="${REPOS:-ltlei/tailscale-awg}"                  # default repo to push images to (change as needed)
 TAGS="${TAGS:-v${VERSION_SHORT},v${VERSION_MINOR},latest}"
-BASE="${BASE:-tailscale/alpine-base:3.19}"
+BASE="${BASE:-tailscale/alpine-base:3.22}"
 PLATFORM="${PLATFORM:-}"                               # default = all supported by mkctr/buildx
+GOARCH="${GOARCH:-arm,arm64,amd64,386,riscv64}"
 ANNOTATIONS="${ANNOTATIONS:-org.opencontainers.image.source=https://github.com/LiuTangLei/tailscale,org.opencontainers.image.vendor=ltlei}"
 
 echo "build_docker_awg.sh starting with:"
@@ -38,6 +39,7 @@ echo "  TAGS   = ${TAGS}"
 echo "  PUSH   = ${PUSH}"
 echo "  BASE   = ${BASE}"
 echo "  PLATFORM = ${PLATFORM}"
+echo "  GOARCH = ${GOARCH}"
 echo ""
 
 case "${TARGET}" in
@@ -58,6 +60,7 @@ case "${TARGET}" in
       --repos="${REPOS}" \
       --push="${PUSH}" \
       --target="${PLATFORM}" \
+      --goarch="${GOARCH}" \
       --annotations="${ANNOTATIONS}" \
       /usr/local/bin/containerboot
     ;;
@@ -75,6 +78,7 @@ case "${TARGET}" in
       --repos="${REPOS}" \
       --push="${PUSH}" \
       --target="${PLATFORM}" \
+      --goarch="${GOARCH}" \
       --annotations="${ANNOTATIONS}" \
       /usr/local/bin/operator
     ;;
@@ -92,6 +96,7 @@ case "${TARGET}" in
       --repos="${REPOS}" \
       --push="${PUSH}" \
       --target="${PLATFORM}" \
+      --goarch="${GOARCH}" \
       --annotations="${ANNOTATIONS}" \
       /usr/local/bin/k8s-nameserver
     ;;
@@ -109,6 +114,7 @@ case "${TARGET}" in
       --repos="${REPOS}" \
       --push="${PUSH}" \
       --target="${PLATFORM}" \
+      --goarch="${GOARCH}" \
       --annotations="${ANNOTATIONS}" \
       /usr/local/bin/tsidp
     ;;
@@ -126,6 +132,7 @@ case "${TARGET}" in
       --repos="${REPOS}" \
       --push="${PUSH}" \
       --target="${PLATFORM}" \
+      --goarch="${GOARCH}" \
       --annotations="${ANNOTATIONS}" \
       /usr/local/bin/k8s-proxy
     ;;
