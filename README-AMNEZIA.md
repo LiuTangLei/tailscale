@@ -5,7 +5,7 @@ A Tailscale fork that integrates Amnezia-WG 1.5 capabilities for advanced DPI ev
 ## Key Features
 
 - **Zero-config compatibility**: Behaves exactly like standard Tailscale by default
-- **Runtime configuration**: Change settings without restarting tailscaled
+- **CLI configuration**: Change settings from the CLI and get platform-specific restart guidance when transport parameters need to be rebuilt
 - **Multiple interfaces**: CLI commands, JSON flags, and environment variables
 - **Advanced DPI evasion**: Custom Protocol Signature (CPS), junk packet injection, and handshake randomization
 - **Protocol masking**: Mimic QUIC, DNS, SIP, and other UDP protocols
@@ -45,6 +45,26 @@ tailscale amnezia-wg set
 export TS_AMNEZIA_JC=4 TS_AMNEZIA_JMIN=40 TS_AMNEZIA_JMAX=70
 export TS_AMNEZIA_I1='<b 0xc0><r 32><c><t>'
 sudo systemctl restart tailscaled
+```
+
+### Restarting After AWG Changes
+
+Most Linux installs use systemd:
+
+```bash
+sudo systemctl restart tailscaled
+```
+
+OpenWrt uses the `tailscale` init service name:
+
+```sh
+/etc/init.d/tailscale restart
+```
+
+Docker and Kubernetes images usually run `tailscaled` under `containerboot`, without an in-container service manager. Restart the container or pod from the host/orchestrator instead:
+
+```sh
+docker restart <container>
 ```
 
 ## Configuration Parameters
