@@ -4,14 +4,12 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net/netip"
-	"os"
 	"os/exec"
 	"runtime"
 	"slices"
@@ -311,21 +309,8 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 
 	// If Amnezia-WG configuration was changed, offer to restart tailscaled
 	if maskedPrefs.AmneziaWGSet {
-		fmt.Print("Restart tailscaled now to apply Amnezia-WG changes? [Y/n]: ")
-		scanner := bufio.NewScanner(os.Stdin)
-		if scanner.Scan() {
-			response := strings.TrimSpace(strings.ToLower(scanner.Text()))
-			if response == "" || response == "y" || response == "yes" {
-				fmt.Println("Restarting tailscaled...")
-				if err := restartTailscaled(); err != nil {
-					fmt.Printf("Warning: Failed to restart tailscaled: %v\n", err)
-					fmt.Println("You may need to restart tailscaled manually for changes to take effect.")
-				} else {
-					fmt.Println("tailscaled restarted successfully.")
-				}
-			} else {
-				fmt.Println("Skipped restart. Please restart tailscaled manually for Amnezia-WG changes to take effect.")
-			}
+		if err := restartTailscaledWithPrompt(); err != nil {
+			fmt.Printf("Warning: %v\n", err)
 		}
 	}
 
