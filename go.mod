@@ -6,7 +6,7 @@ require (
 	filippo.io/mkcert v1.4.4
 	fyne.io/systray v1.11.1-0.20250812065214-4856ac3adc3c
 	github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9
-	github.com/LiuTangLei/wireguard-go v0.0.20
+	github.com/LiuTangLei/wireguard-go v0.0.21
 	github.com/akutz/memconn v0.1.0
 	github.com/alexbrainman/sspi v0.0.0-20231016080023-1a75b4708caa
 	github.com/andybalholm/brotli v1.1.0
@@ -124,6 +124,7 @@ require (
 	golang.org/x/time v0.12.0
 	golang.org/x/tools v0.44.0
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
+	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 	golang.zx2c4.com/wireguard/windows v0.5.3
 	gopkg.in/square/go-jose.v2 v2.6.0
 	gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8
