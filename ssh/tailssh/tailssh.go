@@ -46,6 +46,7 @@ import (
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/httpm"
 	"tailscale.com/util/mak"
+	"tailscale.com/version/distro"
 )
 
 var (
@@ -1254,6 +1255,22 @@ func mapLocalUser(ruleSSHUsers map[string]string, reqSSHUser string) (localUser 
 		v = ruleSSHUsers["*"]
 	}
 	if v == "=" {
+		// Skip lookup for gokrazy as we intentionally fall back to a synthesized
+		// root user there when user lookup fails.
+		if distro.Get() == distro.Gokrazy {
+			return reqSSHUser
+		}
+
+		// Immediately look up user information for purposes of generating
+		// hold and delegate URL (if necessary).
+		lu, err := userLookup(reqSSHUser)
+		if err != nil {
+			return ""
+		}
+		// Don't match as root for autogroup:nonroot
+		if lu.Uid == "0" || lu.Username == "root" {
+			return ""
+		}
 		return reqSSHUser
 	}
 	return v
