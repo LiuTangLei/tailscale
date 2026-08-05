@@ -69,6 +69,23 @@ func TestAmneziaWGPrefsJSONV2AndV3(t *testing.T) {
 	}
 }
 
+func TestAmneziaWGPrefsVersions(t *testing.T) {
+	if p := (AmneziaWGPrefs{}); !p.IsZero() || p.IsV3() {
+		t.Fatalf("zero prefs: IsZero=%v, IsV3=%v", p.IsZero(), p.IsV3())
+	}
+
+	v2 := AmneziaWGPrefs{JC: 1, H1: MagicHeaderRange{Min: 123, Max: 123}}
+	if v2.IsZero() || v2.IsV3() {
+		t.Fatalf("v2 prefs: IsZero=%v, IsV3=%v", v2.IsZero(), v2.IsV3())
+	}
+
+	v3 := v2
+	v3.RekeyAfterTime = MagicHeaderRange{Min: 120, Max: 180}
+	if v3.IsZero() || !v3.IsV3() {
+		t.Fatalf("v3 prefs: IsZero=%v, IsV3=%v", v3.IsZero(), v3.IsV3())
+	}
+}
+
 func TestPrefsEqual(t *testing.T) {
 	tstest.PanicOnLog()
 

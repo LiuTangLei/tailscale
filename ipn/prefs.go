@@ -431,6 +431,25 @@ type AmneziaWGPrefs struct {
 	MaxHandshakeAttempts   MagicHeaderRange `json:",omitempty"`
 }
 
+// IsZero reports whether p disables all Amnezia-WG behavior and therefore
+// represents standard WireGuard. Keeping this check with the data type avoids
+// callers overlooking fields added by newer AWG versions.
+func (p AmneziaWGPrefs) IsZero() bool {
+	return p == (AmneziaWGPrefs{})
+}
+
+// IsV3 reports whether p uses any AWG v3-only parameter. A configuration with
+// only the historical fields is an AWG v2 configuration.
+func (p AmneziaWGPrefs) IsV3() bool {
+	return p.HeaderProtectionKey != "" ||
+		!p.ContentPaddingAddition.IsZero() ||
+		!p.RekeyAfterTime.IsZero() ||
+		!p.RekeyTimeout.IsZero() ||
+		!p.RejectAfterTime.IsZero() ||
+		!p.KeepaliveTimeout.IsZero() ||
+		!p.MaxHandshakeAttempts.IsZero()
+}
+
 // UnmarshalJSON implements custom JSON unmarshaling for AmneziaWGPrefs to handle
 // backward compatibility. If parsing fails due to incompatible old format,
 // it returns a zero value to avoid startup errors.

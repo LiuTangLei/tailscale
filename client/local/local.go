@@ -1742,7 +1742,7 @@ func (lc *Client) RequestAmneziaWGConfig(ctx context.Context, nodeKey key.NodePu
 
 	body, err := lc.send(ctx, "POST", "/localapi/v0/request-amnezia-wg-config", 200, bytes.NewReader(reqJSON))
 	if err != nil {
-		return ipn.AmneziaWGPrefs{}, fmt.Errorf("error %w: %s", err, body)
+		return ipn.AmneziaWGPrefs{}, fmt.Errorf("request Amnezia-WG config: %w", err)
 	}
 
 	return decodeJSON[ipn.AmneziaWGPrefs](body)

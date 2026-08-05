@@ -663,16 +663,36 @@ func parseCallMeMaybeVia(ver uint8, p []byte) (m *CallMeMaybeVia, err error) {
 	return m, err
 }
 
+const (
+	// AmneziaWGConfigVersionV2 is the highest configuration version supported
+	// by legacy requests, which contained only a request ID.
+	AmneziaWGConfigVersionV2 uint8 = 2
+	// AmneziaWGConfigVersionV3 is the highest configuration version supported
+	// by current requests.
+	AmneziaWGConfigVersionV3 uint8 = 3
+)
+
 // AmneziaWGConfigRequest is a message sent to request Amnezia-WG configuration
 // from a peer. It can be sent via DERP or direct UDP connection.
 type AmneziaWGConfigRequest struct {
 	// RequestID is a random identifier to match request with response
 	RequestID [8]byte
+	// MaxConfigVersion is the newest AWG configuration understood by the
+	// requester. Zero denotes a legacy request and therefore AWG v2. The field
+	// is appended to the historical packet so legacy parsers safely ignore it.
+	MaxConfigVersion uint8
 }
 
 func (m *AmneziaWGConfigRequest) AppendMarshal(b []byte) []byte {
-	ret, d := appendMsgHeader(b, TypeAmneziaWGConfigRequest, v0, 8)
+	dataLen := 8
+	if m.MaxConfigVersion != 0 {
+		dataLen++
+	}
+	ret, d := appendMsgHeader(b, TypeAmneziaWGConfigRequest, v0, dataLen)
 	copy(d, m.RequestID[:])
+	if m.MaxConfigVersion != 0 {
+		d[8] = m.MaxConfigVersion
+	}
 	return ret
 }
 
@@ -682,7 +702,20 @@ func parseAmneziaWGConfigRequest(ver uint8, p []byte) (m *AmneziaWGConfigRequest
 	}
 	m = new(AmneziaWGConfigRequest)
 	copy(m.RequestID[:], p[:8])
+	if len(p) >= 9 {
+		m.MaxConfigVersion = p[8]
+	}
 	return m, nil
+}
+
+// SupportsConfigVersion reports whether the requester can safely consume an
+// AWG configuration of version version.
+func (m *AmneziaWGConfigRequest) SupportsConfigVersion(version uint8) bool {
+	maxVersion := m.MaxConfigVersion
+	if maxVersion == 0 {
+		maxVersion = AmneziaWGConfigVersionV2
+	}
+	return version <= maxVersion
 }
 
 // AmneziaWGConfigResponse is a message sent in response to AmneziaWGConfigRequest

@@ -4660,6 +4660,11 @@ func (c *Conn) handleAmneziaWGConfigRequestLocked(dm *disco.AmneziaWGConfigReque
 			awgPrefs = c.amneziaWGConfigProvider()
 		}()
 	}
+	if !amneziaWGConfigRequestCompatible(dm, awgPrefs) {
+		c.logf("magicsock: disco: not sending AWG v3 config tx=%x to legacy v2 requester %v",
+			dm.RequestID[:4], di.discoKey.ShortString())
+		return
+	}
 
 	configJSON, err := json.Marshal(awgPrefs)
 	if err != nil {
@@ -4757,6 +4762,14 @@ func (c *Conn) handleAmneziaWGConfigRequestLocked(dm *disco.AmneziaWGConfigReque
 		dm.RequestID[:4], di.discoKey.ShortString())
 }
 
+func amneziaWGConfigRequestCompatible(req *disco.AmneziaWGConfigRequest, prefs ipn.AmneziaWGPrefs) bool {
+	version := disco.AmneziaWGConfigVersionV2
+	if prefs.IsV3() {
+		version = disco.AmneziaWGConfigVersionV3
+	}
+	return req.SupportsConfigVersion(version)
+}
+
 // handleAmneziaWGConfigResponseLocked handles incoming Amnezia-WG configuration responses.
 // It delivers the result to the waiter channel registered for the matching request ID.
 // c.mu must be held.
@@ -4801,7 +4814,10 @@ func (c *Conn) RequestAmneziaWGConfigCtx(ctx context.Context, discoKey key.Disco
 		return fmt.Errorf("failed to generate request ID: %w", err)
 	}
 
-	req := &disco.AmneziaWGConfigRequest{RequestID: requestID}
+	req := &disco.AmneziaWGConfigRequest{
+		RequestID:        requestID,
+		MaxConfigVersion: disco.AmneziaWGConfigVersionV3,
+	}
 
 	// Register waiter
 	if _, exists := c.amneziaWGConfigWaiters[requestID]; exists {

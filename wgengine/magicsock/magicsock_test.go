@@ -48,6 +48,7 @@ import (
 	"tailscale.com/disco"
 	"tailscale.com/envknob"
 	"tailscale.com/health"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/netcheck"
@@ -93,6 +94,33 @@ func init() {
 	// (In particular, TestActiveDiscovery.)
 	discoPingInterval = 100 * time.Millisecond
 	pingTimeoutDuration = 100 * time.Millisecond
+}
+
+func TestAmneziaWGConfigRequestCompatibility(t *testing.T) {
+	v2 := ipn.AmneziaWGPrefs{JC: 1}
+	v3 := v2
+	v3.HeaderProtectionKey = strings.Repeat("42", 32)
+
+	legacy := &disco.AmneziaWGConfigRequest{}
+	current := &disco.AmneziaWGConfigRequest{MaxConfigVersion: disco.AmneziaWGConfigVersionV3}
+	for _, tt := range []struct {
+		name  string
+		req   *disco.AmneziaWGConfigRequest
+		prefs ipn.AmneziaWGPrefs
+		want  bool
+	}{
+		{"legacy-standard", legacy, ipn.AmneziaWGPrefs{}, true},
+		{"legacy-v2", legacy, v2, true},
+		{"legacy-v3", legacy, v3, false},
+		{"current-v2", current, v2, true},
+		{"current-v3", current, v3, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := amneziaWGConfigRequestCompatible(tt.req, tt.prefs); got != tt.want {
+				t.Fatalf("compatible = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 // WaitReady waits until the magicsock is entirely initialized and connected

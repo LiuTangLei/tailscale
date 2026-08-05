@@ -1995,65 +1995,39 @@ func (h *Handler) serveRequestAmneziaWGConfig(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	// Get the magicsock connection to make the disco request
-	ms := h.b.MagicConn()
-	if ms == nil {
-		http.Error(w, "magicsock not available", http.StatusInternalServerError)
-		return
-	}
-
-	// Look up the disco key for this node key
-	// We need to get the peer info from the netmap
+	// Look up the peer so the shared request path can preflight its routes.
 	netMap := h.b.NetMap()
 	if netMap == nil {
 		http.Error(w, "no netmap available", http.StatusInternalServerError)
 		return
 	}
 
-	var discoKey key.DiscoPublic
-	var found bool
+	var target tailcfg.NodeView
 	for _, peer := range netMap.Peers {
 		if peer.Key() == req.NodeKey {
-			discoKey = peer.DiscoKey()
-			found = true
+			target = peer
 			break
 		}
 	}
 
-	if !found {
+	if !target.Valid() {
 		http.Error(w, "peer not found in netmap", http.StatusNotFound)
 		return
 	}
 
-	// Create a response channel
-	respCh := make(chan *magicsock.AmneziaWGConfigData, 1)
-	defer close(respCh)
-
-	// Send the disco request
-	if err := ms.RequestAmneziaWGConfigCtx(ctx, discoKey, respCh); err != nil {
-		http.Error(w, "failed to send disco request: "+err.Error(), http.StatusInternalServerError)
+	config, err := h.requestPeerAmneziaWGConfig(ctx, target)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, context.DeadlineExceeded) {
+			status = http.StatusRequestTimeout
+		}
+		http.Error(w, "failed to request AWG config: "+err.Error(), status)
 		return
 	}
 
-	// Wait for response or timeout
-	select {
-	case resp := <-respCh:
-		// Parse the received JSON config
-		var config ipn.AmneziaWGPrefs
-		if err := json.Unmarshal(resp.ConfigJSON, &config); err != nil {
-			http.Error(w, "failed to parse received config: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Return the config as JSON
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(config); err != nil {
-			h.Logf("failed to encode response: %v", err)
-		}
-
-	case <-ctx.Done():
-		http.Error(w, "request timed out", http.StatusRequestTimeout)
-		return
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(config); err != nil {
+		h.Logf("failed to encode response: %v", err)
 	}
 }
 
@@ -2122,7 +2096,7 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 			// Derive timeout per peer; use 8s to tolerate high-RTT DERP paths
 			peerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 			defer cancel()
-			cfg, err := h.requestPeerAmneziaWGConfig(peerCtx, p.DiscoKey(), p.Key())
+			cfg, err := h.requestPeerAmneziaWGConfig(peerCtx, p)
 			hn := p.Hostinfo().Hostname()
 			pr := peerResult{idx: i, NodeKey: p.Key().ShortString(), Hostname: hn}
 			addrs := p.Addresses()
@@ -2215,7 +2189,7 @@ func (h *Handler) serveAWGSyncApply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "peer not found", http.StatusNotFound)
 		return
 	}
-	cfg, err := h.requestPeerAmneziaWGConfig(ctx, target.DiscoKey(), target.Key())
+	cfg, err := h.requestPeerAmneziaWGConfig(ctx, target)
 	if err != nil {
 		http.Error(w, "failed to fetch config: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -2236,27 +2210,26 @@ func (h *Handler) serveAWGSyncApply(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+const amneziaWGDiscoPreflightTimeout = 2 * time.Second
+
 // requestPeerAmneziaWGConfig is a helper to disco-request AWG config for a tailcfg.Node.
 // It first sends a disco ping to the peer to trigger NAT traversal and establish
 // direct UDP paths; without this, idle peers have no bestAddr and the AWG config
 // request can only reach them via DERP, which may be unavailable.
-func (h *Handler) requestPeerAmneziaWGConfig(ctx context.Context, discoKey key.DiscoPublic, nodeKey key.NodePublic) (ipn.AmneziaWGPrefs, error) {
+func (h *Handler) requestPeerAmneziaWGConfig(ctx context.Context, peer tailcfg.NodeView) (ipn.AmneziaWGPrefs, error) {
+	if !peer.Valid() {
+		return ipn.AmneziaWGPrefs{}, errors.New("invalid peer")
+	}
+	discoKey := peer.DiscoKey()
 	if discoKey.IsZero() {
 		return ipn.AmneziaWGPrefs{}, errors.New("peer has no disco key")
 	}
 
 	// Pre-ping: trigger disco handshake to open NAT holes and establish bestAddr.
-	if nm := h.b.NetMap(); nm != nil {
-		for _, p := range nm.Peers {
-			if p.Key() == nodeKey {
-				if addrs := p.Addresses(); addrs.Len() > 0 {
-					pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
-					_, _ = h.b.Ping(pingCtx, addrs.At(0).Addr(), tailcfg.PingDisco, 0)
-					pingCancel()
-				}
-				break
-			}
-		}
+	if addrs := peer.Addresses(); addrs.Len() > 0 {
+		pingCtx, pingCancel := context.WithTimeout(ctx, amneziaWGDiscoPreflightTimeout)
+		_, _ = h.b.Ping(pingCtx, addrs.At(0).Addr(), tailcfg.PingDisco, 0)
+		pingCancel()
 	}
 
 	ms := h.b.MagicConn()
@@ -2281,5 +2254,5 @@ func (h *Handler) requestPeerAmneziaWGConfig(ctx context.Context, discoKey key.D
 
 // isAmneziaWGZero reports whether all fields are zero/empty.
 func isAmneziaWGZero(p ipn.AmneziaWGPrefs) bool {
-	return p == (ipn.AmneziaWGPrefs{})
+	return p.IsZero()
 }

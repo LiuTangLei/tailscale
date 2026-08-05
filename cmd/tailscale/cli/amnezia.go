@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -241,13 +242,7 @@ func printAmneziaWGConfig(config ipn.AmneziaWGPrefs) {
 }
 
 func hasV3Config(config ipn.AmneziaWGPrefs) bool {
-	return config.HeaderProtectionKey != "" ||
-		!config.ContentPaddingAddition.IsZero() ||
-		!config.RekeyAfterTime.IsZero() ||
-		!config.RekeyTimeout.IsZero() ||
-		!config.RejectAfterTime.IsZero() ||
-		!config.KeepaliveTimeout.IsZero() ||
-		!config.MaxHandshakeAttempts.IsZero()
+	return config.IsV3()
 }
 
 func amneziaConfigVersion(config ipn.AmneziaWGPrefs) string {
@@ -276,12 +271,7 @@ func rangeOrDisabled(value ipn.MagicHeaderRange) string {
 
 // isConfigZero checks if the Amnezia-WG configuration is all zero values.
 func isConfigZero(config ipn.AmneziaWGPrefs) bool {
-	return config.JC == 0 && config.JMin == 0 && config.JMax == 0 &&
-		config.S1 == 0 && config.S2 == 0 && config.S3 == 0 && config.S4 == 0 &&
-		config.I1 == "" && config.I2 == "" && config.I3 == "" && config.I4 == "" && config.I5 == "" &&
-		(config.H1.Min == 0 && config.H1.Max == 0) && (config.H2.Min == 0 && config.H2.Max == 0) &&
-		(config.H3.Min == 0 && config.H3.Max == 0) && (config.H4.Min == 0 && config.H4.Max == 0) &&
-		!hasV3Config(config)
+	return config.IsZero()
 }
 
 // formatConfigAsJSON formats the configuration as a compact JSON string.
@@ -478,8 +468,7 @@ func runAmneziaWGSync(ctx context.Context, args []string) error {
 		stats.Total, stats.WithConfig, stats.Standard, stats.Failed, stats.Duration.Seconds())
 
 	if len(peerConfigs) == 0 {
-		fmt.Println("No AWG configurations found on online peers.")
-		fmt.Println("All peers are using standard WireGuard (no Amnezia-WG parameters).")
+		printNoAWGConfigs(os.Stdout, stats)
 		return nil
 	}
 
@@ -538,88 +527,169 @@ type awgDiscoveryStats struct {
 }
 
 const (
-	awgSyncMaxConcurrent  = 10              // max concurrent disco requests
-	awgSyncPerPeerTimeout = 5 * time.Second // per peer request timeout
+	awgSyncMaxConcurrent     = 10
+	awgSyncPerAttemptTimeout = 5 * time.Second
+	awgSyncMaxAttempts       = 2
+	awgSyncRetryDelay        = 250 * time.Millisecond
 )
+
+type awgSyncPolicy struct {
+	MaxConcurrent  int
+	AttemptTimeout time.Duration
+	MaxAttempts    int
+	RetryDelay     time.Duration
+}
+
+var defaultAWGSyncPolicy = awgSyncPolicy{
+	MaxConcurrent:  awgSyncMaxConcurrent,
+	AttemptTimeout: awgSyncPerAttemptTimeout,
+	MaxAttempts:    awgSyncMaxAttempts,
+	RetryDelay:     awgSyncRetryDelay,
+}
+
+type awgConfigRequester func(context.Context, key.NodePublic) (ipn.AmneziaWGPrefs, error)
+
+type awgPeerDiscoveryResult struct {
+	peer     peerInfo
+	config   ipn.AmneziaWGPrefs
+	err      error
+	duration time.Duration
+	attempts int
+}
 
 // requestAWGConfigsFromPeers requests AWG configurations from all peers using disco protocol
 // and prints per-peer results in a deterministic order while still performing requests concurrently.
 func requestAWGConfigsFromPeers(ctx context.Context, peers []peerInfo) ([]peerAWGConfig, awgDiscoveryStats, error) {
-	start := time.Now()
-	var (
-		wg      sync.WaitGroup
-		configs []peerAWGConfig
-		mu      sync.Mutex
-	)
+	return requestAWGConfigsFromPeersWith(ctx, peers, requestAWGConfigFromPeer, defaultAWGSyncPolicy, os.Stdout)
+}
 
-	type result struct {
-		idx    int
-		peer   peerInfo
-		cfg    ipn.AmneziaWGPrefs
-		err    error
-		dur    time.Duration
-		zero   bool
-		failed bool
+func requestAWGConfigsFromPeersWith(ctx context.Context, peers []peerInfo, request awgConfigRequester, policy awgSyncPolicy, out io.Writer) ([]peerAWGConfig, awgDiscoveryStats, error) {
+	if request == nil || out == nil || policy.MaxConcurrent < 1 || policy.AttemptTimeout <= 0 || policy.MaxAttempts < 1 || policy.RetryDelay < 0 {
+		return nil, awgDiscoveryStats{}, errors.New("invalid AWG sync policy")
 	}
 
-	resultsCh := make(chan result, len(peers))
-	sem := make(chan struct{}, awgSyncMaxConcurrent)
+	start := time.Now()
+	results := make([]awgPeerDiscoveryResult, len(peers))
+	sem := make(chan struct{}, policy.MaxConcurrent)
+	var wg sync.WaitGroup
 
 	for i, p := range peers {
-		peer := p
-		idx := i
 		wg.Add(1)
-		go func() {
+		go func(i int, peer peerInfo) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			peerCtx, cancel := context.WithTimeout(ctx, awgSyncPerPeerTimeout)
-			defer cancel()
-			reqStart := time.Now()
-			cfg, err := requestAWGConfigFromPeer(peerCtx, peer.NodeKey)
-			zero := isConfigZero(cfg)
-			failed := err != nil
-			if err == nil && !zero {
-				mu.Lock()
-				configs = append(configs, peerAWGConfig{PeerName: peer.Name, PeerIP: peer.IP, Config: cfg})
-				mu.Unlock()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				results[i] = awgPeerDiscoveryResult{peer: peer, err: ctx.Err()}
+				return
 			}
-			resultsCh <- result{idx: idx, peer: peer, cfg: cfg, err: err, dur: time.Since(reqStart), zero: zero, failed: failed}
-		}()
+			defer func() { <-sem }()
+
+			reqStart := time.Now()
+			cfg, attempts, err := requestAWGConfigWithRetry(ctx, peer.NodeKey, request, policy)
+			results[i] = awgPeerDiscoveryResult{
+				peer:     peer,
+				config:   cfg,
+				err:      err,
+				duration: time.Since(reqStart),
+				attempts: attempts,
+			}
+		}(i, p)
 	}
+	wg.Wait()
 
-	// Close results channel after all goroutines finish
-	go func() {
-		wg.Wait()
-		close(resultsCh)
-	}()
+	stats := awgDiscoveryStats{Total: len(peers)}
+	configs := make([]peerAWGConfig, 0, len(peers))
 
-	// Collect results into slice indexed by original order for stable printing
-	ordered := make([]result, len(peers))
-	for r := range resultsCh {
-		ordered[r.idx] = r
-	}
-
-	var stats awgDiscoveryStats
-	stats.Total = len(peers)
-
-	for _, r := range ordered {
-		if r.failed {
+	for _, r := range results {
+		if r.err != nil {
 			stats.Failed++
-			fmt.Printf("[ERR] %s (%s): %v\n", r.peer.Name, r.peer.IP, r.err)
+			if r.attempts > 1 {
+				fmt.Fprintf(out, "[ERR] %s (%s) after %d attempts: %v\n", r.peer.Name, r.peer.IP, r.attempts, r.err)
+			} else {
+				fmt.Fprintf(out, "[ERR] %s (%s): %v\n", r.peer.Name, r.peer.IP, r.err)
+			}
 			continue
 		}
-		if r.zero {
+		if r.config.IsZero() {
 			stats.Standard++
-			fmt.Printf("[--] %s (%s): standard WireGuard\n", r.peer.Name, r.peer.IP)
+			fmt.Fprintf(out, "[--] %s (%s): standard WireGuard\n", r.peer.Name, r.peer.IP)
 		} else {
 			stats.WithConfig++
-			fmt.Printf("[OK] %s (%s): AWG config found (%.0fms)\n", r.peer.Name, r.peer.IP, float64(r.dur.Milliseconds()))
+			configs = append(configs, peerAWGConfig{PeerName: r.peer.Name, PeerIP: r.peer.IP, Config: r.config})
+			if r.attempts > 1 {
+				fmt.Fprintf(out, "[OK] %s (%s): AWG config found (%d attempts, %dms)\n", r.peer.Name, r.peer.IP, r.attempts, r.duration.Milliseconds())
+			} else {
+				fmt.Fprintf(out, "[OK] %s (%s): AWG config found (%dms)\n", r.peer.Name, r.peer.IP, r.duration.Milliseconds())
+			}
 		}
 	}
 
 	stats.Duration = time.Since(start)
 	return configs, stats, nil
+}
+
+func requestAWGConfigWithRetry(ctx context.Context, nodeKey key.NodePublic, request awgConfigRequester, policy awgSyncPolicy) (ipn.AmneziaWGPrefs, int, error) {
+	var lastErr error
+	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return ipn.AmneziaWGPrefs{}, attempt - 1, err
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, policy.AttemptTimeout)
+		config, err := request(attemptCtx, nodeKey)
+		cancel()
+		if err == nil {
+			return config, attempt, nil
+		}
+		lastErr = err
+		if attempt == policy.MaxAttempts || !isRetryableAWGSyncError(err) || ctx.Err() != nil {
+			return ipn.AmneziaWGPrefs{}, attempt, err
+		}
+
+		if policy.RetryDelay > 0 {
+			timer := time.NewTimer(policy.RetryDelay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return ipn.AmneziaWGPrefs{}, attempt, ctx.Err()
+			}
+		}
+	}
+	return ipn.AmneziaWGPrefs{}, policy.MaxAttempts, lastErr
+}
+
+func isRetryableAWGSyncError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var timeoutError interface{ Timeout() bool }
+	if errors.As(err, &timeoutError) && timeoutError.Timeout() {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "request timed out") ||
+		strings.Contains(message, "context deadline exceeded") ||
+		strings.Contains(message, "no path available")
+}
+
+func printNoAWGConfigs(out io.Writer, stats awgDiscoveryStats) {
+	switch {
+	case stats.Failed == 0:
+		fmt.Fprintln(out, "No AWG configurations found on online peers.")
+		fmt.Fprintln(out, "All peers are using standard WireGuard (no Amnezia-WG parameters).")
+	case stats.Failed == stats.Total:
+		fmt.Fprintf(out, "Unable to determine AWG configuration: all %d peer requests failed.\n", stats.Total)
+		fmt.Fprintln(out, "Peers may be online in the control plane but temporarily unreachable via disco/DERP. Please retry.")
+	default:
+		fmt.Fprintf(out, "No AWG configurations could be confirmed: %d peer(s) reported standard WireGuard and %d request(s) failed.\n",
+			stats.Standard, stats.Failed)
+		fmt.Fprintln(out, "Failed peers were not classified as standard WireGuard. Please retry before syncing.")
+	}
 }
 
 // requestAWGConfigFromPeer requests AWG configuration from a specific peer using disco protocol
