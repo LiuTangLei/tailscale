@@ -95,7 +95,16 @@ func runRestartCommands(platform string, commands []restartCommandSpec) error {
 }
 
 func canRestartTailscaledAutomatically() bool {
-	return !(restartGOOS() == "linux" && restartInContainer())
+	switch restartGOOS() {
+	case "linux":
+		return !restartInContainer()
+	case "darwin", "windows", "freebsd", "openbsd":
+		return true
+	default:
+		// Mobile and other unsupported platforms may still share the prefs and
+		// engine code, but this CLI must not attempt a host-service restart.
+		return false
+	}
 }
 
 func tailscaledManualRestartHint() string {

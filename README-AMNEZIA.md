@@ -42,9 +42,9 @@ tailscale amnezia-wg reset
 # Via set command with JSON flag
 tailscale set --amnezia-wg='{"jc":4,"jmin":40,"jmax":70}'
 
-# Interactive configuration (includes CPS guidance)
+# Interactive generator: press Enter for AWG v3, or choose 2 for legacy AWG v2
 tailscale amnezia-wg set
-# (prompts for each parameter with examples)
+# The generated JSON is shown before it is applied.
 
 # Environment variables (requires tailscaled restart)
 export TS_AMNEZIA_JC=4 TS_AMNEZIA_JMIN=40 TS_AMNEZIA_JMAX=70
@@ -71,6 +71,14 @@ Docker and Kubernetes images usually run `tailscaled` under `containerboot`, wit
 ```sh
 docker restart <container>
 ```
+
+### Platform Notes
+
+- **Docker/Kubernetes/headless hosts**: pass JSON directly so no TTY is required, then restart the container or pod from its orchestrator.
+- **Linux/BSD/OpenWrt**: the CLI can restart the known service manager, or prints the exact manual restart guidance.
+- **macOS/Windows desktop**: configuration storage and the WireGuard device path are shared with the daemon; restart behavior follows the installed desktop/service variant.
+- **Android/iOS**: AWG v2/v3 preferences and device application remain in the shared Go core. Mobile UI packaging is separate, so distribute the same profile through the app/control integration rather than relying on the desktop CLI.
+- **Historical v2**: old JSON using `JC`/`H1` field names, lowercase names, scalar headers, or header ranges remains accepted. Applying it clears v3-only state.
 
 ## Configuration Parameters
 
@@ -131,7 +139,7 @@ CPS packets use tag-based format to emulate protocols:
 # AmneziaWG v2/v3 commands
 tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70}'                     # Basic DPI evasion (prompt to restart)
 tailscale amnezia-wg set '{"jc":4,"i1":"<b 0xc0><r 32><c><t>"}'             # Protocol masking (prompt to restart)
-tailscale amnezia-wg set                                                     # Interactive setup with CPS guidance
+tailscale amnezia-wg set                                                     # Generator: v3 default, v2 selectable
 tailscale amnezia-wg get                                                     # Show current config
 tailscale amnezia-wg reset                                                   # Reset to standard WG (prompt to restart)
 

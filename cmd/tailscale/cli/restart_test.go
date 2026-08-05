@@ -99,3 +99,17 @@ func TestTailscaledManualRestartHintOpenWrt(t *testing.T) {
 		t.Fatalf("manual restart hint = %q; want OpenWrt init command", hint)
 	}
 }
+
+func TestRestartUnsupportedPlatformRequiresManualRestart(t *testing.T) {
+	withRestartTestHooks(t, "android", distro.Distro(""), false, func(name string, args ...string) ([]byte, error) {
+		t.Fatalf("restartCommand(%q, %q) called on unsupported platform", name, args)
+		return nil, nil
+	})
+
+	if canRestartTailscaledAutomatically() {
+		t.Fatal("canRestartTailscaledAutomatically = true on android; want false")
+	}
+	if hint := tailscaledManualRestartHint(); !strings.Contains(hint, "manually") {
+		t.Fatalf("manual restart hint = %q", hint)
+	}
+}
