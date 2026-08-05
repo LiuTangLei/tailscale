@@ -61,8 +61,10 @@ HeaderProtectionKey must match.
 For Docker, scripts, desktop automation, or advanced fields, pass JSON directly:
   tailscale awg set '{"jc":5,"jmin":500,"jmax":1000,"s1":15,"s2":18,"s3":20,"s4":25,"h1":123456,"h2":67543,"h3":123123,"h4":32345}'
 
-Historical v2 JSON remains accepted. A v2 profile clears all v3-only device
-state. After applying a profile, restart tailscaled or restart the container.`,
+Historical v2 JSON remains accepted, except for the retired <c> CPS packet
+counter tag removed by AmneziaWG 2.0. Remove <c> while keeping the other CPS
+tags. A v2 profile clears all v3-only device state. After applying a profile,
+restart tailscaled or restart the container.`,
 			Exec: runAmneziaWGSet,
 		},
 		{
@@ -148,6 +150,17 @@ func validateAmneziaWGConfig(config ipn.AmneziaWGPrefs) error {
 		}
 	}
 
+	for _, signature := range []struct {
+		name, value string
+	}{
+		{"I1", config.I1}, {"I2", config.I2}, {"I3", config.I3},
+		{"I4", config.I4}, {"I5", config.I5},
+	} {
+		if cpsContainsTag(signature.value, "c") {
+			return fmt.Errorf("%s contains the retired CPS tag <c>; AmneziaWG 2.0 removed this packet counter, so remove <c> and keep the remaining tags", signature.name)
+		}
+	}
+
 	if config.HeaderProtectionKey == "" {
 		return nil
 	}
@@ -164,6 +177,28 @@ func validateAmneziaWGConfig(config ipn.AmneziaWGPrefs) error {
 		}
 	}
 	return nil
+}
+
+// cpsContainsTag reports whether spec contains a CPS tag with the given name.
+// It compares complete tag names so, for example, looking for "c" does not
+// mistake the supported <rc ...> tag for the retired packet counter.
+func cpsContainsTag(spec, want string) bool {
+	for {
+		start := strings.IndexByte(spec, '<')
+		if start < 0 {
+			return false
+		}
+		spec = spec[start+1:]
+		end := strings.IndexByte(spec, '>')
+		if end < 0 {
+			return false
+		}
+		fields := strings.Fields(spec[:end])
+		if len(fields) > 0 && fields[0] == want {
+			return true
+		}
+		spec = spec[end+1:]
+	}
 }
 
 func runAmneziaWGGet(ctx context.Context, args []string) error {
@@ -377,6 +412,9 @@ func runAmneziaWGValidate(ctx context.Context, args []string) error {
 	config := prefs.AmneziaWG
 	fmt.Println("Amnezia-WG Configuration Validation")
 	fmt.Println("===================================")
+	if err := validateAmneziaWGConfig(config); err != nil {
+		return fmt.Errorf("invalid Amnezia-WG configuration: %w", err)
+	}
 
 	if isConfigZero(config) {
 		fmt.Println("✅ Status: Standard WireGuard mode (all parameters disabled)")

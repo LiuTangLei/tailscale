@@ -24,7 +24,7 @@ A Tailscale fork that integrates both legacy AWG v2 profiles and AWG v3 profiles
 tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70}'
 
 # Advanced protocol masking with QUIC-like signature
-tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0xc0><r 32><c><t>"}'
+tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0xc0><r 32><t>"}'
 
 # AWG v3 (HeaderProtectionKey requires S1-S4 >= 12)
 tailscale amnezia-wg set '{"jc":5,"jmin":500,"jmax":1000,"s1":15,"s2":18,"s3":20,"s4":25,"h1":"123456-123500","h2":"67543-67550","h3":"123123-123200","h4":"32345-32350","header_protection_key":"4242424242424242424242424242424242424242424242424242424242424242","content_padding_addition":"5-31","rekey_after_time":"120-180","rekey_timeout":"5-7","reject_after_time":"180-240","keepalive_timeout":"10-15","max_handshake_attempts":"8-12"}'
@@ -48,7 +48,7 @@ tailscale amnezia-wg set
 
 # Environment variables (requires tailscaled restart)
 export TS_AMNEZIA_JC=4 TS_AMNEZIA_JMIN=40 TS_AMNEZIA_JMAX=70
-export TS_AMNEZIA_I1='<b 0xc0><r 32><c><t>'
+export TS_AMNEZIA_I1='<b 0xc0><r 32><t>'
 sudo systemctl restart tailscaled
 ```
 
@@ -78,7 +78,7 @@ docker restart <container>
 - **Linux/BSD/OpenWrt**: the CLI can restart the known service manager, or prints the exact manual restart guidance.
 - **macOS/Windows desktop**: configuration storage and the WireGuard device path are shared with the daemon; restart behavior follows the installed desktop/service variant.
 - **Android/iOS**: AWG v2/v3 preferences and device application remain in the shared Go core. Mobile UI packaging is separate, so distribute the same profile through the app/control integration rather than relying on the desktop CLI.
-- **Historical v2**: old JSON using `JC`/`H1` field names, lowercase names, scalar headers, or header ranges remains accepted. Applying it clears v3-only state.
+- **Historical v2**: old JSON using `JC`/`H1` field names, lowercase names, scalar headers, or header ranges remains accepted. AmneziaWG 2.0 retired the legacy `<c>` CPS counter tag; remove `<c>` while retaining the other tags. Applying a v2 profile clears v3-only state.
 
 ## Configuration Parameters
 
@@ -112,22 +112,23 @@ CPS packets use tag-based format to emulate protocols:
 | Tag | Format | Description | Example |
 |-----|---------|-------------|---------|
 | `b` | `<b hex_data>` | Static bytes to emulate protocols | `<b 0xc0>` (QUIC header) |
-| `c` | `<c>` | Packet counter (32-bit, network byte order) | `<c>` |
 | `t` | `<t>` | Unix timestamp (32-bit, network byte order) | `<t>` |
 | `r` | `<r length>` | Cryptographically secure random bytes | `<r 16>` |
+| `rc` | `<rc length>` | Random ASCII letters | `<rc 16>` |
+| `rd` | `<rd length>` | Random decimal digits | `<rd 16>` |
 
 **Examples:**
 
 - Static header: `<b 0xc0000000>` (4-byte fixed header)
 - With random data: `<b 0x1234><r 16>` (header + 16 random bytes)
-- With counter/timestamp: `<b 0xabcd><c><t>` (header + counter + timestamp)
+- With timestamp/random data: `<b 0xabcd><t><r 8>` (header + timestamp + random data)
 
 **⚠️ Important**: Don't use random examples! To create effective CPS signatures:
 
 1. **Capture real traffic** with Wireshark or tcpdump from the protocol you want to mimic
 2. **Extract hex patterns** from actual packet headers
 3. **Build CPS format** using captured hex data with `<b hex_pattern>`
-4. **Add dynamic fields** like `<c>`, `<t>`, `<r length>` as needed
+4. **Add dynamic fields** like `<t>`, `<r length>`, `<rc length>`, or `<rd length>` as needed
 
 **💡 Pro tip**: CPS signatures (i1-i5) are advanced junk packets that can replace basic junk packets. More i1-i5 signatures = fewer jc packets needed for effective DPI evasion.
 
@@ -138,7 +139,7 @@ CPS packets use tag-based format to emulate protocols:
 ```bash
 # AmneziaWG v2/v3 commands
 tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70}'                     # Basic DPI evasion (prompt to restart)
-tailscale amnezia-wg set '{"jc":4,"i1":"<b 0xc0><r 32><c><t>"}'             # Protocol masking (prompt to restart)
+tailscale amnezia-wg set '{"jc":4,"i1":"<b 0xc0><r 32><t>"}'                # Protocol masking (prompt to restart)
 tailscale amnezia-wg set                                                     # Generator: v3 default, v2 selectable
 tailscale amnezia-wg get                                                     # Show current config
 tailscale amnezia-wg reset                                                   # Reset to standard WG (prompt to restart)
@@ -157,7 +158,7 @@ export TS_AMNEZIA_JMIN=40     # Min junk packet size
 export TS_AMNEZIA_JMAX=70     # Max junk packet size
 export TS_AMNEZIA_S1=0        # Init packet prefix length
 export TS_AMNEZIA_S2=0        # Response packet prefix length
-export TS_AMNEZIA_I1='<b 0xc0><r 32><c><t>'     # Primary signature packet (CPS format)
+export TS_AMNEZIA_I1='<b 0xc0><r 32><t>'        # Primary signature packet (CPS format)
 export TS_AMNEZIA_I2=''       # Secondary signature packet (CPS format)
 export TS_AMNEZIA_I3=''       # Tertiary signature packet (CPS format)
 export TS_AMNEZIA_I4=''       # Quaternary signature packet (CPS format)
@@ -187,7 +188,7 @@ tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70}'
 ### 2. Protocol Masking (Intermediate)
 
 ```bash
-tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0xc0><r 32><c><t>"}'
+tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0xc0><r 32><t>"}'
 ```
 
 - **Use case**: Moderate DPI environments, needs to look like QUIC
@@ -198,7 +199,7 @@ tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0
 ### 3. Full Signature Chain (Advanced)
 
 ```bash
-tailscale amnezia-wg set '{"jc":6,"s1":15,"s2":20,"i1":"<b 0xc0><r 32><c><t>","i2":"<b 0x40><r 16><t>","i3":"<r 20>","i4":"<c><b 0x0001><r 8>","i5":"<t><r 12>"}'
+tailscale amnezia-wg set '{"jc":6,"s1":15,"s2":20,"i1":"<b 0xc0><r 32><t>","i2":"<b 0x40><r 16><t>","i3":"<r 20>","i4":"<rd 8><b 0x0001><r 8>","i5":"<t><r 12>"}'
 ```
 
 - **Use case**: Strict DPI environments, maximum obfuscation
@@ -273,7 +274,7 @@ tailscale amnezia-wg set '{"jc":2,"jmin":40,"jmax":70,"i1":"<b 0xc0><r 16>","i2"
 
 ```bash
 # AWG v2 obfuscation - s1/s2 must match across nodes
-tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0xc0><r 32><c><t>"}'
+tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0xc0><r 32><t>"}'
 ```
 
 **For AmneziaWG 1.0 compatibility:**
@@ -298,7 +299,7 @@ tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15}'
 - **Junk traffic optimization**: Each node can use different values - no coordination needed. More CPS signatures = fewer basic junk packets needed
 - **Handshake obfuscation**: Ensure ALL nodes use this fork with identical `s1,s2` values (i1-i5 can vary per node)
 - **AmneziaWG 1.0 compatibility**: Leave `i1` empty to use 1.0 mode
-- **Invalid CPS format**: Check CPS syntax: `<b hex>`, `<c>`, `<t>`, `<r length>`
+- **Invalid CPS format**: Check CPS syntax: `<b hex>`, `<t>`, `<r length>`, `<rc length>`, `<rd length>`. Remove the retired `<c>` tag from legacy profiles.
 - Check logs: `sudo journalctl -u tailscaled -f`
 
 **Performance issues?**
@@ -322,7 +323,7 @@ tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15}'
 
 ## Migration and Profile Downgrade
 
-1. Existing v2 JSON remains accepted, including scalar or range `h1`-`h4` values.
+1. Existing v2 JSON remains accepted, including scalar or range `h1`-`h4` values, except for the retired `<c>` CPS tag. Remove `<c>` and keep the remaining tags.
 2. AWG v3 adds HeaderProtectionKey, content padding, and timing ranges without changing the v2 field names.
 3. Syncing or setting a v2 profile on a node that previously used v3 clears all v3-only settings.
 4. Standard WireGuard mode is restored by `tailscale amnezia-wg reset`.

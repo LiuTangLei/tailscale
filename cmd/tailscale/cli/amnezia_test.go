@@ -57,6 +57,39 @@ func TestAmneziaConfigVersionCompatibility(t *testing.T) {
 	}
 }
 
+func TestValidateAmneziaWGConfigRejectsRetiredCounterTag(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    ipn.AmneziaWGPrefs
+		wantField string
+	}{
+		{
+			name:      "issue-15-i1",
+			config:    ipn.AmneziaWGPrefs{I1: "<b 0xc0><r 32><c><t>"},
+			wantField: "I1",
+		},
+		{
+			name:      "whitespace-i2",
+			config:    ipn.AmneziaWGPrefs{I2: "<c >"},
+			wantField: "I2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAmneziaWGConfig(tt.config)
+			if err == nil || !strings.Contains(err.Error(), tt.wantField+" contains the retired CPS tag <c>") {
+				t.Fatalf("validation error = %v", err)
+			}
+		})
+	}
+
+	for _, spec := range []string{"<b 0xc0><r 32><t>", "<rc 10><rd 10>"} {
+		if err := validateAmneziaWGConfig(ipn.AmneziaWGPrefs{I1: spec}); err != nil {
+			t.Errorf("supported CPS %q rejected: %v", spec, err)
+		}
+	}
+}
+
 func TestRequestAWGConfigsFromPeersRetriesAndClassifies(t *testing.T) {
 	configKey := key.NewNode().Public()
 	standardKey := key.NewNode().Public()

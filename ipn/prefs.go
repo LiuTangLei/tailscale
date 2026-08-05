@@ -410,7 +410,7 @@ type AmneziaWGPrefs struct {
 	S2   uint16           `json:",omitempty"` // Response packet prefix length (0 = disabled)
 	S3   uint16           `json:",omitempty"` // Cookie packet prefix length (0 = disabled)
 	S4   uint16           `json:",omitempty"` // Transport packet prefix length (0 = disabled)
-	I1   string           `json:",omitempty"` // Primary signature packet (CPS format, e.g., "<b 0xf6ab3267fa><c><t><r 10>")
+	I1   string           `json:",omitempty"` // Primary signature packet (CPS format, e.g., "<b 0xf6ab3267fa><t><r 10>")
 	I2   string           `json:",omitempty"` // Secondary signature packet (CPS format)
 	I3   string           `json:",omitempty"` // Tertiary signature packet (CPS format)
 	I4   string           `json:",omitempty"` // Quaternary signature packet (CPS format)

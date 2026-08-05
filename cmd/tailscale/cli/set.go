@@ -188,6 +188,9 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 		if err := json.Unmarshal([]byte(setArgs.amneziaWG), &amneziaConfig); err != nil {
 			return fmt.Errorf("invalid amnezia-wg JSON: %v", err)
 		}
+		if err := validateAmneziaWGConfig(amneziaConfig); err != nil {
+			return fmt.Errorf("invalid amnezia-wg configuration: %w", err)
+		}
 		maskedPrefs.Prefs.AmneziaWG = amneziaConfig
 		maskedPrefs.AmneziaWGSet = true
 	}
