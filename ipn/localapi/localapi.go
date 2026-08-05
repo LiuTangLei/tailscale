@@ -2031,11 +2031,23 @@ func (h *Handler) serveRequestAmneziaWGConfig(w http.ResponseWriter, r *http.Req
 	}
 }
 
-// serveAWGSyncPeers returns a list of peers that currently have a non-zero Amnezia-WG configuration.
-// It probes all online peers (excluding shared nodes) concurrently via disco requests using the
-// already-existing RequestAmneziaWGConfig mechanism. Only peers with a non-zero config are returned.
+// serveAWGSyncPeers returns AWG discovery results for all online, non-sharee
+// peers. A standard-WireGuard peer has config:null, while a temporarily
+// unreachable or invalid peer has config:null and an error string. Android and
+// iOS already use this nullable/error-aware contract to distinguish "standard"
+// from "not determined".
 // Method: GET. Requires PermitWrite (because it triggers disco traffic, consistent with serveRequestAmneziaWGConfig).
-// Response: JSON array of objects [{"nodeKey":string,"hostname":string,"tailscaleIP":string,"config":AmneziaWGPrefs}]
+// Response: JSON array of objects
+// [{"nodeKey":string,"hostname":string,"tailscaleIP":string,"config":AmneziaWGPrefs|null,"error":string?}]
+type awgSyncPeerResult struct {
+	NodeKey     string              `json:"nodeKey"`
+	Hostname    string              `json:"hostname"`
+	TailscaleIP string              `json:"tailscaleIP,omitempty"`
+	Config      *ipn.AmneziaWGPrefs `json:"config"`
+	Err         string              `json:"error,omitempty"`
+	idx         int                 `json:"-"`
+}
+
 func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != httpm.GET {
 		http.Error(w, "only GET allowed", http.StatusMethodNotAllowed)
@@ -2045,23 +2057,10 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "awg-sync-peers access denied", http.StatusForbidden)
 		return
 	}
-	st := h.b.StatusWithoutPeers() // we'll need peers, so fetch full status below
-	_ = st
-	// Need full status including peers; LocalBackend has a method Status which takes a context in CLI, here we can emulate via ipnstate builder.
-	// Simpler: use NetMap directly for peers listing.
 	nm := h.b.NetMap()
 	if nm == nil {
 		http.Error(w, "no netmap available", http.StatusInternalServerError)
 		return
-	}
-
-	type peerResult struct {
-		NodeKey     string             `json:"nodeKey"`
-		Hostname    string             `json:"hostname"`
-		TailscaleIP string             `json:"tailscaleIP,omitempty"`
-		Config      ipn.AmneziaWGPrefs `json:"config"`
-		Err         string             `json:"error,omitempty"`
-		idx         int                `json:"-"`
 	}
 
 	peers := nm.Peers
@@ -2076,7 +2075,7 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 	ctx := r.Context()
-	resCh := make(chan peerResult, len(peers))
+	resCh := make(chan awgSyncPeerResult, len(peers))
 
 	for i, p := range peers {
 		// Skip sharee nodes or offline peers.
@@ -2093,12 +2092,15 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			// Derive timeout per peer; use 8s to tolerate high-RTT DERP paths
-			peerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			// Two bounded attempts tolerate an occasionally lost disco packet
+			// without letting one peer hold the mobile LocalAPI request open.
+			peerCtx, cancel := context.WithTimeout(ctx, 14*time.Second)
 			defer cancel()
-			cfg, err := h.requestPeerAmneziaWGConfig(peerCtx, p)
+			cfg, err := h.requestPeerAmneziaWGConfigWithRetry(peerCtx, p)
 			hn := p.Hostinfo().Hostname()
-			pr := peerResult{idx: i, NodeKey: p.Key().ShortString(), Hostname: hn}
+			// Return the full parseable NodeKey. Android and iOS already model
+			// this field as a string, and awg-sync-apply requires the full key.
+			pr := awgSyncPeerResult{idx: i, NodeKey: p.Key().String(), Hostname: hn}
 			addrs := p.Addresses()
 			if addrs.Len() > 0 {
 				pr.TailscaleIP = addrs.At(0).Addr().String()
@@ -2106,10 +2108,7 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				pr.Err = err.Error()
 			} else if !isAmneziaWGZero(cfg) {
-				pr.Config = cfg
-			} else {
-				// zero config -> skip return by not sending result with zero config? We'll still send with Err empty & zero cfg; filter later.
-				pr.Config = cfg
+				pr.Config = &cfg
 			}
 			resCh <- pr
 		}()
@@ -2120,20 +2119,16 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 		close(resCh)
 	}()
 
-	collected := make([]peerResult, 0)
+	collected := make([]awgSyncPeerResult, 0)
 	for pr := range resCh {
 		if pr.Err != "" {
-			h.Logf("awg-sync-peers: skipping peer %s (%s): %s", pr.Hostname, pr.NodeKey, pr.Err)
-			continue
-		}
-		if isAmneziaWGZero(pr.Config) { // only return peers with non-zero config
-			continue
+			h.Logf("awg-sync-peers: peer %s (%s): %s", pr.Hostname, pr.NodeKey, pr.Err)
 		}
 		collected = append(collected, pr)
 	}
 
 	// Stable sort by idx (original order) or Hostname
-	slices.SortFunc(collected, func(a, b peerResult) int { return cmp.Compare(a.idx, b.idx) })
+	slices.SortFunc(collected, func(a, b awgSyncPeerResult) int { return cmp.Compare(a.idx, b.idx) })
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(collected); err != nil {
@@ -2189,13 +2184,17 @@ func (h *Handler) serveAWGSyncApply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "peer not found", http.StatusNotFound)
 		return
 	}
-	cfg, err := h.requestPeerAmneziaWGConfig(ctx, target)
+	cfg, err := h.requestPeerAmneziaWGConfigWithRetry(ctx, target)
 	if err != nil {
 		http.Error(w, "failed to fetch config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if isAmneziaWGZero(cfg) {
 		http.Error(w, "peer has no Amnezia-WG config", http.StatusConflict)
+		return
+	}
+	if err := ipn.ValidateAmneziaWGConfig(cfg); err != nil {
+		http.Error(w, "peer returned invalid Amnezia-WG config: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	// Apply via MaskedPrefs
@@ -2211,6 +2210,60 @@ func (h *Handler) serveAWGSyncApply(w http.ResponseWriter, r *http.Request) {
 }
 
 const amneziaWGDiscoPreflightTimeout = 2 * time.Second
+
+const (
+	amneziaWGSyncAttempts       = 2
+	amneziaWGSyncAttemptTimeout = 6 * time.Second
+	amneziaWGSyncRetryDelay     = 100 * time.Millisecond
+)
+
+func (h *Handler) requestPeerAmneziaWGConfigWithRetry(ctx context.Context, peer tailcfg.NodeView) (ipn.AmneziaWGPrefs, error) {
+	return requestAmneziaWGConfigWithRetry(ctx, func(attemptCtx context.Context) (ipn.AmneziaWGPrefs, error) {
+		return h.requestPeerAmneziaWGConfig(attemptCtx, peer)
+	})
+}
+
+func requestAmneziaWGConfigWithRetry(ctx context.Context, request func(context.Context) (ipn.AmneziaWGPrefs, error)) (ipn.AmneziaWGPrefs, error) {
+	var lastErr error
+	for attempt := 0; attempt < amneziaWGSyncAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return ipn.AmneziaWGPrefs{}, err
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, amneziaWGSyncAttemptTimeout)
+		cfg, err := request(attemptCtx)
+		cancel()
+		if err == nil {
+			return cfg, nil
+		}
+		lastErr = err
+		if attempt+1 == amneziaWGSyncAttempts || !isRetryableAmneziaWGSyncError(err) {
+			break
+		}
+		timer := time.NewTimer(amneziaWGSyncRetryDelay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ipn.AmneziaWGPrefs{}, ctx.Err()
+		}
+	}
+	return ipn.AmneziaWGPrefs{}, lastErr
+}
+
+func isRetryableAmneziaWGSyncError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var timeoutError interface{ Timeout() bool }
+	if errors.As(err, &timeoutError) && timeoutError.Timeout() {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no path available") || strings.Contains(message, "request timed out")
+}
 
 // requestPeerAmneziaWGConfig is a helper to disco-request AWG config for a tailcfg.Node.
 // It first sends a disco ping to the peer to trigger NAT traversal and establish
@@ -2237,14 +2290,20 @@ func (h *Handler) requestPeerAmneziaWGConfig(ctx context.Context, peer tailcfg.N
 		return ipn.AmneziaWGPrefs{}, errors.New("magicsock not available")
 	}
 	respCh := make(chan *magicsock.AmneziaWGConfigData, 1)
-	if err := ms.RequestAmneziaWGConfigCtx(ctx, discoKey, respCh); err != nil {
+	if err := ms.RequestAmneziaWGConfigForNodeCtx(ctx, peer.Key(), discoKey, respCh); err != nil {
 		return ipn.AmneziaWGPrefs{}, err
 	}
 	select {
 	case resp := <-respCh:
+		if !resp.NodeKey.IsZero() && resp.NodeKey != peer.Key() {
+			return ipn.AmneziaWGPrefs{}, fmt.Errorf("AWG config response came from unexpected node %v", resp.NodeKey.ShortString())
+		}
 		var cfg ipn.AmneziaWGPrefs
 		if err := json.Unmarshal(resp.ConfigJSON, &cfg); err != nil {
 			return ipn.AmneziaWGPrefs{}, err
+		}
+		if err := ipn.ValidateAmneziaWGConfig(cfg); err != nil {
+			return ipn.AmneziaWGPrefs{}, fmt.Errorf("invalid Amnezia-WG config from peer: %w", err)
 		}
 		return cfg, nil
 	case <-ctx.Done():

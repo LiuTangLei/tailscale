@@ -90,6 +90,21 @@ func (m *peerMap) endpointForNodeKey(nk key.NodePublic) (ep *endpoint, ok bool) 
 	return nil, false
 }
 
+// endpointForNodeKeyAndDiscoKey returns the endpoint only when both identities
+// refer to the same current peer. A DiscoKey alone is not a unique node
+// identity: shared nodes and account switches can legitimately reuse one.
+func (m *peerMap) endpointForNodeKeyAndDiscoKey(nodeKey key.NodePublic, discoKey key.DiscoPublic) (*endpoint, bool) {
+	ep, ok := m.endpointForNodeKey(nodeKey)
+	if !ok || ep == nil {
+		return nil, false
+	}
+	ed := ep.disco.Load()
+	if ed == nil || ed.key.Compare(discoKey) != 0 {
+		return nil, false
+	}
+	return ep, true
+}
+
 // endpointForNodeID returns the endpoint for nodeID, or nil if
 // nodeID is not known to us.
 func (m *peerMap) endpointForNodeID(nodeID tailcfg.NodeID) (ep *endpoint, ok bool) {

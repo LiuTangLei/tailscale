@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,14 +27,15 @@ var amneziaCmd = &ffcli.Command{
 	Name:       "amnezia-wg",
 	ShortUsage: "tailscale amnezia-wg [subcommand]",
 	ShortHelp:  "Configure Amnezia-WG parameters",
-	LongHelp: `"tailscale amnezia-wg" allows configuring Amnezia-WG parameters.
+	LongHelp: `"tailscale awg" configures Amnezia-WG parameters. The historical
+"tailscale amnezia-wg" command remains available as a compatibility alias.
 Amnezia-WG is backward compatible with standard WireGuard when all parameters are zero.
 
 ⚠️  CRITICAL: Certain parameters require network-wide consistency!
 - H1-H4, S1-S4 and HeaderProtectionKey: ALL nodes must use IDENTICAL values
 - I1-I5, JC, JMin, JMax and v3 padding/timing ranges: Can differ between nodes
 
-Use 'tailscale amnezia-wg get' on one node and 'tailscale amnezia-wg set' on others to maintain consistency for required parameters.`,
+Use 'tailscale awg get' on one node and 'tailscale awg set' on others to maintain consistency for required parameters.`,
 	Subcommands: []*ffcli.Command{
 		{
 			Name:       "sync",
@@ -96,7 +96,7 @@ After resetting, you will be prompted to restart tailscaled.`,
 var awgCmd = &ffcli.Command{
 	Name:        "awg",
 	ShortUsage:  "tailscale awg [subcommand]",
-	ShortHelp:   "Configure Amnezia-WG parameters (alias for amnezia-wg)",
+	ShortHelp:   "Configure Amnezia-WG parameters",
 	LongHelp:    amneziaCmd.LongHelp,
 	Subcommands: cloneAWGSubcommands(amneziaCmd.Subcommands),
 }
@@ -128,82 +128,12 @@ func applyAmneziaWGConfig(ctx context.Context, config ipn.AmneziaWGPrefs) error 
 }
 
 func validateAmneziaWGConfig(config ipn.AmneziaWGPrefs) error {
-	if config.JMin != 0 && config.JMax != 0 && config.JMin > config.JMax {
-		return fmt.Errorf("JMin (%d) cannot be greater than JMax (%d)", config.JMin, config.JMax)
-	}
-
-	ranges := []struct {
-		name  string
-		value ipn.MagicHeaderRange
-	}{
-		{"H1", config.H1}, {"H2", config.H2}, {"H3", config.H3}, {"H4", config.H4},
-		{"ContentPaddingAddition", config.ContentPaddingAddition},
-		{"RekeyAfterTime", config.RekeyAfterTime},
-		{"RekeyTimeout", config.RekeyTimeout},
-		{"RejectAfterTime", config.RejectAfterTime},
-		{"KeepaliveTimeout", config.KeepaliveTimeout},
-		{"MaxHandshakeAttempts", config.MaxHandshakeAttempts},
-	}
-	for _, r := range ranges {
-		if r.value.Max < r.value.Min {
-			return fmt.Errorf("%s maximum (%d) cannot be less than minimum (%d)", r.name, r.value.Max, r.value.Min)
-		}
-	}
-
-	for _, signature := range []struct {
-		name, value string
-	}{
-		{"I1", config.I1}, {"I2", config.I2}, {"I3", config.I3},
-		{"I4", config.I4}, {"I5", config.I5},
-	} {
-		if cpsContainsTag(signature.value, "c") {
-			return fmt.Errorf("%s contains the retired CPS tag <c>; AmneziaWG 2.0 removed this packet counter, so remove <c> and keep the remaining tags", signature.name)
-		}
-	}
-
-	if config.HeaderProtectionKey == "" {
-		return nil
-	}
-	key, err := hex.DecodeString(config.HeaderProtectionKey)
-	if err != nil || len(key) != 32 {
-		return errors.New("HeaderProtectionKey must contain exactly 64 hexadecimal characters")
-	}
-	if bytes.Equal(key, make([]byte, 32)) {
-		return nil
-	}
-	for i, padding := range []uint16{config.S1, config.S2, config.S3, config.S4} {
-		if padding < 12 {
-			return fmt.Errorf("S%d must be at least 12 when HeaderProtectionKey is enabled", i+1)
-		}
-	}
-	return nil
-}
-
-// cpsContainsTag reports whether spec contains a CPS tag with the given name.
-// It compares complete tag names so, for example, looking for "c" does not
-// mistake the supported <rc ...> tag for the retired packet counter.
-func cpsContainsTag(spec, want string) bool {
-	for {
-		start := strings.IndexByte(spec, '<')
-		if start < 0 {
-			return false
-		}
-		spec = spec[start+1:]
-		end := strings.IndexByte(spec, '>')
-		if end < 0 {
-			return false
-		}
-		fields := strings.Fields(spec[:end])
-		if len(fields) > 0 && fields[0] == want {
-			return true
-		}
-		spec = spec[end+1:]
-	}
+	return ipn.ValidateAmneziaWGConfig(config)
 }
 
 func runAmneziaWGGet(ctx context.Context, args []string) error {
 	if len(args) != 0 {
-		return formatUsageError("tailscale amnezia-wg get")
+		return formatUsageError("tailscale awg get")
 	}
 
 	prefs, err := localClient.GetPrefs(ctx)
@@ -386,7 +316,7 @@ func formatConfigAsJSON(config ipn.AmneziaWGPrefs) (string, error) {
 
 func runAmneziaWGReset(ctx context.Context, args []string) error {
 	if len(args) != 0 {
-		return formatUsageError("tailscale amnezia-wg reset")
+		return formatUsageError("tailscale awg reset")
 	}
 
 	// Reset to all zeros (standard WireGuard)
@@ -401,7 +331,7 @@ func runAmneziaWGReset(ctx context.Context, args []string) error {
 
 func runAmneziaWGValidate(ctx context.Context, args []string) error {
 	if len(args) != 0 {
-		return formatUsageError("tailscale amnezia-wg validate")
+		return formatUsageError("tailscale awg validate")
 	}
 
 	prefs, err := localClient.GetPrefs(ctx)
@@ -435,26 +365,23 @@ func printValidationSummary(config ipn.AmneziaWGPrefs) {
 	hasJunk := config.JC != 0 || config.JMin != 0 || config.JMax != 0
 	hasPrefix := config.S1 != 0 || config.S2 != 0 || config.S3 != 0 || config.S4 != 0
 	hasV3 := hasV3Config(config)
+	hasHeaderProtection := config.HeaderProtectionKey != "" && strings.Trim(config.HeaderProtectionKey, "0") != ""
 
 	fmt.Printf("⚠️  Status: %s mode enabled\n📊 Parameter Summary:\n", amneziaConfigVersion(config))
 	fmt.Printf("   - Junk packets: %s\n", formatEnabled(hasJunk))
-	fmt.Printf("   - Prefix lengths (S1/S2): %s\n", formatEnabled(hasPrefix))
+	fmt.Printf("   - Prefix lengths (S1-S4): %s\n", formatEnabled(hasPrefix))
 	fmt.Printf("   - Header parameters (H1-H4): %s\n", formatEnabled(hasHeader))
 	fmt.Printf("   - Signature parameters (I1-I5): %s\n", formatEnabled(hasSignature))
 	fmt.Printf("   - AWG v3 parameters: %s\n\n", formatEnabled(hasV3))
 
 	fmt.Printf("🔍 Compatibility Analysis:\n")
-	if hasJunk && !hasPrefix && !hasHeader && !hasSignature && !hasV3 {
-		fmt.Printf("✅ Junk packets only: Compatible with standard WireGuard clients\n✅ Low impact: Should work with most configurations\n")
+	if !hasPrefix && !hasHeader && !hasHeaderProtection {
+		fmt.Printf("✅ Wire-compatible obfuscation: Junk packets, I1-I5 signatures, and v3 timing/padding do not change standard WireGuard packet headers\n")
 	} else {
-		fmt.Printf("⚠️  Protocol modification: NOT compatible with standard WireGuard\n❌ Breaking changes: S1/S2, H1-H4, or I1-I5 parameters are set\n")
+		fmt.Printf("⚠️  Protocol modification: NOT compatible with standard WireGuard\n❌ Breaking changes: S1-S4, H1-H4, or HeaderProtectionKey are set\n")
 	}
 	if hasV3 {
 		fmt.Printf("⚠️  AWG v3 profile: all participating nodes must run a v3-capable core\n")
-	}
-
-	if hasHeader && hasSignature {
-		fmt.Printf("⚠️  Mixed parameter types: Both header (H1-H4) and signature (I1-I5) parameters detected\n💡 Recommendation: Use either header OR signature parameters, not both\n")
 	}
 
 	if hasHeader && (config.H1.Min > 0 || config.H1.Max > 0) && (config.H1.Min < 1000000 && config.H1.Max < 1000000) {
@@ -462,7 +389,7 @@ func printValidationSummary(config ipn.AmneziaWGPrefs) {
 	}
 
 	fmt.Printf("\n🚨 CRITICAL NETWORK REQUIREMENT:\n   These parameters MUST be IDENTICAL on ALL nodes: H1-H4, S1-S4, HeaderProtectionKey\n   These parameters CAN differ between nodes: I1-I5, JC/JMin/JMax, v3 padding/timing ranges\n\n")
-	fmt.Printf("📋 Required Actions:\n   1. Get values: tailscale amnezia-wg get\n   2. Apply on all nodes: tailscale amnezia-wg set\n   3. Restart tailscaled on ALL nodes\n   4. Test connectivity\n\n")
+	fmt.Printf("📋 Required Actions:\n   1. Get values: tailscale awg get\n   2. Apply on all nodes: tailscale awg set\n   3. Restart tailscaled on ALL nodes\n   4. Test connectivity\n\n")
 }
 
 func printValidationWarnings(config ipn.AmneziaWGPrefs) {
@@ -483,6 +410,9 @@ func formatEnabled(enabled bool) string {
 
 // runAmneziaWGSync implements the sync logic using disco protocol to request AWG configs from peers.
 func runAmneziaWGSync(ctx context.Context, args []string) error {
+	if len(args) != 0 {
+		return formatUsageError("tailscale awg sync")
+	}
 	st, err := localClient.Status(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get status: %w", err)

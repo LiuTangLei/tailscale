@@ -121,6 +121,53 @@ func TestApplyAmneziaConfigRejectsShortHeaderPadding(t *testing.T) {
 	}
 }
 
+func TestEffectiveAmneziaConfigIncludesEnvironment(t *testing.T) {
+	oldJC, oldI1, oldH1 := amneziaJC, amneziaI1, amneziaH1
+	amneziaJC = func() int { return 7 }
+	amneziaI1 = func() string { return "<b 0xc0><r 32>" }
+	amneziaH1 = func() int { return 100001 }
+	t.Cleanup(func() {
+		amneziaJC, amneziaI1, amneziaH1 = oldJC, oldI1, oldH1
+	})
+
+	got, err := EffectiveAmneziaConfig(ipn.AmneziaWGPrefs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.JC != 7 || got.I1 != "<b 0xc0><r 32>" || got.H1 != (ipn.MagicHeaderRange{Min: 100001, Max: 100001}) {
+		t.Fatalf("effective environment config = %#v", got)
+	}
+	uapi, err := amneziaUAPIConfig(ipn.AmneziaWGPrefs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"jc=7\n", "i1=<b 0xc0><r 32>\n", "h1=100001\n"} {
+		if !strings.Contains(uapi, line) {
+			t.Errorf("UAPI missing %q in:\n%s", line, uapi)
+		}
+	}
+}
+
+func TestEffectiveAmneziaConfigRejectsInvalidEnvironment(t *testing.T) {
+	oldJC := amneziaJC
+	t.Cleanup(func() { amneziaJC = oldJC })
+
+	for _, value := range []int{-1, 1 << 16} {
+		amneziaJC = func() int { return value }
+		_, err := EffectiveAmneziaConfig(ipn.AmneziaWGPrefs{})
+		if err == nil || !strings.Contains(err.Error(), "TS_AMNEZIA_JC must be between") {
+			t.Fatalf("TS_AMNEZIA_JC=%d error = %v", value, err)
+		}
+	}
+}
+
+func TestAmneziaUAPIConfigRejectsLineInjection(t *testing.T) {
+	_, err := amneziaUAPIConfig(ipn.AmneziaWGPrefs{I1: "<b 0xc0>\nprivate_key=00"})
+	if err == nil || !strings.Contains(err.Error(), "control character") {
+		t.Fatalf("amneziaUAPIConfig injection error = %v", err)
+	}
+}
+
 func TestNewPeerLookupFunc(t *testing.T) {
 	k1, _ := newK()
 

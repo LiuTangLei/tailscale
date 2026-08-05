@@ -123,6 +123,47 @@ func TestAmneziaWGConfigRequestCompatibility(t *testing.T) {
 	}
 }
 
+func TestAmneziaWGConfigResponseMatchesRequestedIdentity(t *testing.T) {
+	c := newConn(t.Logf)
+	requestID := [8]byte{1, 2, 3}
+	wantNode := key.NewNode().Public()
+	wrongNode := key.NewNode().Public()
+	wantDisco := key.NewDisco().Public()
+	wrongDisco := key.NewDisco().Public()
+	ch := make(chan *AmneziaWGConfigData, 1)
+	c.amneziaWGConfigWaiters[requestID] = amneziaWGConfigWaiter{
+		ch: ch, nodeKey: wantNode, discoKey: wantDisco,
+	}
+	response := &disco.AmneziaWGConfigResponse{RequestID: requestID, ConfigJSON: []byte(`{"JC":1}`)}
+
+	c.mu.Lock()
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, &discoInfo{discoKey: wrongDisco}, wantNode)
+	if _, ok := c.amneziaWGConfigWaiters[requestID]; !ok {
+		c.mu.Unlock()
+		t.Fatal("wrong DiscoKey consumed the response waiter")
+	}
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, &discoInfo{discoKey: wantDisco}, wrongNode)
+	if _, ok := c.amneziaWGConfigWaiters[requestID]; !ok {
+		c.mu.Unlock()
+		t.Fatal("wrong NodeKey consumed the response waiter")
+	}
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, &discoInfo{discoKey: wantDisco}, wantNode)
+	_, stillWaiting := c.amneziaWGConfigWaiters[requestID]
+	c.mu.Unlock()
+	if stillWaiting {
+		t.Fatal("matching response did not consume the waiter")
+	}
+
+	select {
+	case got := <-ch:
+		if got.NodeKey != wantNode || got.DiscoKey != wantDisco || !bytes.Equal(got.ConfigJSON, response.ConfigJSON) {
+			t.Fatalf("delivered response = %#v", got)
+		}
+	default:
+		t.Fatal("matching response was not delivered")
+	}
+}
+
 // WaitReady waits until the magicsock is entirely initialized and connected
 // to its home DERP server. This is normally not necessary, since magicsock
 // is intended to be entirely asynchronous, but it helps eliminate race

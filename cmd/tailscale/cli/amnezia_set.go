@@ -71,7 +71,7 @@ func parseConfigFromArgs(ctx context.Context, args []string) (ipn.AmneziaWGPrefs
 	case 0:
 		return promptInteractiveConfig(ctx)
 	default:
-		return config, formatUsageError("tailscale amnezia-wg set [json-string]")
+		return config, formatUsageError("tailscale awg set [json-string]")
 	}
 }
 

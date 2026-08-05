@@ -4971,7 +4971,25 @@ func (b *LocalBackend) checkPrefsLocked(p *ipn.Prefs) error {
 	if err := checkAdvertiseRoutes(p); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateAmneziaWGPrefsChange(b.pm.CurrentPrefs(), p); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// validateAmneziaWGPrefsChange validates AWG only when it is being introduced
+// or changed. This keeps unrelated LocalAPI preference edits working for a
+// node that still has a historical profile the current core cannot apply (for
+// example, one containing the retired <c> tag), while preventing that profile
+// from being newly saved or synced.
+func validateAmneziaWGPrefsChange(current ipn.PrefsView, proposed *ipn.Prefs) error {
+	if current.Valid() && current.AmneziaWG() == proposed.AmneziaWG {
+		return nil
+	}
+	if err := ipn.ValidateAmneziaWGConfig(proposed.AmneziaWG); err != nil {
+		return fmt.Errorf("invalid Amnezia-WG configuration: %w", err)
+	}
+	return nil
 }
 
 func (b *LocalBackend) checkSSHPrefsLocked(p *ipn.Prefs) error {
@@ -6104,12 +6122,21 @@ func (b *LocalBackend) authReconfigLocked() {
 	// The config carries no peers; wireguard-go gets those from the
 	// live per-peer config source installed via
 	// [wgengine.Engine.SetPeerConfigFunc], fed by the route manager.
+	awgConfig := prefs.AmneziaWG()
+	if effective, err := wgcfg.EffectiveAmneziaConfig(awgConfig); err != nil {
+		// Keep the previous sync provider installed and let Reconfig report
+		// the same validation error without advertising a profile the device
+		// could not apply.
+		b.logf("authReconfig: invalid effective Amnezia-WG config: %v", err)
+	} else {
+		awgConfig = effective
+		b.MagicConn().SetAmneziaWGConfigProvider(func() ipn.AmneziaWGPrefs { return awgConfig })
+	}
 	cfg := &wgcfg.Config{
 		PrivateKey: priv,
 		Addresses:  nm.GetAddresses().AsSlice(),
-		AmneziaWG:  prefs.AmneziaWG(),
+		AmneziaWG:  awgConfig,
 	}
-	b.MagicConn().SetAmneziaWGConfigProvider(func() ipn.AmneziaWGPrefs { return prefs.AmneziaWG() })
 
 	// Note: b.goos (set only by tests) speaks runtime.GOOS while
 	// version.OS is Tailscale-style ("macOS", "iOS"); they agree for

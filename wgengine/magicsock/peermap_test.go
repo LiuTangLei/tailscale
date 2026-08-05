@@ -120,6 +120,16 @@ func Test_peerMap_nodesOfDisco_sharedDiscoKey(t *testing.T) {
 	ep2.disco.Store(&endpointDisco{key: dk})
 	pm.upsertEndpoint(ep2, key.DiscoPublic{})
 
+	if got, ok := pm.endpointForNodeKeyAndDiscoKey(nk1, dk); !ok || got != ep1 {
+		t.Fatalf("target nk1 with shared disco key = %p, %v; want ep1 %p", got, ok, ep1)
+	}
+	if got, ok := pm.endpointForNodeKeyAndDiscoKey(nk2, dk); !ok || got != ep2 {
+		t.Fatalf("target nk2 with shared disco key = %p, %v; want ep2 %p", got, ok, ep2)
+	}
+	if _, ok := pm.endpointForNodeKeyAndDiscoKey(nk1, key.NewDisco().Public()); ok {
+		t.Fatal("accepted a NodeKey paired with the wrong DiscoKey")
+	}
+
 	pm.deleteEndpoint(ep1)
 
 	if !pm.knownPeerDiscoKey(dk) {

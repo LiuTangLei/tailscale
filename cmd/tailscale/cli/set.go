@@ -144,6 +144,15 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 
 	// Handle Amnezia-WG interactive configuration
 	if setArgs.amneziaWGConfig {
+		var conflicting []string
+		setFlagSet.Visit(func(f *flag.Flag) {
+			if f.Name != "amnezia-wg-config" {
+				conflicting = append(conflicting, "--"+f.Name)
+			}
+		})
+		if len(conflicting) != 0 {
+			return fmt.Errorf("--amnezia-wg-config cannot be combined with %s", strings.Join(conflicting, ", "))
+		}
 		return runAmneziaWGSet(ctx, []string{})
 	}
 

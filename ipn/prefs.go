@@ -435,13 +435,18 @@ type AmneziaWGPrefs struct {
 // represents standard WireGuard. Keeping this check with the data type avoids
 // callers overlooking fields added by newer AWG versions.
 func (p AmneziaWGPrefs) IsZero() bool {
+	// wireguard-go uses an all-zero v3 key as the disabled sentinel. Treat it
+	// exactly like an omitted key when classifying or syncing a profile.
+	if p.HeaderProtectionKey == zeroHeaderProtectionKey {
+		p.HeaderProtectionKey = ""
+	}
 	return p == (AmneziaWGPrefs{})
 }
 
 // IsV3 reports whether p uses any AWG v3-only parameter. A configuration with
 // only the historical fields is an AWG v2 configuration.
 func (p AmneziaWGPrefs) IsV3() bool {
-	return p.HeaderProtectionKey != "" ||
+	return (p.HeaderProtectionKey != "" && p.HeaderProtectionKey != zeroHeaderProtectionKey) ||
 		!p.ContentPaddingAddition.IsZero() ||
 		!p.RekeyAfterTime.IsZero() ||
 		!p.RekeyTimeout.IsZero() ||
@@ -450,20 +455,17 @@ func (p AmneziaWGPrefs) IsV3() bool {
 		!p.MaxHandshakeAttempts.IsZero()
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling for AmneziaWGPrefs to handle
-// backward compatibility. If parsing fails due to incompatible old format,
-// it returns a zero value to avoid startup errors.
+// UnmarshalJSON implements custom JSON unmarshaling for AmneziaWGPrefs. It
+// accepts historical scalar headers as well as v3 snake_case field names, but
+// returns structural/type errors rather than silently replacing a damaged
+// configuration with standard WireGuard settings.
 func (a *AmneziaWGPrefs) UnmarshalJSON(data []byte) error {
 	// Define a type alias to avoid infinite recursion
 	type Alias AmneziaWGPrefs
 	aux := &Alias{}
 
 	if err := json.Unmarshal(data, aux); err != nil {
-		// If unmarshaling fails (likely due to old format), log and return zero value
-		// This prevents tailscaled from crashing on startup with old configurations
-		log.Printf("tailscale: resetting incompatible Amnezia-WG configuration to avoid startup error: %v", err)
-		*a = AmneziaWGPrefs{} // Reset to zero value
-		return nil            // Don't return error to prevent startup failure
+		return fmt.Errorf("invalid Amnezia-WG configuration: %w", err)
 	}
 
 	*a = AmneziaWGPrefs(*aux)

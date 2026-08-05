@@ -4,14 +4,32 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
 
 	"tailscale.com/ipn"
 	"tailscale.com/net/tsaddr"
 )
+
+func TestRunSetRejectsAWGInteractiveFlagCombination(t *testing.T) {
+	oldArgs, oldFlagSet := setArgs, setFlagSet
+	t.Cleanup(func() {
+		setArgs, setFlagSet = oldArgs, oldFlagSet
+	})
+	setArgs = setArgsT{}
+	setFlagSet = newSetFlagSet("linux", &setArgs)
+	if err := setFlagSet.Parse([]string{"--amnezia-wg-config", "--hostname=test-node"}); err != nil {
+		t.Fatal(err)
+	}
+	err := runSet(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined with --hostname") {
+		t.Fatalf("runSet error = %v", err)
+	}
+}
 
 func TestCalcAdvertiseRoutesForSet(t *testing.T) {
 	pfx := netip.MustParsePrefix

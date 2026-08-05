@@ -80,8 +80,15 @@ import (
 // AmneziaWGConfigData represents a received Amnezia-WG configuration response.
 type AmneziaWGConfigData struct {
 	RequestID  [8]byte
+	NodeKey    key.NodePublic
 	DiscoKey   key.DiscoPublic
 	ConfigJSON []byte
+}
+
+type amneziaWGConfigWaiter struct {
+	ch       chan *AmneziaWGConfigData
+	nodeKey  key.NodePublic
+	discoKey key.DiscoPublic
 }
 
 const (
@@ -429,7 +436,7 @@ type Conn struct {
 
 	// amneziaWGConfigWaiters holds per-request channels keyed by request ID to
 	// allow concurrent Amnezia-WG config requests.
-	amneziaWGConfigWaiters map[[8]byte]chan *AmneziaWGConfigData
+	amneziaWGConfigWaiters map[[8]byte]amneziaWGConfigWaiter
 	// amneziaWGConfigProvider, if non-nil, returns the current local
 	// Amnezia-WG preferences to respond with. Called under c.mu; it must be fast.
 	amneziaWGConfigProvider func() ipn.AmneziaWGPrefs
@@ -598,7 +605,7 @@ type UDPRelayAllocResp struct {
 func newConn(logf logger.Logf) *Conn {
 	discoPrivate := key.NewDisco()
 	c := &Conn{
-		amneziaWGConfigWaiters: make(map[[8]byte]chan *AmneziaWGConfigData),
+		amneziaWGConfigWaiters: make(map[[8]byte]amneziaWGConfigWaiter),
 		logf:                   logf,
 		derpRecvCh:             make(chan derpReadResult, 1), // must be buffered, see issue 3736
 		derpStarted:            make(chan struct{}),
@@ -4777,10 +4784,29 @@ func (c *Conn) handleAmneziaWGConfigResponseLocked(dm *disco.AmneziaWGConfigResp
 	c.dlogf("[v1] magicsock: disco: received AmneziaWG config response tx=%x from %v (derpNodeSrc=%v) size=%d",
 		dm.RequestID[:4], di.discoKey.ShortString(), derpNodeSrc.ShortString(), len(dm.ConfigJSON))
 
-	if ch, ok := c.amneziaWGConfigWaiters[dm.RequestID]; ok {
+	if waiter, ok := c.amneziaWGConfigWaiters[dm.RequestID]; ok {
+		if waiter.discoKey.Compare(di.discoKey) != 0 {
+			c.logf("magicsock: disco: ignoring AmneziaWG config response tx=%x from unexpected disco key %v",
+				dm.RequestID[:4], di.discoKey.ShortString())
+			return
+		}
+		responseNodeKey := derpNodeSrc
+		if responseNodeKey.IsZero() {
+			if ep, ok := c.peerMap.endpointForEpAddr(src); ok && ep != nil {
+				responseNodeKey = ep.publicKey
+			}
+		}
+		if !waiter.nodeKey.IsZero() && !responseNodeKey.IsZero() && responseNodeKey != waiter.nodeKey {
+			c.logf("magicsock: disco: ignoring AmneziaWG config response tx=%x from unexpected node %v",
+				dm.RequestID[:4], responseNodeKey.ShortString())
+			return
+		}
 		delete(c.amneziaWGConfigWaiters, dm.RequestID)
+		if responseNodeKey.IsZero() {
+			responseNodeKey = waiter.nodeKey
+		}
 		select {
-		case ch <- &AmneziaWGConfigData{RequestID: dm.RequestID, DiscoKey: di.discoKey, ConfigJSON: dm.ConfigJSON}:
+		case waiter.ch <- &AmneziaWGConfigData{RequestID: dm.RequestID, NodeKey: responseNodeKey, DiscoKey: di.discoKey, ConfigJSON: dm.ConfigJSON}:
 			c.dlogf("[v1] magicsock: disco: delivered AmneziaWG config response tx=%x", dm.RequestID[:4])
 		default:
 			c.logf("magicsock: disco: waiter channel full for AmneziaWG config response tx=%x", dm.RequestID[:4])
@@ -4799,6 +4825,29 @@ func (c *Conn) handleAmneziaWGConfigResponseLocked(dm *disco.AmneziaWGConfigResp
 // respCh must be a buffered channel (capacity >=1). A single response will be
 // sent on success; the channel is not closed by magicsock.
 func (c *Conn) RequestAmneziaWGConfigCtx(ctx context.Context, discoKey key.DiscoPublic, respCh chan *AmneziaWGConfigData) error {
+	return c.requestAmneziaWGConfigCtx(ctx, key.NodePublic{}, discoKey, respCh)
+}
+
+// RequestAmneziaWGConfigForNodeCtx requests an AWG configuration from one
+// specific node. NodeKey is required because a DiscoKey can be shared by more
+// than one node in a netmap.
+func (c *Conn) RequestAmneziaWGConfigForNodeCtx(ctx context.Context, nodeKey key.NodePublic, discoKey key.DiscoPublic, respCh chan *AmneziaWGConfigData) error {
+	if nodeKey.IsZero() {
+		return errors.New("zero node key")
+	}
+	return c.requestAmneziaWGConfigCtx(ctx, nodeKey, discoKey, respCh)
+}
+
+func (c *Conn) requestAmneziaWGConfigCtx(ctx context.Context, nodeKey key.NodePublic, discoKey key.DiscoPublic, respCh chan *AmneziaWGConfigData) error {
+	if cap(respCh) < 1 {
+		return errors.New("AmneziaWG response channel must be buffered")
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -4806,7 +4855,24 @@ func (c *Conn) RequestAmneziaWGConfigCtx(ctx context.Context, discoKey key.Disco
 		return errConnClosed
 	}
 
-	c.dlogf("[v1] magicsock: disco: requesting AmneziaWG config from %v", discoKey.ShortString())
+	c.dlogf("[v1] magicsock: disco: requesting AmneziaWG config from node=%v disco=%v", nodeKey.ShortString(), discoKey.ShortString())
+
+	var target *endpoint
+	if nodeKey.IsZero() {
+		c.peerMap.forEachEndpointWithDiscoKey(discoKey, func(ep *endpoint) bool {
+			target = ep
+			return false
+		})
+		if target == nil {
+			return fmt.Errorf("unknown peer with disco key %v", discoKey)
+		}
+	} else {
+		var ok bool
+		target, ok = c.peerMap.endpointForNodeKeyAndDiscoKey(nodeKey, discoKey)
+		if !ok {
+			return fmt.Errorf("node %v is not associated with disco key %v", nodeKey.ShortString(), discoKey.ShortString())
+		}
+	}
 
 	// Generate a random request ID
 	var requestID [8]byte
@@ -4825,59 +4891,55 @@ func (c *Conn) RequestAmneziaWGConfigCtx(ctx context.Context, discoKey key.Disco
 		c.dlogf("[v1] magicsock: disco: collision on request ID %x, regenerating", requestID[:4])
 		return fmt.Errorf("request ID collision; retry")
 	}
-	c.amneziaWGConfigWaiters[requestID] = respCh
+	c.amneziaWGConfigWaiters[requestID] = amneziaWGConfigWaiter{
+		ch:       respCh,
+		nodeKey:  nodeKey,
+		discoKey: discoKey,
+	}
 
 	// Launch a cleanup goroutine that removes the waiter if the context is
 	// done before a response arrives. We capture requestID & discoKey values.
-	if ctx != nil {
-		go func(requestID [8]byte) {
-			<-ctx.Done()
+	if ctx != nil && ctx.Done() != nil {
+		go func(requestID [8]byte, done <-chan struct{}) {
+			<-done
 			c.mu.Lock()
-			if ch, ok := c.amneziaWGConfigWaiters[requestID]; ok && ch == respCh {
+			if waiter, ok := c.amneziaWGConfigWaiters[requestID]; ok && waiter.ch == respCh {
 				delete(c.amneziaWGConfigWaiters, requestID)
 				c.dlogf("[v1] magicsock: disco: cleaned up AmneziaWG config waiter tx=%x after context done (%v)", requestID[:4], ctx.Err())
 			}
 			c.mu.Unlock()
-		}(requestID)
+		}(requestID, ctx.Done())
 	}
 
 	c.dlogf("[v1] magicsock: disco: generated request ID %x for AmneziaWG config from %v", requestID[:4], discoKey.ShortString())
 
-	// Ensure peer exists
-	if !c.peerMap.knownPeerDiscoKey(discoKey) {
-		delete(c.amneziaWGConfigWaiters, requestID)
-		return fmt.Errorf("unknown peer with disco key %v", discoKey)
-	}
-
 	// Send via all available paths (DERP + direct UDP) for reliability.
 	// Duplicate requests are safe: the response handler deduplicates by RequestID.
 	sent := false
-	c.peerMap.forEachEndpointWithDiscoKey(discoKey, func(ep *endpoint) bool {
-		// Try DERP path
-		if ep.derpAddr.IsValid() {
-			c.dlogf("[v1] magicsock: disco: sending AmneziaWG config request tx=%x to %v via DERP region=%d (nodeKey=%v)",
-				requestID[:4], discoKey.ShortString(), ep.derpAddr.Port(), ep.publicKey.ShortString())
-			go c.sendDiscoMessage(epAddr{ap: ep.derpAddr}, ep.publicKey, discoKey, req, discoLog)
-			sent = true
-		}
-		// Also try direct UDP path if a trusted bestAddr exists.
-		// Lock ordering: Conn.mu (held) -> endpoint.mu is safe.
-		ep.mu.Lock()
-		ba := ep.bestAddr
-		trust := ep.trustBestAddrUntil
-		ep.mu.Unlock()
-		if ba.ap.IsValid() && ba.ap.Addr() != tailcfg.DerpMagicIPAddr && mono.Now().Before(trust) {
-			c.dlogf("[v1] magicsock: disco: sending AmneziaWG config request tx=%x to %v via direct %v (nodeKey=%v)",
-				requestID[:4], discoKey.ShortString(), ba.ap, ep.publicKey.ShortString())
-			go c.sendDiscoMessage(ba.epAddr, ep.publicKey, discoKey, req, discoLog)
-			sent = true
-		}
-		return false
-	})
+	// Snapshot both paths while holding the endpoint lock.
+	target.mu.Lock()
+	derpAddr := target.derpAddr
+	ba := target.bestAddr
+	trust := target.trustBestAddrUntil
+	target.mu.Unlock()
+	// Try DERP path.
+	if derpAddr.IsValid() {
+		c.dlogf("[v1] magicsock: disco: sending AmneziaWG config request tx=%x to %v via DERP region=%d (nodeKey=%v)",
+			requestID[:4], discoKey.ShortString(), derpAddr.Port(), target.publicKey.ShortString())
+		go c.sendDiscoMessage(epAddr{ap: derpAddr}, target.publicKey, discoKey, req, discoLog)
+		sent = true
+	}
+	// Also try direct UDP path if a trusted bestAddr exists.
+	if ba.ap.IsValid() && ba.ap.Addr() != tailcfg.DerpMagicIPAddr && mono.Now().Before(trust) {
+		c.dlogf("[v1] magicsock: disco: sending AmneziaWG config request tx=%x to %v via direct %v (nodeKey=%v)",
+			requestID[:4], discoKey.ShortString(), ba.ap, target.publicKey.ShortString())
+		go c.sendDiscoMessage(ba.epAddr, target.publicKey, discoKey, req, discoLog)
+		sent = true
+	}
 
 	if !sent {
 		delete(c.amneziaWGConfigWaiters, requestID)
-		return fmt.Errorf("no path available for peer %v", discoKey.ShortString())
+		return fmt.Errorf("no path available for peer %v (%v)", target.publicKey.ShortString(), discoKey.ShortString())
 	}
 
 	return nil

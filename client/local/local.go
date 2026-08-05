@@ -1748,23 +1748,27 @@ func (lc *Client) RequestAmneziaWGConfig(ctx context.Context, nodeKey key.NodePu
 	return decodeJSON[ipn.AmneziaWGPrefs](body)
 }
 
-// AWGSyncPeers returns peers that have non-zero Amnezia-WG configuration.
+// AWGSyncPeers returns AWG discovery results for online peers. Config is nil
+// for standard WireGuard or failed probes; Error distinguishes a failed probe
+// from a confirmed standard peer.
 // Endpoint: GET /localapi/v0/awg-sync-peers
 func (lc *Client) AWGSyncPeers(ctx context.Context) ([]struct {
-	NodeKey     string             `json:"nodeKey"`
-	Hostname    string             `json:"hostname"`
-	TailscaleIP string             `json:"tailscaleIP"`
-	Config      ipn.AmneziaWGPrefs `json:"config"`
+	NodeKey     string              `json:"nodeKey"`
+	Hostname    string              `json:"hostname"`
+	TailscaleIP string              `json:"tailscaleIP"`
+	Config      *ipn.AmneziaWGPrefs `json:"config"`
+	Error       string              `json:"error"`
 }, error) {
 	body, err := lc.get200(ctx, "/localapi/v0/awg-sync-peers")
 	if err != nil {
 		return nil, err
 	}
 	return decodeJSON[[]struct {
-		NodeKey     string             `json:"nodeKey"`
-		Hostname    string             `json:"hostname"`
-		TailscaleIP string             `json:"tailscaleIP"`
-		Config      ipn.AmneziaWGPrefs `json:"config"`
+		NodeKey     string              `json:"nodeKey"`
+		Hostname    string              `json:"hostname"`
+		TailscaleIP string              `json:"tailscaleIP"`
+		Config      *ipn.AmneziaWGPrefs `json:"config"`
+		Error       string              `json:"error"`
 	}](body)
 }
 
