@@ -5,6 +5,7 @@ package wgcfg
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"strconv"
@@ -91,10 +92,14 @@ func amneziaUAPIConfig(prefs ipn.AmneziaWGPrefs) (string, error) {
 	set := func(key, value string) {
 		fmt.Fprintf(&buf, "%s=%s\n", key, value)
 	}
-	setUint16 := func(key string, value uint16, envValue func() int) {
+	resolveUint16 := func(value uint16, envValue func() int) uint16 {
 		if value == 0 {
-			value = uint16(envValue())
+			return uint16(envValue())
 		}
+		return value
+	}
+	setUint16 := func(key string, value uint16, envValue func() int) {
+		value = resolveUint16(value, envValue)
 		set(key, strconv.FormatUint(uint64(value), 10))
 	}
 	setString := func(key, value string, envValue func() string) {
@@ -154,8 +159,22 @@ func amneziaUAPIConfig(prefs ipn.AmneziaWGPrefs) (string, error) {
 	if headerProtectionKey == "" {
 		headerProtectionKey = "0000000000000000000000000000000000000000000000000000000000000000"
 	}
-	if len(headerProtectionKey) != device.HeaderCipherKeySize*2 {
+	headerProtectionKeyBytes, err := hex.DecodeString(headerProtectionKey)
+	if err != nil || len(headerProtectionKeyBytes) != device.HeaderCipherKeySize {
 		return "", fmt.Errorf("header protection key must contain %d hexadecimal characters", device.HeaderCipherKeySize*2)
+	}
+	if !bytes.Equal(headerProtectionKeyBytes, make([]byte, device.HeaderCipherKeySize)) {
+		paddings := []uint16{
+			resolveUint16(prefs.S1, amneziaS1),
+			resolveUint16(prefs.S2, amneziaS2),
+			resolveUint16(prefs.S3, amneziaS3),
+			resolveUint16(prefs.S4, amneziaS4),
+		}
+		for i, padding := range paddings {
+			if padding < device.HeaderCipherNonceSize {
+				return "", fmt.Errorf("S%d must be at least %d when header protection is enabled", i+1, device.HeaderCipherNonceSize)
+			}
+		}
 	}
 	set("header_protection_key", headerProtectionKey)
 	setRange("content_padding_addition", prefs.ContentPaddingAddition, amneziaContentPaddingAddition)

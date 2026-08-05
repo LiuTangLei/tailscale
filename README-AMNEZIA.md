@@ -1,6 +1,6 @@
-# Tailscale with Amnezia-WG 1.5 Integration
+# Tailscale with AmneziaWG v2 and v3 Integration
 
-A Tailscale fork that integrates Amnezia-WG 1.5 capabilities for advanced DPI evasion and censorship circumvention with multi-level obfuscation, while maintaining full backward compatibility with standard WireGuard.
+A Tailscale fork that integrates both legacy AWG v2 profiles and AWG v3 profiles while preserving standard WireGuard behavior when every AWG field is disabled.
 
 ## Key Features
 
@@ -10,6 +10,8 @@ A Tailscale fork that integrates Amnezia-WG 1.5 capabilities for advanced DPI ev
 - **Advanced DPI evasion**: Custom Protocol Signature (CPS), junk packet injection, and handshake randomization
 - **Protocol masking**: Mimic QUIC, DNS, SIP, and other UDP protocols
 - **Dynamic headers**: Randomized packet headers make each client unique
+- **AWG v3**: Header protection, transport content padding, and configurable handshake/keepalive timing ranges
+- **v3-to-v2 fallback**: Applying or syncing a v2 profile clears every v3-only device setting
 - **Backward compatible**: All zero/empty values = standard WireGuard behavior
 - **AmneziaWG 1.0 compatibility**: When I1 is empty, behaves like AmneziaWG 1.0
 
@@ -23,6 +25,9 @@ tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70}'
 
 # Advanced protocol masking with QUIC-like signature
 tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0xc0><r 32><c><t>"}'
+
+# AWG v3 (HeaderProtectionKey requires S1-S4 >= 12)
+tailscale amnezia-wg set '{"jc":5,"jmin":500,"jmax":1000,"s1":15,"s2":18,"s3":20,"s4":25,"h1":"123456-123500","h2":"67543-67550","h3":"123123-123200","h4":"32345-32350","header_protection_key":"4242424242424242424242424242424242424242424242424242424242424242","content_padding_addition":"5-31","rekey_after_time":"120-180","rekey_timeout":"5-7","reject_after_time":"180-240","keepalive_timeout":"10-15","max_handshake_attempts":"8-12"}'
 
 # Verify configuration
 tailscale amnezia-wg get
@@ -76,11 +81,21 @@ docker restart <container>
 | `jmax` | Max junk packet size (bytes) | 0 | 70-100 | ✅ Safe with standard WG |
 | `s1` | Init packet prefix length (0-64) | 0 | 10-20 (advanced) | ❌ Breaks standard WG |
 | `s2` | Response packet prefix length (0-64) | 0 | 10-20 (advanced) | ❌ Breaks standard WG |
+| `s3` | Cookie packet prefix length (0-64) | 0 | Profile-specific | Must match AWG peers |
+| `s4` | Transport packet prefix length (0-64) | 0 | Profile-specific | Must match AWG peers |
+| `h1`-`h4` | Message header values or ranges | Standard WG types | Profile-specific | Must match AWG peers |
 | `i1` | Primary signature packet (CPS format) | "" | Protocol-specific | ✅ Safe with standard WG |
 | `i2` | Secondary signature packet (CPS format) | "" | Optional entropy | ✅ Safe with standard WG |
 | `i3` | Tertiary signature packet (CPS format) | "" | Optional entropy | ✅ Safe with standard WG |
 | `i4` | Quaternary signature packet (CPS format) | "" | Optional entropy | ✅ Safe with standard WG |
 | `i5` | Quinary signature packet (CPS format) | "" | Optional entropy | ✅ Safe with standard WG |
+| `header_protection_key` | AWG v3 32-byte key encoded as 64 hex characters | "" | Profile-specific | Requires AWG v3; must match peers |
+| `content_padding_addition` | AWG v3 transport padding range | 0 | `5-31` | Requires v3-capable core |
+| `rekey_after_time` | Rekey interval range in seconds | 0 | `120-180` | Local timing |
+| `rekey_timeout` | Rekey timeout range in seconds | 0 | `5-7` | Local timing |
+| `reject_after_time` | Session rejection range in seconds | 0 | `180-240` | Local timing |
+| `keepalive_timeout` | Keepalive timeout range in seconds | 0 | `10-15` | Local timing |
+| `max_handshake_attempts` | Handshake attempt-count range | 0 | `8-12` | Local timing |
 
 ### Custom Protocol Signature (CPS) Format
 
@@ -113,7 +128,7 @@ CPS packets use tag-based format to emulate protocols:
 ## CLI Commands
 
 ```bash
-# Amnezia-WG 1.5 specific commands
+# AmneziaWG v2/v3 commands
 tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70}'                     # Basic DPI evasion (prompt to restart)
 tailscale amnezia-wg set '{"jc":4,"i1":"<b 0xc0><r 32><c><t>"}'             # Protocol masking (prompt to restart)
 tailscale amnezia-wg set                                                     # Interactive setup with CPS guidance
@@ -139,6 +154,13 @@ export TS_AMNEZIA_I2=''       # Secondary signature packet (CPS format)
 export TS_AMNEZIA_I3=''       # Tertiary signature packet (CPS format)
 export TS_AMNEZIA_I4=''       # Quaternary signature packet (CPS format)
 export TS_AMNEZIA_I5=''       # Quinary signature packet (CPS format)
+export TS_AMNEZIA_HEADER_PROTECTION_KEY=''       # 64 hex chars; empty disables v3 header protection
+export TS_AMNEZIA_CONTENT_PADDING_ADDITION='0'   # e.g. 5-31
+export TS_AMNEZIA_REKEY_AFTER_TIME='0'           # e.g. 120-180
+export TS_AMNEZIA_REKEY_TIMEOUT='0'              # e.g. 5-7
+export TS_AMNEZIA_REJECT_AFTER_TIME='0'           # e.g. 180-240
+export TS_AMNEZIA_KEEPALIVE_TIMEOUT='0'           # e.g. 10-15
+export TS_AMNEZIA_MAX_HANDSHAKE_ATTEMPTS='0'      # e.g. 8-12
 ```
 
 ## Usage Scenarios
@@ -200,7 +222,7 @@ tailscale amnezia-wg reset
 
 | Peer Type | Junk Packets | Handshake Obfuscation | Protocol Masking |
 |-----------|--------------|----------------------|------------------|
-| This fork (1.5) | ✅ Supported | ✅ Supported | ✅ Supported |
+| This fork (AWG v2/v3) | ✅ Supported | ✅ Supported | ✅ Supported |
 | This fork (1.0 mode) | ✅ Supported | ✅ Supported | ❌ N/A |
 | Standard Tailscale | ✅ Ignored | ❌ May fail | ❌ May fail |
 | Standard WireGuard | ✅ Ignored | ❌ May fail | ❌ May fail |
@@ -215,11 +237,13 @@ tailscale amnezia-wg reset
 - ✅ **Independent settings**: Each node can use different values (both are per-node junk traffic)
 - 💡 **Optimization tip**: More CPS signatures = fewer basic junk packets needed
 
-**Handshake obfuscation (`s1`, `s2`)**:
+**Handshake and transport obfuscation (`s1`-`s4`, `h1`-`h4`, HeaderProtectionKey)**:
 
 - ❌ **Breaks standard WireGuard**: Connection will fail
 - ❌ **All-or-nothing**: ALL nodes in your network must use this fork
-- ❌ **Same config required**: All nodes need identical `s1` and `s2` values for handshake compatibility
+- ❌ **Same config required**: All nodes need identical `s1`-`s4`, `h1`-`h4`, and HeaderProtectionKey values
+- ✅ **v2 remains supported**: A v3-capable binary can sync a v2 profile; v3-only state is cleared before reconnecting
+- ⚠️ **Header protection rule**: `s1`-`s4` must each be at least 12 when HeaderProtectionKey is enabled
 - ✅ **AmneziaWG 1.0 compatibility**: When I1 is empty, works with AmneziaWG 1.0
 
 ### Recommended Approach for Mixed Environments
@@ -240,7 +264,7 @@ tailscale amnezia-wg set '{"jc":2,"jmin":40,"jmax":70,"i1":"<b 0xc0><r 16>","i2"
 **For private networks (all nodes use this fork):**
 
 ```bash
-# Full AmneziaWG 1.5 obfuscation - only s1/s2 must match across nodes
+# AWG v2 obfuscation - s1/s2 must match across nodes
 tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15,"i1":"<b 0xc0><r 32><c><t>"}'
 ```
 
@@ -282,20 +306,18 @@ tailscale amnezia-wg set '{"jc":4,"jmin":40,"jmax":70,"s1":10,"s2":15}'
 - **Implementation**: Extends Tailscale's preference system
 - **Storage**: Persisted in tailscaled state file
 - **Scope**: Per-node configuration
-- **Protocol**: Compatible with Amnezia-WG 1.5 wire format
+- **Protocol**: Compatible with AWG v2 and AWG v3 wire formats
 - **Security**: Maintains WireGuard's cryptographic guarantees
 - **Obfuscation**: Multi-level transport layer obfuscation (headers, handshake, protocol masking)
 - **Performance**: Single-pass AEAD encryption with SIMD optimization
 - **Backward compatibility**: Full compatibility when all parameters are zero/empty
 
-## Migration from AmneziaWG 1.0
+## Migration and Profile Downgrade
 
-If you're upgrading from AmneziaWG 1.0:
-
-1. **H1-H4 parameters removed**: Replace with I1-I5 Custom Protocol Signature packets
-2. **S1/S2 remain the same**: Handshake length randomization unchanged
-3. **Automatic 1.0 compatibility**: When I1 is empty, behaves exactly like AmneziaWG 1.0
-4. **Gradual migration**: Can deploy gradually - nodes with empty I1 work with 1.0 nodes
+1. Existing v2 JSON remains accepted, including scalar or range `h1`-`h4` values.
+2. AWG v3 adds HeaderProtectionKey, content padding, and timing ranges without changing the v2 field names.
+3. Syncing or setting a v2 profile on a node that previously used v3 clears all v3-only settings.
+4. Standard WireGuard mode is restored by `tailscale amnezia-wg reset`.
 
 ## License
 
@@ -303,4 +325,4 @@ BSD 3-Clause (same as Tailscale)
 
 ---
 
-**Default behavior is identical to standard Tailscale.** Amnezia-WG 1.5 features are only active when explicitly configured.
+**Default behavior is identical to standard Tailscale.** AWG v2/v3 features are only active when explicitly configured.

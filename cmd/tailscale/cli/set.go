@@ -98,8 +98,8 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
 	setf.StringVar(&setArgs.relayServerStaticEndpoints, "relay-server-static-endpoints", "", "static IP:port endpoints to advertise as candidates for relay connections (comma-separated, e.g. \"[2001:db8::1]:40000,192.0.2.1:40000\") or empty string to not advertise any static endpoints")
 
 	// Amnezia-WG configuration flags
-	setf.StringVar(&setArgs.amneziaWG, "amnezia-wg", "", hidden+"Amnezia-WG 1.5 configuration as JSON string, e.g. '{\"jc\":4,\"jmin\":40,\"jmax\":70,\"s1\":10,\"s2\":15,\"i1\":\"<b 0xc0><r 32><c><t>\"}' (all parameters=0/empty use standard WireGuard, empty I1 enables AmneziaWG 1.0 compatibility)")
-	setf.BoolVar(&setArgs.amneziaWGConfig, "amnezia-wg-config", false, hidden+"Configure Amnezia-WG 1.5 parameters interactively")
+	setf.StringVar(&setArgs.amneziaWG, "amnezia-wg", "", hidden+"Amnezia-WG v2/v3 configuration as JSON; all zero/empty fields use standard WireGuard")
+	setf.BoolVar(&setArgs.amneziaWGConfig, "amnezia-wg-config", false, hidden+"Configure Amnezia-WG v2/v3 parameters interactively")
 
 	ffcomplete.Flag(setf, "exit-node", func(args []string) ([]string, ffcomplete.ShellCompDirective, error) {
 		st, err := localClient.Status(context.Background())

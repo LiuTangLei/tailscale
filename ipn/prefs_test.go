@@ -33,6 +33,42 @@ func fieldsOf(t reflect.Type) (fields []string) {
 	return
 }
 
+func TestAmneziaWGPrefsJSONV2AndV3(t *testing.T) {
+	const key = "4242424242424242424242424242424242424242424242424242424242424242"
+	input := `{
+		"jc": 4,
+		"h1": "100-200",
+		"header_protection_key": "` + key + `",
+		"content_padding_addition": "5-31",
+		"rekey_after_time": 120,
+		"max_handshake_attempts": {"min": 8, "max": 12}
+	}`
+	var got AmneziaWGPrefs
+	if err := json.Unmarshal([]byte(input), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := AmneziaWGPrefs{
+		JC:                     4,
+		H1:                     MagicHeaderRange{Min: 100, Max: 200},
+		HeaderProtectionKey:    key,
+		ContentPaddingAddition: MagicHeaderRange{Min: 5, Max: 31},
+		RekeyAfterTime:         MagicHeaderRange{Min: 120, Max: 120},
+		MaxHandshakeAttempts:   MagicHeaderRange{Min: 8, Max: 12},
+	}
+	if got != want {
+		t.Fatalf("decoded config = %#v, want %#v", got, want)
+	}
+
+	// Legacy v2 JSON used scalar magic headers and must remain readable.
+	var v2 AmneziaWGPrefs
+	if err := json.Unmarshal([]byte(`{"JC":3,"JMin":40,"JMax":70,"H1":123456}`), &v2); err != nil {
+		t.Fatal(err)
+	}
+	if v2.JC != 3 || v2.H1 != (MagicHeaderRange{Min: 123456, Max: 123456}) || v2.HeaderProtectionKey != "" {
+		t.Fatalf("legacy v2 config decoded incorrectly: %#v", v2)
+	}
+}
+
 func TestPrefsEqual(t *testing.T) {
 	tstest.PanicOnLog()
 

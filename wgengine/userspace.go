@@ -865,7 +865,10 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 		e.isDNSIPOverTailscale.Store(ipset.NewContainsIPFunc(views.SliceOf(dnsIPsOverTailscale(dnsCfg, routerCfg))))
 	}
 
-	if e.lastCfg.AmneziaWG != cfg.AmneziaWG {
+	// Apply on every engine config change, including the first one. The initial
+	// call is required for installations that configure AWG only through the
+	// TS_AMNEZIA_* environment variables while persisted preferences are zero.
+	if engineChanged {
 		if err := wgcfg.ApplyAmneziaConfig(e.wgdev, cfg.AmneziaWG); err != nil {
 			return fmt.Errorf("wgengine: Reconfig: AmneziaWG: %w", err)
 		}

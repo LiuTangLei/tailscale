@@ -1,4 +1,4 @@
-// Copyright (c) Tailscale Inc & AUTHORS
+// Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
 package cli
@@ -7,7 +7,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -29,9 +31,8 @@ var amneziaCmd = &ffcli.Command{
 Amnezia-WG is backward compatible with standard WireGuard when all parameters are zero.
 
 ⚠️  CRITICAL: Certain parameters require network-wide consistency!
-- H1-H4 (header fields): ALL nodes must use IDENTICAL values
-- S1-S4 (prefix lengths): ALL nodes must use IDENTICAL values
-- I1-I5, JC, JMin, JMax: Can differ between nodes
+- H1-H4, S1-S4 and HeaderProtectionKey: ALL nodes must use IDENTICAL values
+- I1-I5, JC, JMin, JMax and v3 padding/timing ranges: Can differ between nodes
 
 Use 'tailscale amnezia-wg get' on one node and 'tailscale amnezia-wg set' on others to maintain consistency for required parameters.`,
 	Subcommands: []*ffcli.Command{
@@ -50,9 +51,8 @@ Use 'tailscale amnezia-wg get' on one node and 'tailscale amnezia-wg set' on oth
 After applying changes, you will be prompted to restart tailscaled.
 
 ⚠️  Network consistency requirements:
-- H1-H4 (header fields): Must be IDENTICAL on ALL nodes
-- S1-S4 (prefix lengths): Must be IDENTICAL on ALL nodes
-- I1-I5, JC, JMin, JMax: Can differ between nodes
+- H1-H4, S1-S4 and HeaderProtectionKey: Must be IDENTICAL on ALL nodes
+- I1-I5, JC, JMin, JMax and v3 padding/timing ranges: Can differ between nodes
 
 Examples:
 	# Basic DPI evasion (junk packets only, compatible with standard WireGuard)
@@ -69,6 +69,9 @@ Examples:
 
 	# Combined header fields and signature parameters
 	tailscale amnezia-wg set '{"jc":4,"h1":3847291638,"h2":1029384756,"i1":"<b 0x12345678><r 16>"}'
+
+	# AWG v3 (S1-S4 must each be at least 12 with header protection)
+	tailscale amnezia-wg set '{"jc":5,"jmin":500,"jmax":1000,"s1":15,"s2":18,"s3":20,"s4":25,"h1":"123456-123500","h2":"67543-67550","h3":"123123-123200","h4":"32345-32350","header_protection_key":"4242424242424242424242424242424242424242424242424242424242424242","content_padding_addition":"5-31","rekey_after_time":"120-180","rekey_timeout":"5-7","reject_after_time":"180-240","keepalive_timeout":"10-15","max_handshake_attempts":"8-12"}'
 
   # Interactive configuration (recommended for beginners)
   tailscale amnezia-wg set
@@ -214,13 +217,29 @@ func promptInteractiveConfig(ctx context.Context) (ipn.AmneziaWGPrefs, error) {
 	// CPS parameters
 	promptCPSParameters(scanner, &config)
 
+	// AWG v3 parameters. Leaving these empty keeps an AWG v2 profile.
+	promptV3Parameters(scanner, &config)
+
 	return config, nil
+}
+
+func promptV3Parameters(scanner *bufio.Scanner, config *ipn.AmneziaWGPrefs) {
+	printSectionHeader("AWG v3 Parameters")
+	fmt.Println("Leave all values empty or zero to keep AWG v2 compatibility.")
+	fmt.Println("When HeaderProtectionKey is enabled, S1-S4 must each be at least 12 and match every peer.")
+	config.HeaderProtectionKey = promptStringWithExample(scanner, "Header protection key", config.HeaderProtectionKey, "64 hexadecimal characters; must be identical on all nodes")
+	config.ContentPaddingAddition = promptMagicHeaderRangeWithHint(scanner, "Content padding addition", config.ContentPaddingAddition, "Range such as 5-31; 0 disables it")
+	config.RekeyAfterTime = promptMagicHeaderRangeWithHint(scanner, "Rekey-after time (seconds)", config.RekeyAfterTime, "Range such as 120-180; 0 uses the WireGuard default")
+	config.RekeyTimeout = promptMagicHeaderRangeWithHint(scanner, "Rekey timeout (seconds)", config.RekeyTimeout, "Range such as 5-7; 0 uses the WireGuard default")
+	config.RejectAfterTime = promptMagicHeaderRangeWithHint(scanner, "Reject-after time (seconds)", config.RejectAfterTime, "Range such as 180-240; 0 uses the WireGuard default")
+	config.KeepaliveTimeout = promptMagicHeaderRangeWithHint(scanner, "Keepalive timeout (seconds)", config.KeepaliveTimeout, "Range such as 10-15; 0 uses the WireGuard default")
+	config.MaxHandshakeAttempts = promptMagicHeaderRangeWithHint(scanner, "Maximum handshake attempts", config.MaxHandshakeAttempts, "Range such as 8-12; 0 uses the WireGuard default")
 }
 
 // printInteractiveConfigHeader prints the header information for interactive configuration.
 func printInteractiveConfigHeader() {
 	fmt.Println("Configure Amnezia-WG parameters (press Enter to keep current value, 0 or empty to disable):")
-	fmt.Println("⚠️  H1-H4 and S1-S4 must be IDENTICAL on all nodes. I1-I5, JC, JMin, JMax can differ.")
+	fmt.Println("⚠️  H1-H4, S1-S4 and HeaderProtectionKey must be IDENTICAL on all nodes.")
 	fmt.Println("💡 Quick tip: Choose random generation for instant setup, or manual for full control.")
 	fmt.Println("📖 For maximum compatibility, use junk packets only. For advanced DPI evasion, add CPS signatures.")
 }
@@ -420,9 +439,53 @@ func printCPSInstructions() {
 
 // applyAmneziaWGConfig applies the Amnezia-WG configuration.
 func applyAmneziaWGConfig(ctx context.Context, config ipn.AmneziaWGPrefs) error {
+	if err := validateAmneziaWGConfig(config); err != nil {
+		return err
+	}
 	maskedPrefs := createMaskedPrefs(config)
 	_, err := localClient.EditPrefs(ctx, maskedPrefs)
 	return err
+}
+
+func validateAmneziaWGConfig(config ipn.AmneziaWGPrefs) error {
+	if config.JMin != 0 && config.JMax != 0 && config.JMin > config.JMax {
+		return fmt.Errorf("JMin (%d) cannot be greater than JMax (%d)", config.JMin, config.JMax)
+	}
+
+	ranges := []struct {
+		name  string
+		value ipn.MagicHeaderRange
+	}{
+		{"H1", config.H1}, {"H2", config.H2}, {"H3", config.H3}, {"H4", config.H4},
+		{"ContentPaddingAddition", config.ContentPaddingAddition},
+		{"RekeyAfterTime", config.RekeyAfterTime},
+		{"RekeyTimeout", config.RekeyTimeout},
+		{"RejectAfterTime", config.RejectAfterTime},
+		{"KeepaliveTimeout", config.KeepaliveTimeout},
+		{"MaxHandshakeAttempts", config.MaxHandshakeAttempts},
+	}
+	for _, r := range ranges {
+		if r.value.Max < r.value.Min {
+			return fmt.Errorf("%s maximum (%d) cannot be less than minimum (%d)", r.name, r.value.Max, r.value.Min)
+		}
+	}
+
+	if config.HeaderProtectionKey == "" {
+		return nil
+	}
+	key, err := hex.DecodeString(config.HeaderProtectionKey)
+	if err != nil || len(key) != 32 {
+		return errors.New("HeaderProtectionKey must contain exactly 64 hexadecimal characters")
+	}
+	if bytes.Equal(key, make([]byte, 32)) {
+		return nil
+	}
+	for i, padding := range []uint16{config.S1, config.S2, config.S3, config.S4} {
+		if padding < 12 {
+			return fmt.Errorf("S%d must be at least 12 when HeaderProtectionKey is enabled", i+1)
+		}
+	}
+	return nil
 }
 
 func runAmneziaWGGet(ctx context.Context, args []string) error {
@@ -450,6 +513,7 @@ func runAmneziaWGGet(ctx context.Context, args []string) error {
 // printAmneziaWGConfig prints the Amnezia-WG configuration in a formatted way.
 func printAmneziaWGConfig(config ipn.AmneziaWGPrefs) {
 	fmt.Printf("Current Amnezia-WG configuration:\n")
+	fmt.Printf("  Profile version: %s\n", amneziaConfigVersion(config))
 
 	// Basic parameters
 	fmt.Printf("  JC (junk packet count): %d\n", config.JC)
@@ -488,6 +552,49 @@ func printAmneziaWGConfig(config ipn.AmneziaWGPrefs) {
 	} else {
 		fmt.Printf("  H4 (header field 4): %d-%d\n", config.H4.Min, config.H4.Max)
 	}
+
+	// AWG v3 parameters
+	fmt.Printf("  HeaderProtectionKey: %s\n", valueOrDisabled(config.HeaderProtectionKey))
+	fmt.Printf("  ContentPaddingAddition: %s\n", rangeOrDisabled(config.ContentPaddingAddition))
+	fmt.Printf("  RekeyAfterTime: %s\n", rangeOrDisabled(config.RekeyAfterTime))
+	fmt.Printf("  RekeyTimeout: %s\n", rangeOrDisabled(config.RekeyTimeout))
+	fmt.Printf("  RejectAfterTime: %s\n", rangeOrDisabled(config.RejectAfterTime))
+	fmt.Printf("  KeepaliveTimeout: %s\n", rangeOrDisabled(config.KeepaliveTimeout))
+	fmt.Printf("  MaxHandshakeAttempts: %s\n", rangeOrDisabled(config.MaxHandshakeAttempts))
+}
+
+func hasV3Config(config ipn.AmneziaWGPrefs) bool {
+	return config.HeaderProtectionKey != "" ||
+		!config.ContentPaddingAddition.IsZero() ||
+		!config.RekeyAfterTime.IsZero() ||
+		!config.RekeyTimeout.IsZero() ||
+		!config.RejectAfterTime.IsZero() ||
+		!config.KeepaliveTimeout.IsZero() ||
+		!config.MaxHandshakeAttempts.IsZero()
+}
+
+func amneziaConfigVersion(config ipn.AmneziaWGPrefs) string {
+	if isConfigZero(config) {
+		return "standard WireGuard"
+	}
+	if hasV3Config(config) {
+		return "AWG v3"
+	}
+	return "AWG v2"
+}
+
+func valueOrDisabled(value string) string {
+	if value == "" {
+		return "disabled"
+	}
+	return value
+}
+
+func rangeOrDisabled(value ipn.MagicHeaderRange) string {
+	if value.IsZero() {
+		return "disabled"
+	}
+	return value.String()
 }
 
 // isConfigZero checks if the Amnezia-WG configuration is all zero values.
@@ -496,7 +603,8 @@ func isConfigZero(config ipn.AmneziaWGPrefs) bool {
 		config.S1 == 0 && config.S2 == 0 && config.S3 == 0 && config.S4 == 0 &&
 		config.I1 == "" && config.I2 == "" && config.I3 == "" && config.I4 == "" && config.I5 == "" &&
 		(config.H1.Min == 0 && config.H1.Max == 0) && (config.H2.Min == 0 && config.H2.Max == 0) &&
-		(config.H3.Min == 0 && config.H3.Max == 0) && (config.H4.Min == 0 && config.H4.Max == 0)
+		(config.H3.Min == 0 && config.H3.Max == 0) && (config.H4.Min == 0 && config.H4.Max == 0) &&
+		!hasV3Config(config)
 }
 
 // formatConfigAsJSON formats the configuration as a compact JSON string.
@@ -966,18 +1074,23 @@ func printValidationSummary(config ipn.AmneziaWGPrefs) {
 	hasSignature := config.I1 != "" || config.I2 != "" || config.I3 != "" || config.I4 != "" || config.I5 != ""
 	hasJunk := config.JC != 0 || config.JMin != 0 || config.JMax != 0
 	hasPrefix := config.S1 != 0 || config.S2 != 0 || config.S3 != 0 || config.S4 != 0
+	hasV3 := hasV3Config(config)
 
-	fmt.Printf("⚠️  Status: Amnezia-WG mode enabled\n📊 Parameter Summary:\n")
+	fmt.Printf("⚠️  Status: %s mode enabled\n📊 Parameter Summary:\n", amneziaConfigVersion(config))
 	fmt.Printf("   - Junk packets: %s\n", formatEnabled(hasJunk))
 	fmt.Printf("   - Prefix lengths (S1/S2): %s\n", formatEnabled(hasPrefix))
 	fmt.Printf("   - Header parameters (H1-H4): %s\n", formatEnabled(hasHeader))
-	fmt.Printf("   - Signature parameters (I1-I5): %s\n\n", formatEnabled(hasSignature))
+	fmt.Printf("   - Signature parameters (I1-I5): %s\n", formatEnabled(hasSignature))
+	fmt.Printf("   - AWG v3 parameters: %s\n\n", formatEnabled(hasV3))
 
 	fmt.Printf("🔍 Compatibility Analysis:\n")
-	if hasJunk && !hasPrefix && !hasHeader && !hasSignature {
+	if hasJunk && !hasPrefix && !hasHeader && !hasSignature && !hasV3 {
 		fmt.Printf("✅ Junk packets only: Compatible with standard WireGuard clients\n✅ Low impact: Should work with most configurations\n")
 	} else {
 		fmt.Printf("⚠️  Protocol modification: NOT compatible with standard WireGuard\n❌ Breaking changes: S1/S2, H1-H4, or I1-I5 parameters are set\n")
+	}
+	if hasV3 {
+		fmt.Printf("⚠️  AWG v3 profile: all participating nodes must run a v3-capable core\n")
 	}
 
 	if hasHeader && hasSignature {
@@ -988,8 +1101,8 @@ func printValidationSummary(config ipn.AmneziaWGPrefs) {
 		fmt.Printf("💡 Note: H1-H4 should use 32-bit random numbers for better obfuscation\n   Consider using larger random values (e.g., 3847291638)\n")
 	}
 
-	fmt.Printf("\n🚨 CRITICAL NETWORK REQUIREMENT:\n   These parameters MUST be IDENTICAL on ALL nodes: H1-H4, S1-S4\n   These parameters CAN differ between nodes: I1-I5, JC/JMin/JMax\n\n")
-	fmt.Printf("📋 Required Actions for H1-H4 and S1-S4:\n   1. Get values: tailscale amnezia-wg get\n   2. Apply on all nodes: tailscale amnezia-wg set\n   3. Restart tailscaled on ALL nodes\n   4. Test connectivity\n\n")
+	fmt.Printf("\n🚨 CRITICAL NETWORK REQUIREMENT:\n   These parameters MUST be IDENTICAL on ALL nodes: H1-H4, S1-S4, HeaderProtectionKey\n   These parameters CAN differ between nodes: I1-I5, JC/JMin/JMax, v3 padding/timing ranges\n\n")
+	fmt.Printf("📋 Required Actions:\n   1. Get values: tailscale amnezia-wg get\n   2. Apply on all nodes: tailscale amnezia-wg set\n   3. Restart tailscaled on ALL nodes\n   4. Test connectivity\n\n")
 }
 
 func printValidationWarnings(config ipn.AmneziaWGPrefs) {
@@ -1237,8 +1350,27 @@ func printCompactAWGConfig(config ipn.AmneziaWGPrefs) {
 	if config.I1 != "" {
 		parts = append(parts, fmt.Sprintf("I1=%s", truncateString(config.I1, 20)))
 	}
+	if config.HeaderProtectionKey != "" {
+		parts = append(parts, fmt.Sprintf("HeaderProtectionKey=%s", truncateString(config.HeaderProtectionKey, 12)))
+	}
+	for _, item := range []struct {
+		name  string
+		value ipn.MagicHeaderRange
+	}{
+		{"ContentPaddingAddition", config.ContentPaddingAddition},
+		{"RekeyAfterTime", config.RekeyAfterTime},
+		{"RekeyTimeout", config.RekeyTimeout},
+		{"RejectAfterTime", config.RejectAfterTime},
+		{"KeepaliveTimeout", config.KeepaliveTimeout},
+		{"MaxHandshakeAttempts", config.MaxHandshakeAttempts},
+	} {
+		if !item.value.IsZero() {
+			parts = append(parts, fmt.Sprintf("%s=%s", item.name, item.value.String()))
+		}
+	}
 
 	if len(parts) > 0 {
+		fmt.Printf("   Profile: %s\n", amneziaConfigVersion(config))
 		fmt.Printf("   Parameters: %s\n", strings.Join(parts, ", "))
 	} else {
 		fmt.Printf("   Parameters: (standard WireGuard)\n")
