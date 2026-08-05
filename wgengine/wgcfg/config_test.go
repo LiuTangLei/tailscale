@@ -14,7 +14,7 @@ func TestConfigEqual(t *testing.T) {
 	rt := reflect.TypeFor[Config]()
 	for sf := range rt.Fields() {
 		switch sf.Name {
-		case "Name", "NodeID", "PrivateKey", "Addresses":
+		case "Name", "NodeID", "PrivateKey", "Addresses", "AmneziaWG":
 			// These are compared in [Config.Equal].
 		default:
 			t.Errorf("Have you added field %q to Config.Equal? Do so if not, and then update TestConfigEqual", sf.Name)

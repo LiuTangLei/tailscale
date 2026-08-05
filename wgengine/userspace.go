@@ -18,9 +18,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LiuTangLei/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"github.com/gaissmai/bart"
-	"github.com/tailscale/wireguard-go/device"
-	"github.com/tailscale/wireguard-go/tun"
 	"go4.org/mem"
 	"tailscale.com/control/controlknobs"
 	"tailscale.com/drive"
@@ -863,6 +863,12 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 	// dns.Manager. Maybe also with isLocalAddr above.
 	if buildfeatures.HasDNS {
 		e.isDNSIPOverTailscale.Store(ipset.NewContainsIPFunc(views.SliceOf(dnsIPsOverTailscale(dnsCfg, routerCfg))))
+	}
+
+	if e.lastCfg.AmneziaWG != cfg.AmneziaWG {
+		if err := wgcfg.ApplyAmneziaConfig(e.wgdev, cfg.AmneziaWG); err != nil {
+			return fmt.Errorf("wgengine: Reconfig: AmneziaWG: %w", err)
+		}
 	}
 
 	if !e.lastCfg.PrivateKey.Equal(cfg.PrivateKey) {

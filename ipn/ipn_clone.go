@@ -108,6 +108,7 @@ var _PrefsCloneNeedsRegeneration = Prefs(struct {
 	RelayServerPort            *uint16
 	RelayServerStaticEndpoints []netip.AddrPort
 	Persist                    *persist.Persist
+	AmneziaWG                  AmneziaWGPrefs
 }{})
 
 // Clone makes a deep copy of ServeConfig.

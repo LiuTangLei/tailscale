@@ -6107,7 +6107,9 @@ func (b *LocalBackend) authReconfigLocked() {
 	cfg := &wgcfg.Config{
 		PrivateKey: priv,
 		Addresses:  nm.GetAddresses().AsSlice(),
+		AmneziaWG:  prefs.AmneziaWG(),
 	}
+	b.MagicConn().SetAmneziaWGConfigProvider(func() ipn.AmneziaWGPrefs { return prefs.AmneziaWG() })
 
 	// Note: b.goos (set only by tests) speaks runtime.GOOS while
 	// version.OS is Tailscale-style ("macOS", "iOS"); they agree for

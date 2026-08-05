@@ -930,6 +930,8 @@ func init() {
 	addPrefFlagMapping("relay-server-port", "RelayServerPort")
 	addPrefFlagMapping("sync", "Sync")
 	addPrefFlagMapping("relay-server-static-endpoints", "RelayServerStaticEndpoints")
+	addPrefFlagMapping("amnezia-wg", "AmneziaWG")
+	addPrefFlagMapping("amnezia-wg-config", "AmneziaWG")
 }
 
 func addPrefFlagMapping(flagName string, prefNames ...string) {
@@ -952,7 +954,7 @@ func addPrefFlagMapping(flagName string, prefNames ...string) {
 // correspond to an ipn.Pref.
 func preflessFlag(flagName string) bool {
 	switch flagName {
-	case "auth-key", "force-reauth", "reset", "qr", "qr-format", "json", "timeout", "accept-risk", "host-routes", "client-id", "audience", "client-secret", "id-token":
+	case "auth-key", "force-reauth", "reset", "qr", "qr-format", "json", "timeout", "accept-risk", "host-routes", "client-id", "audience", "client-secret", "id-token", "amnezia-wg-config":
 		return true
 	}
 	return false

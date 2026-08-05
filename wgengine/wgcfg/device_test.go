@@ -9,9 +9,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/tailscale/wireguard-go/conn"
-	"github.com/tailscale/wireguard-go/device"
-	"github.com/tailscale/wireguard-go/tun"
+	"github.com/LiuTangLei/wireguard-go/conn"
+	"github.com/LiuTangLei/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"tailscale.com/types/key"
 )
 

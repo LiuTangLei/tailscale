@@ -8,6 +8,7 @@ package wgcfg
 import (
 	"net/netip"
 
+	"tailscale.com/ipn"
 	"tailscale.com/types/key"
 )
 
@@ -27,4 +28,5 @@ func (src *Config) Clone() *Config {
 var _ConfigCloneNeedsRegeneration = Config(struct {
 	PrivateKey key.NodePrivate
 	Addresses  []netip.Prefix
+	AmneziaWG  ipn.AmneziaWGPrefs
 }{})

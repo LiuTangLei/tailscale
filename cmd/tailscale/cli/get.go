@@ -203,6 +203,12 @@ func prefValue(flagName string, prefs *ipn.Prefs, st *ipnstate.Status) any {
 			parts[i] = ep.String()
 		}
 		return strings.Join(parts, ",")
+	case "amnezia-wg":
+		encoded, err := json.Marshal(prefs.AmneziaWG)
+		if err != nil {
+			return "{}"
+		}
+		return string(encoded)
 	default:
 		return nil
 	}
