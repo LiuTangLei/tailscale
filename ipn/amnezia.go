@@ -193,6 +193,7 @@ func validateAmneziaCPS(spec string) error {
 			arg = fields[1]
 		}
 
+		tagOutputBytes := int64(0)
 		switch tag {
 		case "b":
 			value := strings.TrimPrefix(arg, "0x")
@@ -205,9 +206,9 @@ func validateAmneziaCPS(spec string) error {
 			if _, err := hex.DecodeString(value); err != nil {
 				return fmt.Errorf("tag <b> contains invalid hexadecimal data: %w", err)
 			}
-			outputBytes += int64(len(value) / 2)
+			tagOutputBytes = int64(len(value) / 2)
 		case "t":
-			outputBytes += 4
+			tagOutputBytes = 4
 		case "r", "rc", "rd", "dz":
 			length, err := strconv.ParseInt(arg, 10, 64)
 			if err != nil {
@@ -216,7 +217,7 @@ func validateAmneziaCPS(spec string) error {
 			if length < 0 {
 				return fmt.Errorf("tag <%s> length cannot be negative", tag)
 			}
-			outputBytes += length
+			tagOutputBytes = length
 		case "d", "ds":
 			// I1-I5 are generated from an empty input, so these tags add no
 			// fixed bytes. They remain accepted for upstream compatibility.
@@ -225,10 +226,24 @@ func validateAmneziaCPS(spec string) error {
 		default:
 			return fmt.Errorf("unknown CPS tag <%s>", tag)
 		}
-		if outputBytes > maxAmneziaIPacketBytes {
-			return fmt.Errorf("CPS expression generates %d bytes, exceeding the safe limit of %d", outputBytes, maxAmneziaIPacketBytes)
+		if err := addAmneziaCPSOutputBytes(&outputBytes, tagOutputBytes); err != nil {
+			return err
 		}
 		remaining = remaining[end+1:]
 	}
+	return nil
+}
+
+// addAmneziaCPSOutputBytes adds a tag's fixed output size without allowing the
+// int64 accumulator to overflow before the i-packet size limit is checked.
+func addAmneziaCPSOutputBytes(outputBytes *int64, tagOutputBytes int64) error {
+	const maxOutputBytes = int64(maxAmneziaIPacketBytes)
+	if tagOutputBytes < 0 {
+		return fmt.Errorf("CPS tag output length cannot be negative")
+	}
+	if *outputBytes < 0 || *outputBytes > maxOutputBytes || tagOutputBytes > maxOutputBytes-*outputBytes {
+		return fmt.Errorf("CPS expression output exceeds the safe limit of %d bytes", maxAmneziaIPacketBytes)
+	}
+	*outputBytes += tagOutputBytes
 	return nil
 }

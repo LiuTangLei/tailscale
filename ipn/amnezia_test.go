@@ -5,6 +5,8 @@ package ipn
 
 import (
 	"encoding/json"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -54,6 +56,38 @@ func TestValidateAmneziaWGConfigRejectsUnsafeValues(t *testing.T) {
 			err := ValidateAmneziaWGConfig(tt.config)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("validation error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateAmneziaCPSOutputBoundaries(t *testing.T) {
+	maxOutput := int64(maxAmneziaIPacketBytes)
+	maxInt64 := strconv.FormatInt(math.MaxInt64, 10)
+	tests := []struct {
+		name    string
+		spec    string
+		wantErr bool
+	}{
+		{"exact-r", "<r " + strconv.FormatInt(maxOutput, 10) + ">", false},
+		{"exact-t", "<r " + strconv.FormatInt(maxOutput-4, 10) + "><t>", false},
+		{"over-t", "<r " + strconv.FormatInt(maxOutput-3, 10) + "><t>", true},
+		{"exact-b", "<r " + strconv.FormatInt(maxOutput-1, 10) + "><b 0xc0>", false},
+		{"over-b", "<r " + strconv.FormatInt(maxOutput, 10) + "><b 0xc0>", true},
+		{"max-int64-after-t", "<t><r " + maxInt64 + ">", true},
+		{"max-int64-after-b", "<b 0xc0><r " + maxInt64 + ">", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAmneziaCPS(tt.spec)
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "safe limit") {
+					t.Fatalf("validateAmneziaCPS(%q) error = %v, want safe limit error", tt.spec, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateAmneziaCPS(%q) error = %v", tt.spec, err)
 			}
 		})
 	}
