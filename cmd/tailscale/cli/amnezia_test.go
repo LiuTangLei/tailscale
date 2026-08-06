@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/types/key"
 )
 
@@ -87,6 +88,26 @@ func TestValidateAmneziaWGConfigRejectsRetiredCounterTag(t *testing.T) {
 		if err := validateAmneziaWGConfig(ipn.AmneziaWGPrefs{I1: spec}); err != nil {
 			t.Errorf("supported CPS %q rejected: %v", spec, err)
 		}
+	}
+}
+
+func TestCollectOnlinePeersUsesStatusMapKey(t *testing.T) {
+	mapKey := key.NewNode().Public()
+	stalePublicKey := key.NewNode().Public()
+	st := &ipnstate.Status{Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+		mapKey: {
+			HostName:  "phone",
+			Online:    true,
+			PublicKey: stalePublicKey,
+		},
+	}}
+
+	peers := collectOnlinePeersForDiscoSync(st)
+	if len(peers) != 1 {
+		t.Fatalf("peers = %#v, want one peer", peers)
+	}
+	if peers[0].NodeKey != mapKey {
+		t.Fatalf("peer NodeKey = %v, want authoritative status map key %v", peers[0].NodeKey, mapKey)
 	}
 }
 

@@ -1996,7 +1996,10 @@ func (h *Handler) serveRequestAmneziaWGConfig(w http.ResponseWriter, r *http.Req
 	defer cancel()
 
 	// Look up the peer so the shared request path can preflight its routes.
-	netMap := h.b.NetMap()
+	// Peers may have arrived through an incremental netmap update, in which
+	// case the cached NetworkMap.Peers slice can be stale. Always rebuild the
+	// peer slice from the live node-backend map for peer-facing operations.
+	netMap := h.b.NetMapWithPeers()
 	if netMap == nil {
 		http.Error(w, "no netmap available", http.StatusInternalServerError)
 		return
@@ -2057,7 +2060,7 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "awg-sync-peers access denied", http.StatusForbidden)
 		return
 	}
-	nm := h.b.NetMap()
+	nm := h.b.NetMapWithPeers()
 	if nm == nil {
 		http.Error(w, "no netmap available", http.StatusInternalServerError)
 		return
@@ -2167,8 +2170,9 @@ func (h *Handler) serveAWGSyncApply(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	// Find peer in netmap
-	nm := h.b.NetMap()
+	// Find the peer in the live peer map. The cached NetworkMap.Peers slice can
+	// lag incremental control-plane updates.
+	nm := h.b.NetMapWithPeers()
 	if nm == nil {
 		http.Error(w, "no netmap available", http.StatusInternalServerError)
 		return

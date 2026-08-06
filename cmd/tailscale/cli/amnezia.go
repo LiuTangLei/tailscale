@@ -465,9 +465,11 @@ func collectOnlinePeersForDiscoSync(st *ipnstate.Status) []peerInfo {
 			ip = ps.TailscaleIPs[0].String()
 		}
 		peers = append(peers, peerInfo{
-			IP:      ip,
-			Name:    ps.HostName,
-			NodeKey: ps.PublicKey, // Use NodeKey for now, disco key lookup needs different approach
+			IP:   ip,
+			Name: ps.HostName,
+			// The status map key is the authoritative peer identity. Older
+			// LocalAPI producers did not always populate PublicKey.
+			NodeKey: k,
 		})
 	}
 	return peers
