@@ -2077,7 +2077,10 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 	const maxConcurrent = 10
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
-	ctx := r.Context()
+	// Use one endpoint-wide deadline as well as each worker's budget. Starting
+	// goroutines for a very large peer list must not shift the final deadline.
+	ctx, cancel := context.WithTimeout(r.Context(), amneziaWGSyncPeerTimeout)
+	defer cancel()
 	resCh := make(chan awgSyncPeerResult, len(peers))
 
 	for i, p := range peers {
@@ -2093,13 +2096,13 @@ func (h *Handler) serveAWGSyncPeers(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
 			// Two bounded attempts tolerate an occasionally lost disco packet
 			// without letting one peer hold the mobile LocalAPI request open.
-			peerCtx, cancel := context.WithTimeout(ctx, 14*time.Second)
-			defer cancel()
-			cfg, err := h.requestPeerAmneziaWGConfigWithRetry(peerCtx, p)
+			// The budget starts before waiting for a concurrency slot so 31+
+			// unreachable peers cannot make the endpoint time grow by batches.
+			cfg, err := withAWGSyncBudget(ctx, sem, amneziaWGSyncPeerTimeout, func(peerCtx context.Context) (ipn.AmneziaWGPrefs, error) {
+				return h.requestPeerAmneziaWGConfigWithRetry(peerCtx, p)
+			})
 			hn := p.Hostinfo().Hostname()
 			// Return the full parseable NodeKey. Android and iOS already model
 			// this field as a string, and awg-sync-apply requires the full key.
@@ -2219,7 +2222,25 @@ const (
 	amneziaWGSyncAttempts       = 2
 	amneziaWGSyncAttemptTimeout = 6 * time.Second
 	amneziaWGSyncRetryDelay     = 100 * time.Millisecond
+	amneziaWGSyncPeerTimeout    = 14 * time.Second
 )
+
+// withAWGSyncBudget bounds both time spent waiting for a concurrency slot and
+// time spent doing the peer request. Cancellation while queued cannot leak or
+// indefinitely occupy a slot.
+func withAWGSyncBudget[T any](parent context.Context, sem chan struct{}, timeout time.Duration, work func(context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	}
+	return work(ctx)
+}
 
 func (h *Handler) requestPeerAmneziaWGConfigWithRetry(ctx context.Context, peer tailcfg.NodeView) (ipn.AmneziaWGPrefs, error) {
 	return requestAmneziaWGConfigWithRetry(ctx, func(attemptCtx context.Context) (ipn.AmneziaWGPrefs, error) {

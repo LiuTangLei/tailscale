@@ -12,7 +12,6 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -4673,16 +4672,9 @@ func (c *Conn) handleAmneziaWGConfigRequestLocked(dm *disco.AmneziaWGConfigReque
 		return
 	}
 
-	configJSON, err := json.Marshal(awgPrefs)
+	configJSON, err := ipn.MarshalAmneziaWGConfigForDisco(awgPrefs)
 	if err != nil {
-		c.logf("magicsock: disco: failed to marshal AmneziaWG config: %v", err)
-		return
-	}
-
-	// Check config size limit for DERP transport (defensive; shouldn't trigger in practice)
-	const maxConfigSize = 60 * 1024 // 60KB conservative guard
-	if len(configJSON) > maxConfigSize {
-		c.logf("magicsock: disco: AmneziaWG config too large (%d bytes > %d), dropping response", len(configJSON), maxConfigSize)
+		c.logf("magicsock: disco: cannot encode AmneziaWG config response: %v", err)
 		return
 	}
 
@@ -4694,6 +4686,7 @@ func (c *Conn) handleAmneziaWGConfigRequestLocked(dm *disco.AmneziaWGConfigReque
 	// Send response via all available paths (DERP + direct UDP) for reliability.
 	// Duplicate responses are safe: the waiter deduplicates by RequestID.
 	responseSent := false
+	var directResponseAddr epAddr
 
 	// Resolve the nodeKey of the requester for endpoint lookup.
 	// derpNodeSrc is set when the request arrived via DERP; for direct UDP it's zero.
@@ -4744,16 +4737,18 @@ func (c *Conn) handleAmneziaWGConfigRequestLocked(dm *disco.AmneziaWGConfigReque
 					dm.RequestID[:4], requesterNodeKey.ShortString(), ba.ap, len(configJSON))
 				go c.sendDiscoMessage(ba.epAddr, requesterNodeKey, di.discoKey, resp, discoLog)
 				responseSent = true
+				directResponseAddr = ba.epAddr
 			}
 		}
 
 	}
 
-	// If request arrived via direct UDP and we haven't sent via direct yet,
-	// respond back to the source address. This works even when requesterNodeKey
-	// is zero (ambiguous disco key), because sendDiscoMessage / sendAddr does not
-	// require a valid nodeKey for direct UDP sends.
-	if !responseSent && src.isDirect() {
+	// A direct request proves that its source address is reachable. Always reply
+	// there even if a DERP send was already queued; stale DERP metadata must not
+	// suppress the known-good path. Skip only an identical direct bestAddr send.
+	// This also works when requesterNodeKey is zero (ambiguous disco key), because
+	// direct sendDiscoMessage/sendAddr does not require a valid nodeKey.
+	if shouldSendAmneziaWGConfigToDirectSource(src, directResponseAddr) {
 		c.dlogf("[v1] magicsock: disco: sending AmneziaWG config response tx=%x to %v via source addr %v size=%d",
 			dm.RequestID[:4], requesterNodeKey.ShortString(), src.ap, len(configJSON))
 		go c.sendDiscoMessage(src, requesterNodeKey, di.discoKey, resp, discoLog)
@@ -4767,6 +4762,10 @@ func (c *Conn) handleAmneziaWGConfigRequestLocked(dm *disco.AmneziaWGConfigReque
 
 	c.dlogf("[v1] magicsock: disco: completed handling AmneziaWG config request tx=%x from %v",
 		dm.RequestID[:4], di.discoKey.ShortString())
+}
+
+func shouldSendAmneziaWGConfigToDirectSource(src, directResponseAddr epAddr) bool {
+	return src.isDirect() && src != directResponseAddr
 }
 
 func amneziaWGConfigRequestCompatible(req *disco.AmneziaWGConfigRequest, prefs ipn.AmneziaWGPrefs) bool {
@@ -4814,7 +4813,10 @@ func (c *Conn) handleAmneziaWGConfigResponseLocked(dm *disco.AmneziaWGConfigResp
 		return
 	}
 
-	c.logf("magicsock: disco: no waiter found for AmneziaWG config response tx=%x", dm.RequestID[:4])
+	// A second response is expected when the peer replies over both DERP and a
+	// direct path. The first response consumes the waiter, so keep this at debug
+	// level rather than emitting a warning during healthy path racing.
+	c.dlogf("[v1] magicsock: disco: no waiter found for duplicate/late AmneziaWG config response tx=%x", dm.RequestID[:4])
 }
 
 // RequestAmneziaWGConfigCtx sends a request for Amnezia-WG configuration to the

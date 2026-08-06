@@ -123,6 +123,30 @@ func TestAmneziaWGConfigRequestCompatibility(t *testing.T) {
 	}
 }
 
+func TestShouldSendAmneziaWGConfigToDirectSource(t *testing.T) {
+	src := epAddr{ap: netip.MustParseAddrPort("192.0.2.1:1234")}
+	other := epAddr{ap: netip.MustParseAddrPort("192.0.2.2:1234")}
+	derp := epAddr{ap: netip.AddrPortFrom(tailcfg.DerpMagicIPAddr, 1)}
+
+	for _, tt := range []struct {
+		name       string
+		src        epAddr
+		directSent epAddr
+		want       bool
+	}{
+		{"direct-after-DERP-only", src, epAddr{}, true},
+		{"same-direct-already-sent", src, src, false},
+		{"different-direct-already-sent", src, other, true},
+		{"DERP-source", derp, epAddr{}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldSendAmneziaWGConfigToDirectSource(tt.src, tt.directSent); got != tt.want {
+				t.Fatalf("should send to source = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAmneziaWGConfigResponseMatchesRequestedIdentity(t *testing.T) {
 	c := newConn(t.Logf)
 	requestID := [8]byte{1, 2, 3}
@@ -161,6 +185,30 @@ func TestAmneziaWGConfigResponseMatchesRequestedIdentity(t *testing.T) {
 		}
 	default:
 		t.Fatal("matching response was not delivered")
+	}
+}
+
+func TestAmneziaWGConfigResponseWithoutWaiterIsDebugOnly(t *testing.T) {
+	var logs []string
+	c := newConn(func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	response := &disco.AmneziaWGConfigResponse{RequestID: [8]byte{1}}
+	di := &discoInfo{discoKey: key.NewDisco().Public()}
+
+	c.mu.Lock()
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, di, key.NodePublic{})
+	c.mu.Unlock()
+	if len(logs) != 0 {
+		t.Fatalf("late/duplicate response emitted normal log: %q", logs)
+	}
+
+	c.SetDebugLoggingEnabled(true)
+	c.mu.Lock()
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, di, key.NodePublic{})
+	c.mu.Unlock()
+	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "no waiter found") {
+		t.Fatalf("debug log missing for late/duplicate response: %q", logs)
 	}
 }
 

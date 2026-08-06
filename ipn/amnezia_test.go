@@ -81,6 +81,30 @@ func TestValidateAmneziaWGConfigV3HeaderProtection(t *testing.T) {
 	}
 }
 
+func TestMarshalAmneziaWGConfigForDiscoUsesValidationLimit(t *testing.T) {
+	p := AmneziaWGPrefs{I1: "<b 0xc0><r 32>"}
+	encoded, err := MarshalAmneziaWGConfigForDisco(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `\u003c`) || !strings.Contains(string(encoded), p.I1) {
+		t.Fatalf("CPS expression was unnecessarily HTML-escaped: %s", encoded)
+	}
+	if err := ValidateAmneziaWGConfig(p); err != nil {
+		t.Fatalf("wire-encodable config rejected: %v", err)
+	}
+
+	// Each <d> tag is valid and emits no fixed bytes for an i-packet, so this
+	// reaches the aggregate disco-size check rather than the CPS output limit.
+	p.I1 = strings.Repeat("<d>", maxAmneziaCPSBytes/len("<d>"))
+	if err := ValidateAmneziaWGConfig(p); err == nil || !strings.Contains(err.Error(), "disco limit") {
+		t.Fatalf("validated-but-unsyncable config error = %v, want disco size limit", err)
+	}
+	if _, err := MarshalAmneziaWGConfigForDisco(p); err == nil || !strings.Contains(err.Error(), "disco limit") {
+		t.Fatalf("oversized disco marshal error = %v, want disco size limit", err)
+	}
+}
+
 func TestAmneziaWGPrefsJSONRejectsDamagedTypedValues(t *testing.T) {
 	for _, input := range []string{
 		`{"jc":70000}`,

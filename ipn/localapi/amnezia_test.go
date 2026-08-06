@@ -10,7 +10,10 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"tailscale.com/ipn"
 	"tailscale.com/types/key"
@@ -102,4 +105,41 @@ func TestRequestAmneziaWGConfigWithRetry(t *testing.T) {
 	if !errors.Is(err, wantErr) || calls != 1 {
 		t.Fatalf("non-retryable error = %v after %d calls", err, calls)
 	}
+}
+
+func TestWithAWGSyncBudgetIncludesQueueTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sem := make(chan struct{}, 1)
+		sem <- struct{}{} // Keep every worker queued for its entire budget.
+
+		const workerCount = 4
+		const budget = 30 * time.Millisecond
+		start := time.Now()
+		var wg sync.WaitGroup
+		errs := make(chan error, workerCount)
+		for range workerCount {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, err := withAWGSyncBudget(context.Background(), sem, budget, func(context.Context) (struct{}, error) {
+					t.Error("queued worker unexpectedly acquired a slot")
+					return struct{}{}, nil
+				})
+				errs <- err
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("queued worker error = %v, want deadline exceeded", err)
+			}
+		}
+		if elapsed := time.Since(start); elapsed != budget {
+			t.Fatalf("worker budgets stacked by batch: elapsed %v, want %v", elapsed, budget)
+		}
+		if got := len(sem); got != 1 {
+			t.Fatalf("cancelled waiters changed semaphore occupancy to %d", got)
+		}
+	})
 }

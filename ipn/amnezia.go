@@ -4,7 +4,9 @@
 package ipn
 
 import (
+	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,6 +18,7 @@ const (
 	// unbounded allocation in the WireGuard handshake path.
 	maxAmneziaIPacketBytes = 64<<10 - 1
 	maxAmneziaCPSBytes     = 60 << 10
+	maxAmneziaDiscoBytes   = 60 << 10
 
 	// Junk packets are generated together for every handshake attempt. These
 	// limits are deliberately far above normal AWG profiles while preventing a
@@ -91,26 +94,47 @@ func ValidateAmneziaWGConfig(p AmneziaWGPrefs) error {
 		}
 	}
 
-	if p.HeaderProtectionKey == "" {
-		return nil
-	}
-	key, err := hex.DecodeString(p.HeaderProtectionKey)
-	if err != nil || len(key) != 32 {
-		return fmt.Errorf("HeaderProtectionKey must contain exactly 64 hexadecimal characters")
-	}
-	allZero := true
-	for _, b := range key {
-		allZero = allZero && b == 0
-	}
-	if allZero {
-		return nil
-	}
-	for i, padding := range []uint16{p.S1, p.S2, p.S3, p.S4} {
-		if padding < 12 {
-			return fmt.Errorf("S%d must be at least 12 when HeaderProtectionKey is enabled", i+1)
+	if p.HeaderProtectionKey != "" {
+		key, err := hex.DecodeString(p.HeaderProtectionKey)
+		if err != nil || len(key) != 32 {
+			return fmt.Errorf("HeaderProtectionKey must contain exactly 64 hexadecimal characters")
+		}
+		allZero := true
+		for _, b := range key {
+			allZero = allZero && b == 0
+		}
+		if !allZero {
+			for i, padding := range []uint16{p.S1, p.S2, p.S3, p.S4} {
+				if padding < 12 {
+					return fmt.Errorf("S%d must be at least 12 when HeaderProtectionKey is enabled", i+1)
+				}
+			}
 		}
 	}
-	return nil
+
+	_, err := MarshalAmneziaWGConfigForDisco(p)
+	return err
+}
+
+// MarshalAmneziaWGConfigForDisco encodes p for the AWG disco response and
+// enforces the transport limit used by every peer. HTML escaping is disabled
+// because CPS expressions commonly contain angle brackets; escaping them
+// would needlessly expand an otherwise valid profile on the wire.
+//
+// This function only validates the serialized size. Call
+// [ValidateAmneziaWGConfig] before accepting an untrusted profile.
+func MarshalAmneziaWGConfigForDisco(p AmneziaWGPrefs) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(p); err != nil {
+		return nil, fmt.Errorf("encode Amnezia-WG config for disco: %w", err)
+	}
+	encoded := bytes.TrimSuffix(buf.Bytes(), []byte{'\n'})
+	if len(encoded) > maxAmneziaDiscoBytes {
+		return nil, fmt.Errorf("serialized Amnezia-WG config is %d bytes, exceeding the disco limit of %d", len(encoded), maxAmneziaDiscoBytes)
+	}
+	return encoded, nil
 }
 
 func effectiveAmneziaHeader(value MagicHeaderRange, standard uint32) MagicHeaderRange {

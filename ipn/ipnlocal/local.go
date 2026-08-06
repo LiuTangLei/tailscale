@@ -4986,7 +4986,7 @@ func validateAmneziaWGPrefsChange(current ipn.PrefsView, proposed *ipn.Prefs) er
 	if current.Valid() && current.AmneziaWG() == proposed.AmneziaWG {
 		return nil
 	}
-	if err := ipn.ValidateAmneziaWGConfig(proposed.AmneziaWG); err != nil {
+	if _, err := wgcfg.EffectiveAmneziaConfig(proposed.AmneziaWG); err != nil {
 		return fmt.Errorf("invalid Amnezia-WG configuration: %w", err)
 	}
 	return nil
