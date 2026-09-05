@@ -908,6 +908,13 @@ func (c *Conn) InstallCaptureHook(cb packet.CaptureCallback) {
 // periodicReSTUNTimer when periodic STUNs are active.
 func (c *Conn) doPeriodicSTUN() { c.ReSTUN("periodic") }
 
+func (c *Conn) shouldRebindAfterNetcheckSendError() bool {
+	// In forced DERP mode the UDP socket is deliberately disabled. Rebinding
+	// cannot repair it and instead tears down a healthy DERP session on each
+	// netcheck (especially frequently on a host with interface churn).
+	return c.noV4Send.Load() && runtime.GOOS != "js" && !c.onlyTCP443.Load() && !debugAlwaysDERP() && !hostinfo.IsInVM86()
+}
+
 func (c *Conn) stopPeriodicReSTUNTimerLocked() {
 	if t := c.periodicReSTUNTimer; t != nil {
 		t.Stop()
@@ -956,7 +963,7 @@ func (c *Conn) updateEndpoints(why string) {
 		c.muCond.Broadcast()
 	}()
 	c.dlogf("[v1] magicsock: starting endpoint update (%s)", why)
-	if c.noV4Send.Load() && runtime.GOOS != "js" && !c.onlyTCP443.Load() && !hostinfo.IsInVM86() {
+	if c.shouldRebindAfterNetcheckSendError() {
 		c.mu.Lock()
 		closed := c.closed
 		c.mu.Unlock()

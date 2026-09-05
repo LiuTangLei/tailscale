@@ -27,7 +27,8 @@ import (
 	"tailscale.com/wgengine/wgtransport"
 )
 
-const ALPN = "quic-wg/1" // Real QUIC application, deliberately NOT claiming HTTP/3.
+const ALPN = "quic-wg/1"   // Legacy ciphertext carrier, not HTTP/3.
+const IPALPN = "quic-ip/1" // Native IP; never interchangeable with WG ciphertext.
 const maxPeers = 256
 
 // Config is immutable for the lifetime of a backend. Certificate pins are
@@ -36,6 +37,7 @@ const maxPeers = 256
 // endpoints. Magicsock reuses the existing NAT/DERP paths at additional I/O cost.
 type Config struct {
 	Version           int          `json:"version"`
+	Payload           string       `json:"payload,omitempty"` // version 2 requires "ip"
 	LocalPublicKey    string       `json:"local_public_key"`
 	Certificate       string       `json:"certificate"`
 	PrivateKey        string       `json:"private_key"`
@@ -68,7 +70,18 @@ type peerConfig struct {
 	address *net.UDPAddr
 }
 
-func (f *Factory) Mode() wgtransport.Mode { return wgtransport.QUIC }
+func (f *Factory) Mode() wgtransport.Mode {
+	if f.cfg.Payload == "ip" {
+		return wgtransport.QUICIP
+	}
+	return wgtransport.QUIC
+}
+func (f *Factory) protocol() string {
+	if f.cfg.Payload == "ip" {
+		return IPALPN
+	}
+	return ALPN
+}
 
 func Load(path string) (*Factory, error) {
 	file, err := os.Open(path)
@@ -107,8 +120,18 @@ func parseKey(s string) (k [32]byte, err error) {
 }
 
 func NewFactory(c Config) (*Factory, error) {
-	if c.Version != 1 {
-		return nil, errors.New("QUIC config version must be 1")
+	switch c.Version {
+	case 1:
+		if c.Payload != "" && c.Payload != "wireguard" {
+			return nil, errors.New("version 1 only supports WireGuard payloads")
+		}
+		c.Payload = "wireguard"
+	case 2:
+		if c.Payload != "ip" {
+			return nil, errors.New("version 2 requires explicit payload=ip")
+		}
+	default:
+		return nil, errors.New("QUIC config must be version 1 (WG) or 2 (native IP)")
 	}
 	if c.IO == "" {
 		c.IO = "magicsock"
@@ -156,7 +179,7 @@ func NewFactory(c Config) (*Factory, error) {
 		return nil, fmt.Errorf("derive QUIC reset key: %w", err)
 	}
 	derive := hmac.New(sha256.New, privateDER)
-	derive.Write([]byte("quic-wg/1/stateless-reset"))
+	derive.Write([]byte(f.protocol() + "/stateless-reset"))
 	copy(f.resetKey[:], derive.Sum(nil))
 	clear(privateDER)
 	ownPin := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
@@ -226,7 +249,7 @@ func validCertificate(cert *x509.Certificate) error {
 
 func (f *Factory) verify(cs tls.ConnectionState, expected *[32]byte) ([32]byte, error) {
 	var none [32]byte
-	if cs.Version != tls.VersionTLS13 || cs.NegotiatedProtocol != ALPN {
+	if cs.Version != tls.VersionTLS13 || cs.NegotiatedProtocol != f.protocol() {
 		return none, errors.New("QUIC TLS version/ALPN mismatch")
 	}
 	if len(cs.PeerCertificates) == 0 {
@@ -249,7 +272,7 @@ func (f *Factory) verify(cs tls.ConnectionState, expected *[32]byte) ([32]byte, 
 
 func (f *Factory) tlsConfig(expected *[32]byte) *tls.Config {
 	return &tls.Config{
-		MinVersion: tls.VersionTLS13, NextProtos: []string{ALPN}, Certificates: []tls.Certificate{f.cert},
+		MinVersion: tls.VersionTLS13, NextProtos: []string{f.protocol()}, Certificates: []tls.Certificate{f.cert},
 		// PKI hostname validation is replaced by the mandatory pinned-SPKI verifier
 		// on BOTH client and server. TLS still verifies CertificateVerify possession.
 		// There is intentionally no configuration option to bypass this verifier.

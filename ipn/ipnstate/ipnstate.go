@@ -222,6 +222,11 @@ type PeerStatusLite struct {
 	// since this peer was last known to WireGuard. (Tailscale removes peers
 	// from the wireguard peer that are idle.)
 	LastHandshake time.Time
+	// Native QUIC uses separate, truthful session metadata. LastHandshake
+	// remains zero when no WireGuard handshake took place.
+	SessionProtocol        string    `json:",omitempty"`
+	LastSessionEstablished time.Time `json:",omitzero"`
+	SessionState           uint8     `json:",omitempty"`
 }
 
 // PeerStatus describes a peer node and its current state.
@@ -266,15 +271,18 @@ type PeerStatus struct {
 	Relay     string // DERP region
 	PeerRelay string // peer relay address (ip:port:vni)
 
-	RxBytes        int64
-	TxBytes        int64
-	Created        time.Time // time registered with tailcontrol
-	LastWrite      time.Time // time last packet sent
-	LastSeen       time.Time // last seen to tailcontrol; only present if offline
-	LastHandshake  time.Time // with local wireguard
-	Online         bool      // whether node is connected to the control plane
-	ExitNode       bool      // true if this is the currently selected exit node.
-	ExitNodeOption bool      // true if this node can be an exit node (offered && approved)
+	RxBytes                int64
+	TxBytes                int64
+	Created                time.Time // time registered with tailcontrol
+	LastWrite              time.Time // time last packet sent
+	LastSeen               time.Time // last seen to tailcontrol; only present if offline
+	LastHandshake          time.Time // with local wireguard
+	SessionProtocol        string    `json:",omitempty"`
+	LastSessionEstablished time.Time `json:",omitzero"`
+	SessionState           uint8     `json:",omitempty"`
+	Online                 bool      // whether node is connected to the control plane
+	ExitNode               bool      // true if this is the currently selected exit node.
+	ExitNodeOption         bool      // true if this node can be an exit node (offered && approved)
 
 	// Active is whether the node was recently active. The
 	// definition is somewhat undefined but has historically and
@@ -524,6 +532,14 @@ func (sb *StatusBuilder) AddPeer(peer key.NodePublic, st *PeerStatus) {
 	}
 	if v := st.LastHandshake; !v.IsZero() {
 		e.LastHandshake = v
+	}
+	if st.SessionProtocol != "" {
+		e.SessionProtocol = st.SessionProtocol
+		e.SessionState = st.SessionState
+		e.LastSessionEstablished = st.LastSessionEstablished
+		if st.SessionProtocol == "quic-ip" {
+			e.LastHandshake = time.Time{}
+		}
 	}
 	if v := st.Created; !v.IsZero() {
 		e.Created = v

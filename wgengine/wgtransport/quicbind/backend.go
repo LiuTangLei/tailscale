@@ -99,6 +99,8 @@ func acquirePacket(data []byte) *packetBuffer {
 func releasePacket(p *packetBuffer) { p.data = nil; packetPool.Put(p) }
 
 type peer struct {
+	// Session notifications are serialized separately from packet I/O.
+	eventMu          sync.Mutex
 	sendMu           sync.Mutex
 	scratch          [1500]byte
 	connectingPacket atomic.Bool
@@ -119,7 +121,10 @@ type session struct {
 
 func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 	if h.Bind == nil {
-		return nil, errors.New("QUIC-WG requires a host Bind")
+		return nil, errors.New("QUIC requires a host Bind")
+	}
+	if f.cfg.Payload == "ip" && h.PeerAllowed == nil {
+		return nil, errors.New("native QUIC IP requires live host peer authorization")
 	}
 	if h.Logf == nil {
 		h.Logf = logger.Discard
@@ -133,6 +138,18 @@ func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 	f.last.Store(b)
 	return b, nil
 }
+func (b *Backend) peerAllowed(k [32]byte) bool {
+	if b.host.PeerAllowed != nil {
+		return b.host.PeerAllowed(k)
+	}
+	return b.factory.cfg.Payload != "ip"
+}
+func (b *Backend) notify(k [32]byte, state wgtransport.SessionState) {
+	if b.host.SessionChanged != nil {
+		b.host.SessionChanged(k, state)
+	}
+}
+
 func (b *Backend) Bind() conn.Bind     { return &b.bind }
 func (b *Backend) Counters() *Counters { return &b.counters }
 func (b *Backend) Close() error        { return b.stop(true) }
@@ -177,6 +194,20 @@ func (b *Backend) resetConnections(reason string) {
 		p.closeSession(reason)
 	}
 }
+func (p *peer) publishState(state wgtransport.SessionState) {
+	p.eventMu.Lock()
+	defer p.eventMu.Unlock()
+	p.mu.Lock()
+	live := p.session != nil && p.session.q.Context().Err() == nil
+	p.mu.Unlock()
+	if live {
+		state = wgtransport.SessionEstablished
+	} else if state == wgtransport.SessionEstablished {
+		state = wgtransport.SessionExpired
+	}
+	p.g.b.notify(p.cfg.key, state)
+}
+
 func (p *peer) closeSession(reason string) {
 	p.mu.Lock()
 	s := p.session
@@ -184,6 +215,7 @@ func (p *peer) closeSession(reason string) {
 	p.mu.Unlock()
 	if s != nil {
 		s.q.CloseWithError(0, reason)
+		p.publishState(wgtransport.SessionExpired)
 	}
 }
 
@@ -341,6 +373,9 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 	if !ok || e == nil || e.b != b {
 		return conn.ErrWrongEndpointType
 	}
+	if !b.peerAllowed(e.key) {
+		return ErrUnknownPeer
+	}
 	if len(bufs) > c.BatchSize() || offset < 0 {
 		return errors.New("invalid WG send batch/offset")
 	}
@@ -412,7 +447,7 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 
 func (g *generation) peer(k [32]byte, base conn.Endpoint) (*peer, error) {
 	cfg, ok := g.b.factory.peers[k]
-	if !ok {
+	if !ok || !g.b.peerAllowed(k) {
 		return nil, ErrUnknownPeer
 	}
 	if base == nil {
@@ -486,7 +521,7 @@ func (p *peer) install(q *quic.Conn, outgoing bool) *session {
 	ns := &session{q: q, preferred: preferred}
 	p.mu.Lock()
 	old := p.session
-	if p.disabled.Load() || p.g.ctx.Err() != nil {
+	if p.disabled.Load() || p.g.ctx.Err() != nil || !p.g.b.peerAllowed(p.cfg.key) {
 		p.mu.Unlock()
 		q.CloseWithError(0, "closed")
 		return nil
@@ -501,12 +536,13 @@ func (p *peer) install(q *quic.Conn, outgoing bool) *session {
 	}
 	p.session = ns
 	p.g.workers.Add(1)
-	go p.receiveSession(ns)
 	p.mu.Unlock()
 	if old != nil {
 		old.q.CloseWithError(0, "prefer deterministic connection")
 	}
 	p.g.b.counters.Connections.Add(1)
+	p.publishState(wgtransport.SessionEstablished)
+	go p.receiveSession(ns)
 	return ns
 }
 
@@ -533,6 +569,10 @@ func (p *peer) getSession() (*session, error) {
 	if !p.g.b.identityOK.Load() {
 		return nil, ErrIdentity
 	}
+	if !p.g.b.peerAllowed(p.cfg.key) {
+		return nil, ErrUnknownPeer
+	}
+	p.publishState(wgtransport.SessionHandshake)
 	var remote net.Addr = p.cfg.address
 	if p.g.bridge != nil {
 		remote = &bindAddr{ep: p.ep.Load().Endpoint}
@@ -542,6 +582,7 @@ func (p *peer) getSession() (*session, error) {
 	q, err := p.g.transport.Dial(ctx, remote, p.g.b.factory.tlsConfig(&p.cfg.key), p.g.b.quicConfig())
 	if err != nil {
 		p.g.b.counters.HandshakeErrors.Add(1)
+		p.publishState(wgtransport.SessionExpired)
 		return nil, err
 	}
 	s := p.install(q, true)
@@ -593,6 +634,9 @@ func (p *peer) run() {
 }
 
 func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
+	if !p.g.b.peerAllowed(p.cfg.key) || p.disabled.Load() {
+		return ErrUnknownPeer
+	}
 	var tooLarge *quic.DatagramTooLargeError
 	limit := 1150
 	if len(packet)+1 <= len(scratch) {
@@ -638,13 +682,24 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 
 func (p *peer) receiveSession(s *session) {
 	defer p.g.workers.Done()
+	defer func() {
+		p.mu.Lock()
+		current := p.session == s
+		if current {
+			p.session = nil
+		}
+		p.mu.Unlock()
+		if current {
+			p.publishState(wgtransport.SessionExpired)
+		}
+	}()
 	var frames reassembler
 	for {
 		data, err := s.q.ReceiveDatagram(p.g.ctx)
 		if err != nil {
 			return
 		}
-		if p.disabled.Load() || !p.g.b.identityOK.Load() {
+		if p.disabled.Load() || !p.g.b.identityOK.Load() || !p.g.b.peerAllowed(p.cfg.key) {
 			continue
 		}
 		packet, err := frames.consume(data, time.Now())
@@ -717,6 +772,9 @@ type endpoint struct {
 	key [32]byte
 }
 
+// AuthenticatedPeerKey is meaningful only on the TLS-authenticated carrier
+// receive path. Native IP authorization still checks CURRENT host policy.
+func (e *endpoint) AuthenticatedPeerKey() [32]byte    { return e.key }
 func (e *endpoint) UnderlyingEndpoint() conn.Endpoint { return e.Endpoint }
 func (e *endpoint) InitiationMessagePublicKey(k [32]byte) {
 	if k != e.key {

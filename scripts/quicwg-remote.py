@@ -35,22 +35,25 @@ def main():
     p.add_argument("--zjg", default="root@173.249.215.87")
     p.add_argument("--sg-address", default="96.9.212.12")
     p.add_argument("--zjg-address", default="173.249.215.87")
-    p.add_argument("--variants", default="native,quic-udp,quic-magicsock")
+    p.add_argument("--variants", default="native,quic-udp,quic-ip-udp,quic-ip-magicsock")
     p.add_argument("--profile", choices=["standard", "awg2", "awg3", "awg31"], default="standard")
     p.add_argument("--mib", type=int, default=8)
     p.add_argument("--parallel", type=int, default=1)
     p.add_argument("--rounds", type=int, default=1)
     p.add_argument("--force-derp", action="store_true")
     p.add_argument("--proof-only", action="store_true", help="run encrypted integrity checks without throughput benchmarks")
+    p.add_argument("--ipv6-proof", action="store_true", help="also verify inner IPv6 TSMP and file transfer")
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
     variants = args.variants.split(",")
-    if not variants or any(v not in ("native", "quic-udp", "quic-magicsock") for v in variants):
+    if not variants or any(v not in ("native", "quic-udp", "quic-magicsock", "quic-ip-udp", "quic-ip-magicsock") for v in variants):
         p.error("invalid variants")
     if not 1 <= args.mib <= 64 or not 1 <= args.parallel <= 4 or not 1 <= args.rounds <= 3:
         p.error("invalid benchmark limits")
-    if args.force_derp and "quic-udp" in variants:
+    if args.force_derp and any(v.endswith("-udp") for v in variants):
         p.error("independent UDP mode does not use DERP; test magicsock instead")
+    if args.profile != "standard" and any(v.startswith("quic-ip-") for v in variants):
+        p.error("native QUIC IP rejects AWG profiles; use --profile=standard")
     ident = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
     result = {"run": ident, "linux_sha256": hashlib.sha256(args.linux_binary.read_bytes()).hexdigest(),
               "profile": args.profile, "force_derp": args.force_derp,
@@ -125,12 +128,15 @@ def main():
                     if variant == "native":
                         env += ["TS_EXPERIMENTAL_WG_TRANSPORT=native"]
                     else:
-                        io_mode = variant.removeprefix("quic-")
+                        native_ip = variant.startswith("quic-ip-")
+                        io_mode = variant.removeprefix("quic-ip-" if native_ip else "quic-")
                         peer = nodes[i ^ 1]
                         peer_cfg = {"public_key": peer["public_key"], "spki_sha256": peer["identity"]["spki_sha256"]}
                         config = {"version": 1, "io": io_mode, "local_public_key": node["public_key"],
                                   "certificate": node["identity"]["certificate"], "private_key": node["identity"]["private_key"],
                                   "initial_packet_size": 1400, "queue_packets": 2048, "peers": [peer_cfg]}
+                        if native_ip:
+                            config.update({"version": 2, "payload": "ip"})
                         if io_mode == "udp":
                             config["listen"] = "0.0.0.0:42642"
                             peer_cfg["endpoint"] = f"{peer['address']}:42642"
@@ -138,7 +144,7 @@ def main():
                         local_config.write_text(json.dumps(config))
                         run(["scp", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}",
                              str(local_config), f"{node['host']}:{node['dir']}/quic.json"])
-                        env += ["TS_EXPERIMENTAL_WG_TRANSPORT=quic", f"TS_EXPERIMENTAL_QUIC_CONFIG={node['dir']}/quic.json"]
+                        env += [f"TS_EXPERIMENTAL_WG_TRANSPORT={'quic-ip' if native_ip else 'quic'}", f"TS_EXPERIMENTAL_QUIC_CONFIG={node['dir']}/quic.json"]
                     unit = f"quicwg-{ident}-{node['name']}-{index}"
                     command = ["systemd-run", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=600", "--property=TimeoutStopSec=15", "--property=Restart=no",
                                "env"] + env + [node["dir"] + "/lab", "node", "--dir", node["dir"] + "/state", "--hostname", "quicwg-" + node["name"],
@@ -159,6 +165,7 @@ def main():
             for i, node in enumerate(nodes):
                 node["public_key"] = statuses[i]["public_key"]
                 node["test_ip"] = next(x for x in statuses[i]["ips"] if ":" not in x)
+                node["test_ipv6"] = next((x for x in statuses[i]["ips"] if ":" in x), None)
             stop_current()
             for index, variant in enumerate(variants):
                 print(f"START {variant}/{args.profile}", flush=True)
@@ -176,12 +183,30 @@ def main():
                     phase["probes"].append(proof)
                     checkpoint()
                     print(f"PASS {variant} {node['name']} TSMP + verified 1MiB each way", flush=True)
+                    if args.ipv6_proof:
+                        target6 = nodes[i ^ 1]["test_ipv6"]
+                        if not target6:
+                            raise RuntimeError("test peer has no IPv6 address")
+                        proof6 = api(node, f"/probe?target={target6}&size=1048576", method="POST", timeout=65)
+                        if proof6.get("download", {}).get("bytes") != 1048576 or proof6.get("upload", {}).get("bytes") != 1048576:
+                            raise RuntimeError("IPv6 payload proof missing")
+                        proof6.update({"from": node["name"], "family": "ipv6"})
+                        phase["probes"].append(proof6)
+                        checkpoint()
+                        print(f"PASS {variant} {node['name']} inner IPv6 TSMP + verified 1MiB each way", flush=True)
                 for node in nodes:
                     phase.setdefault("transport", {})[node["name"]] = api(node, "/quic")
                     if variant != "native":
                         stats = phase["transport"][node["name"]]
                         if not stats.get("identity_ok") or not stats.get("datagrams") or stats.get("tls_version") != 772 or not stats.get("sent_packets") or not stats.get("received_packets"):
                             raise RuntimeError("QUIC/TLS/data counters did not prove real QUIC transit")
+                        if variant.startswith("quic-ip-"):
+                            if stats.get("payload") != "ip" or stats.get("alpn") != "quic-ip/1" or stats.get("wireguard_encryption") is not False:
+                                raise RuntimeError("native-IP mode fell back to a WireGuard carrier")
+                            current = api(node, "/status")
+                            for peer_status in current.get("peers", []):
+                                if peer_status.get("session_protocol") != "quic-ip" or peer_status.get("session_state") != 2 or not peer_status.get("lastHandshake", "").startswith("0001-"):
+                                    raise RuntimeError("native-IP peer missing truthful TLS session status: " + json.dumps(peer_status))
                 for i, node in enumerate(nodes if not args.proof_only else []):
                     target = nodes[i ^ 1]["test_ip"]
                     before = {n["name"]: {"process": api(n, "/metrics"), "quic": api(n, "/quic")} for n in nodes}

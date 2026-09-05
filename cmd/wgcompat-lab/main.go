@@ -102,12 +102,12 @@ func run() error {
 	}
 	s := &tsnet.Server{Dir: *dir, Hostname: *hostname, ControlURL: *control, Port: uint16(*port), Logf: log.Printf, UserLogf: log.Printf}
 	var quicFactory *quicbind.Factory
-	if os.Getenv("TS_EXPERIMENTAL_WG_TRANSPORT") == "quic" {
+	if mode := os.Getenv("TS_EXPERIMENTAL_WG_TRANSPORT"); mode == "quic" || mode == "quic-ip" {
 		quicFactory, err = quicbind.Load(os.Getenv("TS_EXPERIMENTAL_QUIC_CONFIG"))
 		if err != nil {
 			return err
 		}
-		s.Transport = wgtransport.Config{Mode: wgtransport.QUIC, Factory: quicFactory}
+		s.Transport = wgtransport.Config{Mode: wgtransport.Mode(mode), Factory: quicFactory}
 	}
 	defer s.Close()
 	if err := s.Start(); err != nil {
@@ -236,13 +236,16 @@ type node struct {
 }
 
 type peerInfo struct {
-	Name          string       `json:"name"`
-	IPs           []netip.Addr `json:"ips"`
-	Online        bool         `json:"online"`
-	Direct        string       `json:"direct"`
-	Relay         string       `json:"relay"`
-	Tx, Rx        int64
-	LastHandshake time.Time `json:"lastHandshake"`
+	Name                   string       `json:"name"`
+	IPs                    []netip.Addr `json:"ips"`
+	Online                 bool         `json:"online"`
+	Direct                 string       `json:"direct"`
+	Relay                  string       `json:"relay"`
+	Tx, Rx                 int64
+	LastHandshake          time.Time `json:"lastHandshake"`
+	SessionProtocol        string    `json:"session_protocol,omitempty"`
+	LastSessionEstablished time.Time `json:"last_session_established"`
+	SessionState           uint8     `json:"session_state"`
 }
 type statusResult struct {
 	PublicKey string       `json:"public_key"`
@@ -258,7 +261,7 @@ func snapshot(st *ipnstate.Status, name string) statusResult {
 		r.PublicKey = st.Self.PublicKey.String()
 	}
 	for _, p := range st.Peer {
-		r.Peers = append(r.Peers, peerInfo{Name: p.HostName, IPs: p.TailscaleIPs, Online: p.Online, Direct: p.CurAddr, Relay: p.Relay, Tx: p.TxBytes, Rx: p.RxBytes, LastHandshake: p.LastHandshake})
+		r.Peers = append(r.Peers, peerInfo{Name: p.HostName, IPs: p.TailscaleIPs, Online: p.Online, Direct: p.CurAddr, Relay: p.Relay, Tx: p.TxBytes, Rx: p.RxBytes, LastHandshake: p.LastHandshake, SessionProtocol: p.SessionProtocol, LastSessionEstablished: p.LastSessionEstablished, SessionState: p.SessionState})
 	}
 	return r
 }

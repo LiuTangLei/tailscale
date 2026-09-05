@@ -5,10 +5,13 @@ package quicbind
 // Snapshot contains counters, not keys or packet contents. A factory is normally
 // used for one engine; with multiple engines this reports the last created one.
 func (f *Factory) Snapshot() map[string]any {
-	out := map[string]any{"io": f.cfg.IO, "alpn": ALPN, "quic": true}
+	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "wireguard_encryption": f.cfg.Payload != "ip"}
 	b := f.last.Load()
 	if b == nil {
 		return out
+	}
+	if b.host.PacketStats != nil {
+		out["ip_data_plane"] = b.host.PacketStats()
 	}
 	c := &b.counters
 	out["sent_packets"] = c.SentPackets.Load()

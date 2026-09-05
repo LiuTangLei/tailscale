@@ -613,6 +613,7 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 
 	e.SetPeerByIPPacketFunc(b.lookupPeerByIP)
 	e.SetPeerConfigFunc(b.peerAllowedIPs)
+	e.SetPeerPolicyFuncs(b.peerIdentityAllowed, b.peerIdentitySourceAllowed)
 	e.SetPeerForIPFunc(b.PeerForIP)
 	e.SetPeerSessionStateFunc(b.onPeerWireGuardState)
 	e.SetNetLogSource(netLogNodeSource{b})
@@ -4752,7 +4753,7 @@ func (b *LocalBackend) parseWgStatusLocked(s *wgengine.Status) (ret ipn.EngineSt
 	ret.LiveDERPs = s.DERPs
 	ret.LivePeers = map[key.NodePublic]ipnstate.PeerStatusLite{}
 	for _, p := range s.Peers {
-		if !p.LastHandshake.IsZero() {
+		if !p.LastHandshake.IsZero() || (!p.LastSessionEstablished.IsZero() && p.SessionState == uint8(wgengine.PeerWireGuardStateEstablished)) {
 			fmt.Fprintf(&peerStats, "%d/%d ", p.RxBytes, p.TxBytes)
 			fmt.Fprintf(&peerKeys, "%s ", p.NodeKey.ShortString())
 

@@ -24,7 +24,8 @@ type Mode string
 
 const (
 	Native Mode = "native"
-	QUIC   Mode = "quic" // Requires an explicitly configured, authenticated provider.
+	QUIC   Mode = "quic"    // Legacy: WG ciphertext inside QUIC.
+	QUICIP Mode = "quic-ip" // Native IP, no WireGuard device or inner encryption.
 )
 
 var (
@@ -52,9 +53,25 @@ type Factory interface {
 // Bind may route over direct UDP, DERP or peer relays. Do not assume its endpoint
 // strings are IP:port, that it is a UDP socket, or that a logical peer's physical
 // path is stable. A path-aware provider will need an additional host adapter.
+// SessionState describes the authenticated carrier session, independently of WG.
+type SessionState uint8
+
+const (
+	SessionNone SessionState = iota
+	SessionHandshake
+	SessionEstablished
+	SessionExpired
+)
+
 type Host struct {
 	Bind conn.Bind
 	Logf logger.Logf
+	// Native IP requires live authorization even after TLS pin validation.
+	// Callbacks must be fast, concurrency-safe, and not re-enter the carrier.
+	PeerAllowed    func([32]byte) bool
+	SessionChanged func([32]byte, SessionState)
+	// PacketStats is a cold-path diagnostics hook; no packet data or keys.
+	PacketStats func() map[string]uint64
 	// ListenPacket creates host-protected outbound UDP sockets (for example
 	// using Tailscale netns marks to avoid recursive exit-node routing). A
 	// provider must not replace this with an unprotected global socket.
@@ -106,7 +123,7 @@ func Resolve(c Config, environment string) (Config, error) {
 	switch c.Mode {
 	case Native:
 		return c, nil
-	case QUIC:
+	case QUIC, QUICIP:
 		if isNil(c.Factory) {
 			return Config{}, fmt.Errorf("%w: %q (no QUIC provider configured; refusing native fallback)", ErrUnsupported, c.Mode)
 		}

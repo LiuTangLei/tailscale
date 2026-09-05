@@ -94,7 +94,7 @@ type testPair struct {
 	keys     [2]key.NodePrivate
 }
 
-func newTestPair(t testing.TB, mode string) *testPair {
+func newTestPair(t testing.TB, mode string, options ...func(*Config)) *testPair {
 	t.Helper()
 	p := new(testPair)
 	var configs [2]Config
@@ -119,13 +119,16 @@ func newTestPair(t testing.TB, mode string) *testPair {
 			pc.Endpoint = addresses[i^1]
 		}
 		configs[i].Peers = []PeerConfig{pc}
+		for _, option := range options {
+			option(&configs[i])
+		}
 		f, err := NewFactory(configs[i])
 		if err != nil {
 			t.Fatal(err)
 		}
 		p.bases[i] = &keyedBind{Bind: conn.NewDefaultBind(), key: peerKeyString, remote: "127.0.0.1:9"}
 		listener := new(net.ListenConfig)
-		backend, err := f.New(wgtransport.Host{Bind: p.bases[i], Logf: t.Logf, ListenPacket: listener.ListenPacket})
+		backend, err := f.New(wgtransport.Host{Bind: p.bases[i], Logf: t.Logf, ListenPacket: listener.ListenPacket, PeerAllowed: func([32]byte) bool { return true }})
 		if err != nil {
 			t.Fatal(err)
 		}

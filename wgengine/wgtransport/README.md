@@ -1,61 +1,62 @@
-# WireGuard/AWG carrier compatibility layer
+# Packet engines and authenticated carriers
 
-`wgtransport` separates the WG/AWG cryptographic device from its outer carrier.
-Native mode returns the identical host Bind: no packet wrapper, extra queue or
-copy is added to the native hot path.
+`wgtransport` is the carrier adapter. The higher compatibility boundary is now
+`wgengine/packetengine.go`, with two real packet-engine implementations:
 
-The experimental `quicbind` provider now implements real TLS 1.3 QUIC DATAGRAMs.
-Its performance and forced-DERP release gates are **not passed**. See
-[`docs/quic-wg-experimental.md`](../../docs/quic-wg-experimental.md) for the current
-configuration, tests, measurements and limitations. The earlier compatibility
-stage is recorded in `docs/wgtransport-experimental.md`.
+- Existing Tailscale-modified WG/AWG Device, unchanged library dependency.
+- Native `quicip.Device`, which exchanges IP packets with the filtered TUN and
+  never creates a WG Device or adds a second layer of encryption.
 
-## Extension boundary
+See `docs/quic-ip-experimental.md` for native-IP security, configuration and tests.
+`docs/quic-wg-experimental.md` describes the earlier double-encapsulation baseline.
 
-The API comprises `Config`, `Factory`, `Host`, `Backend`, and optional
-`PeerLifecycle` / `NetworkLifecycle`. There is no mutable global registry or
-runtime plugin loader. The WG/AWG device remains the single cryptographic engine;
-AWG settings are independent of the outer carrier.
+## Mode selection
 
-A provider must preserve the exact `conn.Bind` send offset/batch semantics,
-receive zero-size slots, endpoint identity and Cookie address behavior. The host
-owns socket routing and discovery. Endpoint strings can be node keys rather than
-IP:port. `Endpoint` forwards optional identity callbacks and `UnwrapEndpoint`
-rejects nil/cyclic wrappers. Providers must unwrap before sending to magicsock;
-unknown endpoint types produce an error instead of a false successful send.
+| Selection | Packet payload sent to the carrier | Wire ALPN |
+|---|---|---|
+| zero / `native` | existing WG/AWG | not QUIC |
+| `quic` | WG/AWG ciphertext | `quic-wg/1` |
+| `quic-ip` | raw authorized IP | `quic-ip/1` |
 
-On Linux, host receive batches may include large UDP GRO aggregates. Providers
-must use the host's optional `ReceiveBufferSizes` geometry, or sufficiently large
-buffers, rather than assuming every receive slot contains one MTU-sized packet.
+Native mode returns the exact original Bind, preserving optional interfaces and
+avoiding an added packet queue/copy. QUIC modes require an explicit matching
+factory/config. Typos, missing configuration, wrong payload version, untrusted
+certificates and unknown peers fail closed; there is no native-WG downgrade.
 
-`Bind.Open/Close` can repeat across WG lifecycle changes. `Backend.Close` is final,
-idempotent shutdown and must unblock provider I/O. Lifecycle callbacks are
-serialized with final close, can run concurrently with packet traffic, and must
-not reenter the engine. Only public node identity is supplied by lifecycle hooks.
-Read-only WG peer enumeration never triggers a peer-removal callback.
+`Factory`, `Host`, `Backend` and optional peer/network lifecycle interfaces remain
+available for compiled providers; no mutable global plugin registry is introduced.
+The QUIC core stays in `quicbind`. `Host.ListenPacket` preserves host routing
+protection for independent sockets. Native IP additionally needs live local/remote
+identity admission, source ownership and session events; static TLS pins alone do
+not grant permission. The source policy uses the current control-plane profile and
+all eligible route contributors, not the outbound route-score winner alone.
 
-## Selection and safety
+## Lifetime and buffers
 
-- The zero config / `native` preserves existing WG/AWG behavior.
-- `quic` requires an explicitly linked/configured provider and trusted peer pins.
-- Misspelled/unavailable modes fail clearly. No automatic downgrade to public
-  native WG is performed.
-- Tailscale loads `TS_EXPERIMENTAL_QUIC_CONFIG` only when QUIC is selected.
-  Embedded `tsnet.Server` users can instead supply `Transport` directly.
-- The QUIC adapter implements a custom application ALPN (`quic-wg/1`), **not**
-  HTTP/3, browser imitation, game or DNS traffic.
+The WG or native-IP packet engine owns TUN reads and Bind Open/Close. Provider
+final Close is idempotent and must unblock its workers independently of later
+host teardown. Bind Open/Close remain repeatable; peer reset, removal and local
+identity changes discard the relevant session state. Network change notification
+is not proof of arbitrary QUIC path migration support.
 
-## Tests
+Buffers passed to Bind.Send are borrowed for the call. Async paths must retain
+an owned copy; normal established QUIC sends avoid the extra startup queue.
+Preserve batch sizes, headroom, zero-size receive slots and endpoint identity.
+Magicsock may require large trailing read buffers for UDP GRO before splitting;
+`ReceiveBufferSizes` exposes that geometry. A logical endpoint string may be a
+node key rather than IP:port. Providers must unwrap their own endpoint metadata
+before passing it back to magicsock; unknown host endpoint types return an error.
 
-```sh
-go test ./wgengine/wgtransport/... ./wgengine/magicsock ./wgengine
-go test -race ./wgengine/wgtransport/...
-```
+Incoming QUIC-IP endpoints expose the verified TLS peer key. The IP pump then
+checks current admission and source ownership before invoking the real
+`tstun.Wrapper.Write`, preserving ACL, NAT, jailed filtering and netstack hooks.
+`InjectInbound*` is not an alternative for untrusted network data.
 
-The carrier seam tests use an explicitly named test provider, not simulated
-QUIC masquerading as a real implementation. The `quicbind` tests use actual QUIC
-connections and verify WG/AWG plaintext after encryption, bidirectional
-fragmented messages, bad certificate rejection, lifecycle and reconnect cases.
+## Limits
 
-Remote tests use `cmd/wgcompat-lab` and `scripts/quicwg-remote.py` in isolated
-instances, without replacing production tailscaled or changing routes/DNS.
+Backend choice is node-level in this experiment. Pins/endpoints are explicitly
+provisioned; mixed per-peer protocol negotiation and automatic pin distribution
+are not implemented. Discovery/STUN is outside the encrypted IP data path.
+Neither QUIC ALPN claims HTTP/3/MASQUE or indistinguishability from web traffic.
+Real-host validation uses isolated tsnet nodes, not production daemon replacement;
+throughput, CPU and relay limitations must be read from the measured reports.
