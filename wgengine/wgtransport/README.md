@@ -1,62 +1,54 @@
-# Packet engines and authenticated carriers
+# Packet carriers for the Tailscale fork
 
-`wgtransport` is the carrier adapter. The higher compatibility boundary is now
-`wgengine/packetengine.go`, with two real packet-engine implementations:
+The application packet engine and its carrier are separate. `native` preserves
+the existing Tailscale-compatible WireGuard/AWG fork and the exact magicsock
+Bind. `quic-ip` and `http3-ip` create a native IP packet engine, never a WG Device.
 
-- Existing Tailscale-modified WG/AWG Device, unchanged library dependency.
-- Native `quicip.Device`, which exchanges IP packets with the filtered TUN and
-  never creates a WG Device or adds a second layer of encryption.
+## Distribution policy
 
-See `docs/quic-ip-experimental.md` for native-IP security, configuration and tests.
-`docs/quic-wg-experimental.md` describes the earlier double-encapsulation baseline.
+- `native`: default and compatibility path for WG/AWG peers.
+- `quic-ip`: native IP through QUIC DATAGRAM.
+- `http3-ip`: native IP through a real HTTP/3 CONNECT-IP request and HTTP Datagrams.
+- `quic`: legacy WG-over-QUIC; **rejected in normal builds**, available only with
+  `-tags ts_dev_wg_over_quic` for development comparisons.
 
-## Mode selection
+Selection uses `wgengine.Config.Transport` / `tsnet.Server.Transport`, or the
+explicit experimental environment configuration. Version-1 WG-over-QUIC JSON
+is gated as well as the mode resolver; a supplied factory cannot bypass the
+normal-build mode gate. There is no silent fallback to bare WG.
 
-| Selection | Packet payload sent to the carrier | Wire ALPN |
-|---|---|---|
-| zero / `native` | existing WG/AWG | not QUIC |
-| `quic` | WG/AWG ciphertext | `quic-wg/1` |
-| `quic-ip` | raw authorized IP | `quic-ip/1` |
+## Interfaces and ownership
 
-Native mode returns the exact original Bind, preserving optional interfaces and
-avoiding an added packet queue/copy. QUIC modes require an explicit matching
-factory/config. Typos, missing configuration, wrong payload version, untrusted
-certificates and unknown peers fail closed; there is no native-WG downgrade.
+`Factory`, `Host`, `Backend` and optional lifecycle interfaces form the carrier
+boundary. Host callbacks supply current peer admission, session notifications,
+packet counters, and protected socket creation. The native IP engine separately
+checks source-IP policy and delivers packets through the existing filtered TUN
+wrapper. Only public node identity crosses the lifecycle interface.
 
-`Factory`, `Host`, `Backend` and optional peer/network lifecycle interfaces remain
-available for compiled providers; no mutable global plugin registry is introduced.
-The QUIC core stays in `quicbind`. `Host.ListenPacket` preserves host routing
-protection for independent sockets. Native IP additionally needs live local/remote
-identity admission, source ownership and session events; static TLS pins alone do
-not grant permission. The source policy uses the current control-plane profile and
-all eligible route contributors, not the outbound route-score winner alone.
+Native mode returns the underlying Bind verbatim. A wrapper must preserve batch
+sizes, headroom offsets, Endpoint identity callbacks and repeated Open/Close.
+Final Close must cancel and release every worker. `UnwrapEndpoint` is for the
+final host send, not for discarding authenticated peer identity on receive.
 
-## Lifetime and buffers
+Desktop/server independent UDP uses host-protected sockets. Mobile/browser
+clients must use magicsock until separate-socket VPN-service rebind/protection
+is implemented. Native QUIC-IP and HTTP/3 both support that host path. An
+in-memory `NewFactoryWithCertificate` is provided for embedding clients.
 
-The WG or native-IP packet engine owns TUN reads and Bind Open/Close. Provider
-final Close is idempotent and must unblock its workers independently of later
-host teardown. Bind Open/Close remain repeatable; peer reset, removal and local
-identity changes discard the relevant session state. Network change notification
-is not proof of arbitrary QUIC path migration support.
+## HTTP/3 scope
 
-Buffers passed to Bind.Send are borrowed for the call. Async paths must retain
-an owned copy; normal established QUIC sends avoid the extra startup queue.
-Preserve batch sizes, headroom, zero-size receive slots and endpoint identity.
-Magicsock may require large trailing read buffers for UDP GRO before splitting;
-`ReceiveBufferSizes` exposes that geometry. A logical endpoint string may be a
-node key rather than IP:port. Providers must unwrap their own endpoint metadata
-before passing it back to magicsock; unknown host endpoint types return an error.
+The H3 backend includes SETTINGS, QPACK/control streams, authenticated Extended
+CONNECT, HTTP Datagrams, capsule receive support and bounded negotiated packet
+fragmentation. Public HTTP/3 GET and optional HTTPS/TCP GET serve a small page;
+they cannot open a tunnel without current peer authorization. Tunnel proof is
+bound to a TLS exporter and the exact request target, not a reusable bearer
+secret. Raw native QUIC continues to use its separately authenticated profile.
 
-Incoming QUIC-IP endpoints expose the verified TLS peer key. The IP pump then
-checks current admission and source ownership before invoking the real
-`tstun.Wrapper.Write`, preserving ACL, NAT, jailed filtering and netstack hooks.
-`InjectInbound*` is not an alternative for untrusted network data.
+This is not a universal MASQUE proxy, a Chromium fingerprint implementation or
+a claim of indistinguishable browser traffic. STUN/disco are still managed by
+the host outside this packet backend. Throughput must be measured; HTTP/3 is
+experimental and not the default.
 
-## Limits
-
-Backend choice is node-level in this experiment. Pins/endpoints are explicitly
-provisioned; mixed per-peer protocol negotiation and automatic pin distribution
-are not implemented. Discovery/STUN is outside the encrypted IP data path.
-Neither QUIC ALPN claims HTTP/3/MASQUE or indistinguishability from web traffic.
-Real-host validation uses isolated tsnet nodes, not production daemon replacement;
-throughput, CPU and relay limitations must be read from the measured reports.
+See `../../docs/http3-ip-experimental.md` relative to the repository docs area
+(`docs/http3-ip-experimental.md`), `docs/quic-platforms.md`, and
+`docs/quic-ip-experimental.md` for configuration, security scope and evidence.

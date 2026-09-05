@@ -4,8 +4,9 @@ package magicsock
 
 import (
 	"runtime"
-	"tailscale.com/hostinfo"
 	"testing"
+
+	"tailscale.com/hostinfo"
 )
 
 func TestForcedDERPDoesNotRebindDisabledUDP(t *testing.T) {
@@ -14,17 +15,16 @@ func TestForcedDERPDoesNotRebindDisabledUDP(t *testing.T) {
 	}
 	c := newTestConn(t)
 	c.noV4Send.Store(true)
-	t.Setenv("TS_DEBUG_ALWAYS_USE_DERP", "false")
-	if !c.shouldRebindAfterNetcheckSendError() {
+	// Test the policy directly instead of mutating a cached environment knob
+	// while the connection's workers are already running.
+	if !c.shouldRebindAfterSendErrorForPolicy(false) {
 		t.Fatal("normal send failure stopped triggering rebind")
 	}
-	t.Setenv("TS_DEBUG_ALWAYS_USE_DERP", "true")
-	if c.shouldRebindAfterNetcheckSendError() {
+	if c.shouldRebindAfterSendErrorForPolicy(true) {
 		t.Fatal("forced DERP would tear down its relay to repair deliberately disabled UDP")
 	}
-	t.Setenv("TS_DEBUG_ALWAYS_USE_DERP", "false")
 	c.onlyTCP443.Store(true)
-	if c.shouldRebindAfterNetcheckSendError() {
+	if c.shouldRebindAfterSendErrorForPolicy(false) {
 		t.Fatal("TCP-only mode rebound UDP")
 	}
 }

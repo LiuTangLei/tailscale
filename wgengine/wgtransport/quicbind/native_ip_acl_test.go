@@ -20,7 +20,13 @@ import (
 )
 
 func TestNativeIPUsesTailscaleInboundACL(t *testing.T) {
-	pair := newTestPair(t, "udp", func(c *Config) { c.Version = 2; c.Payload = "ip" })
+	for _, mode := range []string{"udp", "http3-udp"} {
+		t.Run(mode, func(t *testing.T) { testNativeIPInboundACL(t, mode) })
+	}
+}
+
+func testNativeIPInboundACL(t *testing.T, mode string) {
+	pair := newTestPair(t, mode, func(c *Config) { c.Version = 2; c.Payload = "ip" })
 	ips := [2]netip.Addr{netip.MustParseAddr("10.88.0.1"), netip.MustParseAddr("10.88.0.2")}
 	var tuns [2]*tuntest.ChannelTUN
 	var wrappers [2]*tstun.Wrapper

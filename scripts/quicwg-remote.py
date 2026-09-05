@@ -4,6 +4,10 @@ All generated TLS keys stay on their host; only public SPKI pins are exchanged.
 """
 from __future__ import annotations
 import argparse
+import base64
+import os
+import signal
+from urllib.parse import urlsplit
 import datetime as dt
 import hashlib
 import importlib.util
@@ -27,6 +31,58 @@ def free_port():
         return s.getsockname()[1]
 
 
+def browser_smoke(node, temp):
+    browser = Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
+    if not browser.is_file(): raise RuntimeError('Chrome binary not available for browser smoke')
+    origin = urlsplit(node['h3url'])
+    profile = temp / ('chrome-' + node['name'])
+    netlog = temp / ('chrome-' + node['name'] + '-netlog.json')
+    pin = base64.b64encode(bytes.fromhex(node['identity']['spki_sha256'])).decode()
+    before = api(node, '/quic')
+    command = [str(browser), '--headless=new', '--disable-gpu', '--disable-extensions', '--disable-background-networking',
+               '--no-first-run', '--no-default-browser-check', '--no-proxy-server', '--enable-quic', '--use-mock-keychain',
+               '--user-data-dir=' + str(profile), '--log-net-log=' + str(netlog),
+               '--ignore-certificate-errors-spki-list=' + pin,
+               '--origin-to-force-quic-on=' + origin.netloc,
+               '--host-resolver-rules=MAP ' + origin.hostname + ' ' + node['address'],
+               '--timeout=15000', '--dump-dom', 'https://' + origin.netloc + '/']
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=35)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        # macOS may deny group signals when Chrome's sandboxed helpers have
+        # different credentials. Terminate only the exact browser child that
+        # this invocation created; Chrome tears down its own helper processes.
+        proc.terminate()
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate(timeout=5)
+    after = api(node, '/quic')
+    passed = not timed_out and proc.returncode == 0 and 'Welcome' in stdout and after.get('http3_public_pages', 0) > before.get('http3_public_pages', 0)
+    types, errors = {}, []
+    if netlog.is_file():
+        try:
+            log = json.loads(netlog.read_text())
+            names = {value: name for name, value in log.get('constants', {}).get('logEventTypes', {}).items()}
+            for event in log.get('events', []):
+                name = names.get(event.get('type'), '')
+                if 'HTTP3' in name or 'QUIC_SESSION' in name: types[name] = types.get(name, 0) + 1
+                params = event.get('params', {})
+                if params.get('net_error') or params.get('quic_error'):
+                    errors.append({'event': name, 'net_error': params.get('net_error'), 'quic_error': params.get('quic_error')})
+        except (ValueError, OSError):
+            errors.append({'event': 'incomplete netlog after browser termination'})
+    return {'host': node['name'], 'passed': passed, 'timeout': timed_out, 'exit': proc.returncode,
+            'page_sha256': hashlib.sha256(stdout.encode()).hexdigest(), 'stderr_tail': stderr[-1500:] if not passed else '',
+            'server_http3_requests_delta': after['http3_requests'] - before['http3_requests'],
+            'server_http3_public_pages_delta': after.get('http3_public_pages', 0) - before.get('http3_public_pages', 0), 'network_events': types, 'network_errors': errors[-15:],
+            'scope': 'isolated Chrome profile; explicit QUIC origin and trust only this temporary test SPKI; not a browser fingerprint equivalence test'}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--local-binary", type=Path, required=True)
@@ -35,7 +91,9 @@ def main():
     p.add_argument("--zjg", default="root@173.249.215.87")
     p.add_argument("--sg-address", default="96.9.212.12")
     p.add_argument("--zjg-address", default="173.249.215.87")
-    p.add_argument("--variants", default="native,quic-udp,quic-ip-udp,quic-ip-magicsock")
+    p.add_argument("--variants", default="native,quic-ip-udp,http3-ip-udp,http3-ip-magicsock")
+    p.add_argument("--dev-wg-over-quic", action="store_true", help="requires a ts_dev_wg_over_quic binary")
+    p.add_argument("--browser-smoke", action="store_true", help="isolated headless Chrome visit to the HTTP/3 public site (UDP mode)")
     p.add_argument("--profile", choices=["standard", "awg2", "awg3", "awg31"], default="standard")
     p.add_argument("--mib", type=int, default=8)
     p.add_argument("--parallel", type=int, default=1)
@@ -46,13 +104,15 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
     variants = args.variants.split(",")
-    if not variants or any(v not in ("native", "quic-udp", "quic-magicsock", "quic-ip-udp", "quic-ip-magicsock") for v in variants):
+    if not variants or any(v not in ("native", "quic-udp", "quic-magicsock", "quic-ip-udp", "quic-ip-magicsock", "http3-ip-udp", "http3-ip-magicsock") for v in variants):
         p.error("invalid variants")
+    if not args.dev_wg_over_quic and any(v in ("quic-udp", "quic-magicsock") for v in variants):
+        p.error("WG-over-QUIC is development-only; use native or --dev-wg-over-quic with the build tag")
     if not 1 <= args.mib <= 64 or not 1 <= args.parallel <= 4 or not 1 <= args.rounds <= 3:
         p.error("invalid benchmark limits")
     if args.force_derp and any(v.endswith("-udp") for v in variants):
         p.error("independent UDP mode does not use DERP; test magicsock instead")
-    if args.profile != "standard" and any(v.startswith("quic-ip-") for v in variants):
+    if args.profile != "standard" and any(v.startswith(("quic-ip-", "http3-ip-")) for v in variants):
         p.error("native QUIC IP rejects AWG profiles; use --profile=standard")
     ident = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
     result = {"run": ident, "linux_sha256": hashlib.sha256(args.linux_binary.read_bytes()).hexdigest(),
@@ -106,7 +166,7 @@ def main():
                     raise RuntimeError(f"SSH startup timeout: {name}")
                 node["ssh"] = ssh + ["-S", node["socket"], host]
                 nodes.append(node)
-                busy = remote(node, "ss -H -lnt 'sport = :18441'; ss -H -lnu 'sport = :42641'; ss -H -lnu 'sport = :42642'").stdout.strip()
+                busy = remote(node, "ss -H -lnt 'sport = :18441'; ss -H -lnu 'sport = :42641'; ss -H -lnu 'sport = :42642'; ss -H -lnt 'sport = :42642'").stdout.strip()
                 if busy:
                     raise RuntimeError(f"test ports are occupied: {name}: {busy}")
                 node["baseline"] = remote(node, "systemctl show tailscaled -p MainPID -p ActiveState; tailscale version | head -1", check=False).stdout.strip()
@@ -128,8 +188,9 @@ def main():
                     if variant == "native":
                         env += ["TS_EXPERIMENTAL_WG_TRANSPORT=native"]
                     else:
-                        native_ip = variant.startswith("quic-ip-")
-                        io_mode = variant.removeprefix("quic-ip-" if native_ip else "quic-")
+                        h3 = variant.startswith("http3-ip-")
+                        native_ip = h3 or variant.startswith("quic-ip-")
+                        io_mode = variant.removeprefix("http3-ip-" if h3 else "quic-ip-" if native_ip else "quic-")
                         peer = nodes[i ^ 1]
                         peer_cfg = {"public_key": peer["public_key"], "spki_sha256": peer["identity"]["spki_sha256"]}
                         config = {"version": 1, "io": io_mode, "local_public_key": node["public_key"],
@@ -140,11 +201,18 @@ def main():
                         if io_mode == "udp":
                             config["listen"] = "0.0.0.0:42642"
                             peer_cfg["endpoint"] = f"{peer['address']}:42642"
+                        if h3:
+                            origin_port = 42642 if io_mode == "udp" else 42641
+                            config["http3"] = True
+                            config["http3_url"] = f"https://{node['name']}.yesican.top:{origin_port}/.well-known/masque/ip/*/*/"
+                            peer_cfg["http3_url"] = f"https://{peer['name']}.yesican.top:{origin_port}/.well-known/masque/ip/*/*/"
+                            node["h3url"] = config["http3_url"]
+                            if args.browser_smoke and io_mode == "udp": config["http3_tcp_listen"] = "0.0.0.0:42642"
                         local_config = temp / f"{node['name']}-config.json"
                         local_config.write_text(json.dumps(config))
                         run(["scp", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}",
                              str(local_config), f"{node['host']}:{node['dir']}/quic.json"])
-                        env += [f"TS_EXPERIMENTAL_WG_TRANSPORT={'quic-ip' if native_ip else 'quic'}", f"TS_EXPERIMENTAL_QUIC_CONFIG={node['dir']}/quic.json"]
+                        env += [f"TS_EXPERIMENTAL_WG_TRANSPORT={'http3-ip' if h3 else 'quic-ip' if native_ip else 'quic'}", f"TS_EXPERIMENTAL_QUIC_CONFIG={node['dir']}/quic.json"]
                     unit = f"quicwg-{ident}-{node['name']}-{index}"
                     command = ["systemd-run", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=600", "--property=TimeoutStopSec=15", "--property=Restart=no",
                                "env"] + env + [node["dir"] + "/lab", "node", "--dir", node["dir"] + "/state", "--hostname", "quicwg-" + node["name"],
@@ -200,12 +268,13 @@ def main():
                         stats = phase["transport"][node["name"]]
                         if not stats.get("identity_ok") or not stats.get("datagrams") or stats.get("tls_version") != 772 or not stats.get("sent_packets") or not stats.get("received_packets"):
                             raise RuntimeError("QUIC/TLS/data counters did not prove real QUIC transit")
-                        if variant.startswith("quic-ip-"):
-                            if stats.get("payload") != "ip" or stats.get("alpn") != "quic-ip/1" or stats.get("wireguard_encryption") is not False:
+                        if variant.startswith(("quic-ip-", "http3-ip-")):
+                            expected_alpn = "h3" if variant.startswith("http3-ip-") else "quic-ip/1"
+                            if stats.get("payload") != "ip" or stats.get("alpn") != expected_alpn or stats.get("wireguard_encryption") is not False:
                                 raise RuntimeError("native-IP mode fell back to a WireGuard carrier")
                             current = api(node, "/status")
                             for peer_status in current.get("peers", []):
-                                if peer_status.get("session_protocol") != "quic-ip" or peer_status.get("session_state") != 2 or not peer_status.get("lastHandshake", "").startswith("0001-"):
+                                if peer_status.get("session_protocol") != ("http3-ip" if variant.startswith("http3-ip-") else "quic-ip") or peer_status.get("session_state") != 2 or not peer_status.get("lastHandshake", "").startswith("0001-"):
                                     raise RuntimeError("native-IP peer missing truthful TLS session status: " + json.dumps(peer_status))
                 for i, node in enumerate(nodes if not args.proof_only else []):
                     target = nodes[i ^ 1]["test_ip"]
@@ -219,11 +288,20 @@ def main():
                         raise RuntimeError("benchmark failed: " + json.dumps(bench.get("streams")))
                     cpu = {n["name"]: after[n["name"]]["process"]["cpu_total_seconds"] - before[n["name"]]["process"]["cpu_total_seconds"] for n in nodes}
                     print(f"BENCH {variant} download at {node['name']}: {bench['mbps']:.2f} Mbps; CPU seconds {cpu}", flush=True)
+                if args.browser_smoke and variant == "http3-ip-udp":
+                    phase["browser"] = []
+                    for n in nodes:
+                        evidence = browser_smoke(n, temp)
+                        phase["browser"].append(evidence)
+                        print('BROWSER', n['name'], 'PASS' if evidence['passed'] else 'FAIL', flush=True)
+                        checkpoint()
                 phase["final_transport"] = {n["name"]: api(n, "/quic") for n in nodes}
-                phase["passed"] = True
+                phase["data_plane_passed"] = True
+                phase["passed"] = all(e["passed"] for e in phase.get("browser", []))
                 checkpoint()
                 stop_current()
-            result["passed"] = True
+            result["data_plane_passed"] = all(p.get("data_plane_passed", False) for p in result["phases"])
+            result["passed"] = all(p["passed"] for p in result["phases"])
         except Exception as exc:
             result["error"] = str(exc)
             print("FAILED:", exc, flush=True)

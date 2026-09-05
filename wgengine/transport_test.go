@@ -55,6 +55,9 @@ func (b *transportTestBackend) LocalIdentityChanged(k [32]byte) { b.keys <- k }
 func (b *transportTestBackend) PeerRemoved(k [32]byte)          { b.removed <- k }
 
 func TestTransportEngineLifecycle(t *testing.T) {
+	if !wgtransport.LegacyWGOverQUIC {
+		t.Skip("legacy WG-over-QUIC lifecycle requires development tag; native IP has separate tests")
+	}
 	bus := eventbustest.NewBus(t)
 	b := &transportTestBackend{keys: make(chan [32]byte, 8), removed: make(chan [32]byte, 8)}
 	// This is a test double for the future extension point, NOT a QUIC implementation.

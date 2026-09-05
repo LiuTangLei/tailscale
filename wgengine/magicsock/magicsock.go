@@ -909,10 +909,14 @@ func (c *Conn) InstallCaptureHook(cb packet.CaptureCallback) {
 func (c *Conn) doPeriodicSTUN() { c.ReSTUN("periodic") }
 
 func (c *Conn) shouldRebindAfterNetcheckSendError() bool {
+	return c.shouldRebindAfterSendErrorForPolicy(debugAlwaysDERP())
+}
+
+func (c *Conn) shouldRebindAfterSendErrorForPolicy(alwaysDERP bool) bool {
 	// In forced DERP mode the UDP socket is deliberately disabled. Rebinding
 	// cannot repair it and instead tears down a healthy DERP session on each
 	// netcheck (especially frequently on a host with interface churn).
-	return c.noV4Send.Load() && runtime.GOOS != "js" && !c.onlyTCP443.Load() && !debugAlwaysDERP() && !hostinfo.IsInVM86()
+	return c.noV4Send.Load() && runtime.GOOS != "js" && !c.onlyTCP443.Load() && !alwaysDERP && !hostinfo.IsInVM86()
 }
 
 func (c *Conn) stopPeriodicReSTUNTimerLocked() {

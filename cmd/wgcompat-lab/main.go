@@ -102,7 +102,7 @@ func run() error {
 	}
 	s := &tsnet.Server{Dir: *dir, Hostname: *hostname, ControlURL: *control, Port: uint16(*port), Logf: log.Printf, UserLogf: log.Printf}
 	var quicFactory *quicbind.Factory
-	if mode := os.Getenv("TS_EXPERIMENTAL_WG_TRANSPORT"); mode == "quic" || mode == "quic-ip" {
+	if mode := os.Getenv("TS_EXPERIMENTAL_WG_TRANSPORT"); mode == "quic" || mode == "quic-ip" || mode == "http3-ip" {
 		quicFactory, err = quicbind.Load(os.Getenv("TS_EXPERIMENTAL_QUIC_CONFIG"))
 		if err != nil {
 			return err

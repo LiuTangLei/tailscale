@@ -23,9 +23,10 @@ import (
 type Mode string
 
 const (
-	Native Mode = "native"
-	QUIC   Mode = "quic"    // Legacy: WG ciphertext inside QUIC.
-	QUICIP Mode = "quic-ip" // Native IP, no WireGuard device or inner encryption.
+	Native  Mode = "native"
+	QUIC    Mode = "quic"     // Development only: requires ts_dev_wg_over_quic.
+	QUICIP  Mode = "quic-ip"  // Native IP, no WireGuard device or inner encryption.
+	HTTP3IP Mode = "http3-ip" // Native IP over HTTP/3 CONNECT-IP.
 )
 
 var (
@@ -76,6 +77,8 @@ type Host struct {
 	// using Tailscale netns marks to avoid recursive exit-node routing). A
 	// provider must not replace this with an unprotected global socket.
 	ListenPacket func(context.Context, string, string) (net.PacketConn, error)
+	// ListenTCP is used only by the optional HTTPS public-site listener.
+	ListenTCP func(context.Context, string, string) (net.Listener, error)
 }
 
 // Backend exposes a WireGuard-compatible Bind and a final shutdown operation.
@@ -123,7 +126,10 @@ func Resolve(c Config, environment string) (Config, error) {
 	switch c.Mode {
 	case Native:
 		return c, nil
-	case QUIC, QUICIP:
+	case QUIC, QUICIP, HTTP3IP:
+		if c.Mode == QUIC && !LegacyWGOverQUIC {
+			return Config{}, fmt.Errorf("%w: WG-over-QUIC is development-only; use native for WG/AWG compatibility or quic-ip for QUIC", ErrUnsupported)
+		}
 		if isNil(c.Factory) {
 			return Config{}, fmt.Errorf("%w: %q (no QUIC provider configured; refusing native fallback)", ErrUnsupported, c.Mode)
 		}

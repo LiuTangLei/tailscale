@@ -29,20 +29,26 @@ var (
 const packetBudget = 8 << 20
 
 type Counters struct {
-	SentPackets       atomic.Uint64
-	ReceivedPackets   atomic.Uint64
-	SendQueueDrops    atomic.Uint64
-	SendErrors        atomic.Uint64
-	EnqueueWaits      atomic.Uint64
-	FastPackets       atomic.Uint64
-	ReceiveQueueDrops atomic.Uint64
-	FragmentedPackets atomic.Uint64
-	MalformedFrames   atomic.Uint64
-	Connections       atomic.Uint64
-	HandshakeErrors   atomic.Uint64
-	RawPacketsDropped atomic.Uint64
-	RawBytesSent      atomic.Uint64
-	RawBytesReceived  atomic.Uint64
+	SentPackets         atomic.Uint64
+	ReceivedPackets     atomic.Uint64
+	SendQueueDrops      atomic.Uint64
+	SendErrors          atomic.Uint64
+	EnqueueWaits        atomic.Uint64
+	FastPackets         atomic.Uint64
+	ReceiveQueueDrops   atomic.Uint64
+	FragmentedPackets   atomic.Uint64
+	MalformedFrames     atomic.Uint64
+	Connections         atomic.Uint64
+	HandshakeErrors     atomic.Uint64
+	RawPacketsDropped   atomic.Uint64
+	RawBytesSent        atomic.Uint64
+	RawBytesReceived    atomic.Uint64
+	HTTP3Requests       atomic.Uint64
+	HTTP3PublicRequests atomic.Uint64
+	HTTP3PublicPages    atomic.Uint64
+	HTTP3Tunnels        atomic.Uint64
+	HTTP3Rejected       atomic.Uint64
+	HTTP3Datagrams      atomic.Uint64
 }
 
 type Backend struct {
@@ -66,6 +72,7 @@ type generation struct {
 	listener  *quic.Listener
 	pc        net.PacketConn
 	bridge    *bindPacketConn
+	h3        *http3State
 	peersMu   sync.Mutex
 	peers     map[[32]byte]*peer
 	rx        chan received
@@ -114,9 +121,19 @@ type peer struct {
 	disabled         atomic.Bool
 	nextID           atomic.Uint32
 }
+type datagramChannel interface {
+	SendDatagram([]byte) error
+	ReceiveDatagram(context.Context) ([]byte, error)
+}
+
 type session struct {
-	q         *quic.Conn
-	preferred bool
+	q     *quic.Conn
+	dgram datagramChannel
+	// Raw packets do not touch the reassembly lock. Capsule fragments and
+	// QUIC DATAGRAM fragments share this bounded state when HTTP/3 is used.
+	fragmentMu sync.Mutex
+	frames     reassembler
+	preferred  bool
 }
 
 func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
@@ -246,6 +263,7 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	g := &generation{b: b, ctx: ctx, cancel: cancel, peers: make(map[[32]byte]*peer), rx: make(chan received, 1024), port: actual}
 	rollback := func() {
 		cancel()
+		g.closeHTTP3()
 		if g.transport != nil {
 			g.transport.Close()
 		}
@@ -299,6 +317,12 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		return nil, 0, err
 	}
 	g.listener = listener
+	if b.factory.cfg.HTTP3 {
+		if err := g.initHTTP3(); err != nil {
+			rollback()
+			return nil, 0, err
+		}
+	}
 	// Preserve host discovery/DERP processing even when QUIC uses its own socket.
 	for _, fn := range fns {
 		g.workers.Add(1)
@@ -311,10 +335,15 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 }
 
 func (b *Backend) quicConfig() *quic.Config {
+	streams, uni := int64(-1), int64(-1)
+	if b.factory.cfg.HTTP3 {
+		streams, uni = 16, 8
+	}
 	return &quic.Config{
 		EnableDatagrams: true, HandshakeIdleTimeout: 8 * time.Second, MaxIdleTimeout: 60 * time.Second,
 		KeepAlivePeriod: 20 * time.Second, InitialPacketSize: b.factory.cfg.InitialPacketSize,
-		MaxIncomingStreams: -1, MaxIncomingUniStreams: -1, Allow0RTT: false,
+		MaxIncomingStreams: streams, MaxIncomingUniStreams: uni, Allow0RTT: false,
+		MaxStreamReceiveWindow: 128 << 10, MaxConnectionReceiveWindow: 1 << 20,
 	}
 }
 
@@ -332,6 +361,7 @@ func (b *Backend) stop(final bool) error {
 	// Cancel the external reader before asking QUIC to join its workers.
 	g.pc.Close()
 	g.transport.Close()
+	g.closeHTTP3()
 	err := b.host.Bind.Close()
 	// Synchronize with any Send that entered peer creation before cancel.
 	g.peersMu.Lock()
@@ -492,6 +522,11 @@ func (g *generation) accept() {
 		if err != nil {
 			return
 		}
+		if g.h3 != nil {
+			g.workers.Add(1)
+			go func() { defer g.workers.Done(); _ = g.h3.server.ServeQUICConn(q) }()
+			continue
+		}
 		if !g.b.identityOK.Load() {
 			q.CloseWithError(1, "inactive WireGuard identity")
 			continue
@@ -512,13 +547,17 @@ func (g *generation) accept() {
 }
 
 func (p *peer) install(q *quic.Conn, outgoing bool) *session {
+	return p.installChannel(q, outgoing, q)
+}
+
+func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChannel) *session {
 	state := q.ConnectionState()
 	if !state.SupportsDatagrams.Local || !state.SupportsDatagrams.Remote {
 		q.CloseWithError(1, "QUIC DATAGRAM required")
 		return nil
 	}
 	preferred := (bytes.Compare(p.g.b.factory.local[:], p.cfg.key[:]) < 0) == outgoing
-	ns := &session{q: q, preferred: preferred}
+	ns := &session{q: q, dgram: channel, preferred: preferred}
 	p.mu.Lock()
 	old := p.session
 	if p.disabled.Load() || p.g.ctx.Err() != nil || !p.g.b.peerAllowed(p.cfg.key) {
@@ -579,11 +618,18 @@ func (p *peer) getSession() (*session, error) {
 	}
 	ctx, cancel := context.WithTimeout(p.g.ctx, 10*time.Second)
 	defer cancel()
-	q, err := p.g.transport.Dial(ctx, remote, p.g.b.factory.tlsConfig(&p.cfg.key), p.g.b.quicConfig())
+	tlsConfig := p.g.b.factory.tlsConfig(&p.cfg.key)
+	if p.cfg.http3URL != nil {
+		tlsConfig.ServerName = p.cfg.http3URL.Hostname()
+	}
+	q, err := p.g.transport.Dial(ctx, remote, tlsConfig, p.g.b.quicConfig())
 	if err != nil {
 		p.g.b.counters.HandshakeErrors.Add(1)
 		p.publishState(wgtransport.SessionExpired)
 		return nil, err
+	}
+	if p.g.b.factory.cfg.HTTP3 {
+		return p.openHTTP3(q)
 	}
 	s := p.install(q, true)
 	if s == nil {
@@ -642,7 +688,7 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 	if len(packet)+1 <= len(scratch) {
 		scratch[0] = frameRaw
 		copy(scratch[1:], packet)
-		err := s.q.SendDatagram(scratch[:len(packet)+1])
+		err := s.dgram.SendDatagram(scratch[:len(packet)+1])
 		if err == nil {
 			p.g.b.counters.SentPackets.Add(1)
 			return nil
@@ -669,7 +715,7 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 		binary.BigEndian.PutUint16(scratch[5:7], uint16(len(packet)))
 		binary.BigEndian.PutUint16(scratch[7:9], uint16(offset))
 		copy(scratch[fragmentHeader:], packet[offset:offset+n])
-		err := s.q.SendDatagram(scratch[:fragmentHeader+n])
+		err := s.dgram.SendDatagram(scratch[:fragmentHeader+n])
 		if err != nil {
 			return err
 		}
@@ -693,38 +739,53 @@ func (p *peer) receiveSession(s *session) {
 			p.publishState(wgtransport.SessionExpired)
 		}
 	}()
-	var frames reassembler
+	if capsules, ok := s.dgram.(interface{ StartCapsules(func([]byte)) }); ok {
+		capsules.StartCapsules(func(data []byte) { p.deliverFrame(s, data) })
+	}
 	for {
-		data, err := s.q.ReceiveDatagram(p.g.ctx)
+		data, err := s.dgram.ReceiveDatagram(p.g.ctx)
 		if err != nil {
 			return
 		}
-		if p.disabled.Load() || !p.g.b.identityOK.Load() || !p.g.b.peerAllowed(p.cfg.key) {
-			continue
-		}
-		packet, err := frames.consume(data, time.Now())
-		if err != nil {
-			p.g.b.counters.MalformedFrames.Add(1)
-			continue
-		}
-		if packet == nil {
-			continue
-		}
-		if p.g.rxBytes.Add(int64(len(packet))) > packetBudget {
-			p.g.rxBytes.Add(-int64(len(packet)))
-			p.g.b.counters.ReceiveQueueDrops.Add(1)
-			continue
-		}
-		select {
-		case p.g.rx <- received{packet, p.ep.Load()}:
-			p.g.b.counters.ReceivedPackets.Add(1)
-		case <-p.g.ctx.Done():
-			p.g.rxBytes.Add(-int64(len(packet)))
-			return
-		default:
-			p.g.rxBytes.Add(-int64(len(packet)))
-			p.g.b.counters.ReceiveQueueDrops.Add(1)
-		}
+		p.deliverFrame(s, data)
+	}
+}
+
+// deliverFrame is shared with the infrequent HTTP Capsule reader. In both
+// cases packets cross the identical live authorization and bounded IP queue.
+func (p *peer) deliverFrame(s *session, data []byte) {
+	if s.q.Context().Err() != nil || p.disabled.Load() || !p.g.b.identityOK.Load() || !p.g.b.peerAllowed(p.cfg.key) {
+		return
+	}
+	var packet []byte
+	var err error
+	if len(data) > 1 && data[0] == frameRaw && len(data)-1 <= maxPacket {
+		packet = data[1:]
+	} else {
+		s.fragmentMu.Lock()
+		packet, err = s.frames.consume(data, time.Now())
+		s.fragmentMu.Unlock()
+	}
+	if err != nil {
+		p.g.b.counters.MalformedFrames.Add(1)
+		return
+	}
+	if packet == nil {
+		return
+	}
+	if p.g.rxBytes.Add(int64(len(packet))) > packetBudget {
+		p.g.rxBytes.Add(-int64(len(packet)))
+		p.g.b.counters.ReceiveQueueDrops.Add(1)
+		return
+	}
+	select {
+	case p.g.rx <- received{packet, p.ep.Load()}:
+		p.g.b.counters.ReceivedPackets.Add(1)
+	case <-p.g.ctx.Done():
+		p.g.rxBytes.Add(-int64(len(packet)))
+	default:
+		p.g.rxBytes.Add(-int64(len(packet)))
+		p.g.b.counters.ReceiveQueueDrops.Add(1)
 	}
 }
 

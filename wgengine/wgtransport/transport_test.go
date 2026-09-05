@@ -80,7 +80,7 @@ func TestResolveFailClosed(t *testing.T) {
 	if _, err := Resolve(Config{Mode: QUIC, Factory: typedNil}, ""); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("typed nil: %v", err)
 	}
-	if _, err := Resolve(Config{Mode: QUIC, Factory: &testFactory{mode: Native}}, ""); !errors.Is(err, ErrInvalidConfig) {
+	if _, err := Resolve(Config{Mode: QUICIP, Factory: &testFactory{mode: Native}}, ""); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("mismatch: %v", err)
 	}
 	c, err := Resolve(Config{Mode: Native}, "quic")
@@ -103,14 +103,14 @@ func TestFactoryCleanupAndLifecycle(t *testing.T) {
 		{"nil-bind", &testBackend{}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := New(Host{Bind: base}, Config{Mode: QUIC, Factory: &testFactory{mode: QUIC, backend: tc.b, err: tc.err}})
+			_, err := New(Host{Bind: base}, Config{Mode: QUICIP, Factory: &testFactory{mode: QUICIP, backend: tc.b, err: tc.err}})
 			if err == nil || tc.b.closes != 1 {
 				t.Fatalf("err=%v closes=%d", err, tc.b.closes)
 			}
 		})
 	}
 	b := &testBackend{bind: base}
-	m, err := New(Host{Bind: base}, Config{Mode: QUIC, Factory: &testFactory{mode: QUIC, backend: b}})
+	m, err := New(Host{Bind: base}, Config{Mode: QUICIP, Factory: &testFactory{mode: QUICIP, backend: b}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestRealWireGuardThroughCarrier(t *testing.T) {
 				carriers[i] = &countingBind{Bind: base}
 				backend := &testBackend{bind: carriers[i]}
 				var err error
-				managers[i], err = New(Host{Bind: base}, Config{Mode: QUIC, Factory: &testFactory{mode: QUIC, backend: backend}})
+				managers[i], err = New(Host{Bind: base}, Config{Mode: QUICIP, Factory: &testFactory{mode: QUICIP, backend: backend}})
 				if err != nil {
 					t.Fatal(err)
 				}

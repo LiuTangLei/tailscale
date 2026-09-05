@@ -316,7 +316,10 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	if mode == "" {
 		mode = wgtransport.Mode(envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
 	}
-	if (mode == wgtransport.QUIC || mode == wgtransport.QUICIP) && transportChoice.Factory == nil {
+	if mode == wgtransport.QUIC && !wgtransport.LegacyWGOverQUIC {
+		return nil, fmt.Errorf("%w: WG-over-QUIC is development-only; use native or quic-ip", wgtransport.ErrUnsupported)
+	}
+	if (mode == wgtransport.QUIC || mode == wgtransport.QUICIP || mode == wgtransport.HTTP3IP) && transportChoice.Factory == nil {
 		path := envknob.String("TS_EXPERIMENTAL_QUIC_CONFIG")
 		if path == "" {
 			return nil, fmt.Errorf("%w: quic requires TS_EXPERIMENTAL_QUIC_CONFIG with trusted peer pins; native fallback is forbidden", wgtransport.ErrUnsupported)
@@ -542,6 +545,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	e.transport, err = wgtransport.New(wgtransport.Host{
 		Bind: e.magicConn.Bind(), Logf: e.logf,
 		ListenPacket:   netns.Listener(e.logf, e.netMon).ListenPacket,
+		ListenTCP:      netns.Listener(e.logf, e.netMon).Listen,
 		PeerAllowed:    func(k [32]byte) bool { return e.peerCurrentlyAllowed(keyFromRaw(k)) },
 		SessionChanged: func(k [32]byte, s wgtransport.SessionState) { e.packet.CarrierSessionChanged(k, s) },
 		PacketStats: func() map[string]uint64 {
@@ -558,9 +562,9 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	e.logf("Packet transport: %s", e.transport.Mode())
 	// Each backend owns exactly one filtered TUN reader. Native QUIC-IP never
 	// constructs a WG Device, not even for status or a hidden handshake.
-	if e.transport.Mode() == wgtransport.QUICIP {
+	if e.transport.Mode() == wgtransport.QUICIP || e.transport.Mode() == wgtransport.HTTP3IP {
 		e.logf("Creating native QUIC IP engine (no WireGuard device)...")
-		e.packet, err = newIPPacketEngine(e.tundev, e.transport.Bind())
+		e.packet, err = newIPPacketEngine(e.tundev, e.transport.Bind(), e.transport.Mode())
 		if err != nil {
 			return nil, err
 		}
@@ -914,7 +918,7 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 		if err := e.packet.ApplyConfig(cfg); err != nil {
 			// A rejected native-IP profile must not leave the previous identity
 			// usable while the control plane has already switched profiles.
-			if e.transport.Mode() == wgtransport.QUICIP {
+			if e.transport.Mode() == wgtransport.QUICIP || e.transport.Mode() == wgtransport.HTTP3IP {
 				e.packetIdentity.Store(new(key.NodePublic))
 				e.transport.LocalIdentityChanged([32]byte{})
 				_ = e.packet.SetIdentity(key.NodePrivate{})

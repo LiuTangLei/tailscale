@@ -158,6 +158,7 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/google/go-github/v82 v82.0.0 // indirect
 	github.com/palantir/policy-bot v1.41.1 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/shurcooL/githubv4 v0.0.0-20260209031235-2402fdf4a9ed // indirect
 	github.com/shurcooL/graphql v0.0.0-20240915155400-7ee5256398cf // indirect

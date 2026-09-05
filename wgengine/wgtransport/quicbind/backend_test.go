@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -76,6 +77,24 @@ type keyedBind struct {
 	mu     sync.Mutex
 	key    string
 	remote string
+	avoid  [2]uint16 // prevent the host bind taking a reserved test QUIC port
+}
+
+func (b *keyedBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+	for range 16 {
+		fns, actual, err := b.Bind.Open(port)
+		if err != nil {
+			return nil, 0, err
+		}
+		if actual != b.avoid[0] && actual != b.avoid[1] {
+			return fns, actual, nil
+		}
+		_ = b.Bind.Close()
+		if port != 0 {
+			break
+		}
+	}
+	return nil, 0, errors.New("test host bind could not avoid reserved QUIC ports")
 }
 
 func (b *keyedBind) ParseEndpoint(k string) (conn.Endpoint, error) {
@@ -96,6 +115,11 @@ type testPair struct {
 
 func newTestPair(t testing.TB, mode string, options ...func(*Config)) *testPair {
 	t.Helper()
+	h3 := strings.HasPrefix(mode, "http3-")
+	mode = strings.TrimPrefix(mode, "http3-")
+	if mode == "udp" && !supportsIndependentUDP(runtime.GOOS) {
+		t.Skip("mobile/browser clients use the protected magicsock path")
+	}
 	p := new(testPair)
 	var configs [2]Config
 	var pins [2]string
@@ -106,7 +130,10 @@ func newTestPair(t testing.TB, mode string, options ...func(*Config)) *testPair 
 		cert, k, pin := testIdentity(t)
 		pins[i] = pin
 		addresses[i] = freeUDP(t)
-		configs[i] = Config{Version: 1, LocalPublicKey: hex.EncodeToString(pk[:]), Certificate: cert, PrivateKey: k, IO: mode, InitialPacketSize: 1200, QueuePackets: 256}
+		for i > 0 && addresses[i] == addresses[0] {
+			addresses[i] = freeUDP(t)
+		}
+		configs[i] = Config{Version: 2, Payload: "ip", LocalPublicKey: hex.EncodeToString(pk[:]), Certificate: cert, PrivateKey: k, IO: mode, InitialPacketSize: 1200, QueuePackets: 256}
 		if mode == "udp" {
 			configs[i].Listen = addresses[i]
 		}
@@ -119,6 +146,12 @@ func newTestPair(t testing.TB, mode string, options ...func(*Config)) *testPair 
 			pc.Endpoint = addresses[i^1]
 		}
 		configs[i].Peers = []PeerConfig{pc}
+		if h3 {
+			configs[i].HTTP3 = true
+			configs[i].InitialPacketSize = 1400
+			configs[i].HTTP3URL = "https://quic-ip.test/.well-known/masque/ip/*/*/"
+			configs[i].Peers[0].HTTP3URL = configs[i].HTTP3URL
+		}
 		for _, option := range options {
 			option(&configs[i])
 		}
@@ -127,6 +160,13 @@ func newTestPair(t testing.TB, mode string, options ...func(*Config)) *testPair 
 			t.Fatal(err)
 		}
 		p.bases[i] = &keyedBind{Bind: conn.NewDefaultBind(), key: peerKeyString, remote: "127.0.0.1:9"}
+		for j, address := range addresses {
+			a, err := net.ResolveUDPAddr("udp", address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.bases[i].avoid[j] = uint16(a.Port)
+		}
 		listener := new(net.ListenConfig)
 		backend, err := f.New(wgtransport.Host{Bind: p.bases[i], Logf: t.Logf, ListenPacket: listener.ListenPacket, PeerAllowed: func([32]byte) bool { return true }})
 		if err != nil {
@@ -182,7 +222,7 @@ func readOne(t testing.TB, fn conn.ReceiveFunc) []byte {
 }
 
 func TestQUICBidirectionalAndReopen(t *testing.T) {
-	for _, mode := range []string{"udp", "magicsock"} {
+	for _, mode := range []string{"udp", "magicsock", "http3-udp", "http3-magicsock"} {
 		t.Run(mode, func(t *testing.T) {
 			p := newTestPair(t, mode)
 			for cycle := range 2 {
@@ -215,10 +255,13 @@ func TestQUICBidirectionalAndReopen(t *testing.T) {
 }
 
 func TestRealWGAndAWGOverQUIC(t *testing.T) {
+	if !wgtransport.LegacyWGOverQUIC {
+		t.Skip("development-only WG-over-QUIC")
+	}
 	for _, mode := range []string{"udp", "magicsock"} {
 		for _, awg := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/awg=%v", mode, awg), func(t *testing.T) {
-				p := newTestPair(t, mode)
+				p := newTestPair(t, mode, func(c *Config) { c.Version = 1; c.Payload = "wireguard" })
 				var devs [2]*device.Device
 				var tuns [2]*tuntest.ChannelTUN
 				for i := range 2 {
@@ -295,7 +338,7 @@ func TestQUICRejectsWrongIdentityAndUnknownPeer(t *testing.T) {
 func TestQUICPinVerification(t *testing.T) {
 	p := newTestPair(t, "udp")
 	a, b := p.backends[0].factory, p.backends[1].factory
-	state := tls.ConnectionState{Version: tls.VersionTLS13, NegotiatedProtocol: ALPN, PeerCertificates: []*x509.Certificate{b.cert.Leaf}}
+	state := tls.ConnectionState{Version: tls.VersionTLS13, NegotiatedProtocol: a.protocol(), PeerCertificates: []*x509.Certificate{b.cert.Leaf}}
 	if _, err := a.verify(state, &b.local); err != nil {
 		t.Fatal(err)
 	}

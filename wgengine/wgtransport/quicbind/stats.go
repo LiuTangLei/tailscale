@@ -14,6 +14,14 @@ func (f *Factory) Snapshot() map[string]any {
 		out["ip_data_plane"] = b.host.PacketStats()
 	}
 	c := &b.counters
+	out["http3"] = f.cfg.HTTP3
+	out["http3_receive_queue_capacity"] = http3ReceiveQueueCapacity
+	out["http3_requests"] = c.HTTP3Requests.Load()
+	out["http3_public_requests"] = c.HTTP3PublicRequests.Load()
+	out["http3_public_pages"] = c.HTTP3PublicPages.Load()
+	out["http3_tunnels"] = c.HTTP3Tunnels.Load()
+	out["http3_rejected"] = c.HTTP3Rejected.Load()
+	out["http3_datagrams"] = c.HTTP3Datagrams.Load()
 	out["sent_packets"] = c.SentPackets.Load()
 	out["received_packets"] = c.ReceivedPackets.Load()
 	out["send_drops"] = c.SendQueueDrops.Load()

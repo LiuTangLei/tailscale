@@ -15,7 +15,7 @@ import (
 )
 
 func TestNativeIPDataPlaneActualQUIC(t *testing.T) {
-	for _, mode := range []string{"udp", "magicsock"} {
+	for _, mode := range []string{"udp", "magicsock", "http3-udp", "http3-magicsock"} {
 		t.Run(mode, func(t *testing.T) {
 			pair := newTestPair(t, mode, func(c *Config) { c.Version = 2; c.Payload = "ip" })
 			var devices [2]*quicip.Device
@@ -116,7 +116,7 @@ func TestNativeIPDataPlaneActualQUIC(t *testing.T) {
 			}
 			for _, b := range pair.backends {
 				st := b.factory.Snapshot()
-				if st["alpn"] != IPALPN || st["wireguard_encryption"] != false || st["payload"] != "ip" {
+				if st["alpn"] != b.factory.protocol() || st["wireguard_encryption"] != false || st["payload"] != "ip" {
 					t.Fatalf("not native IP: %+v", st)
 				}
 			}
@@ -136,6 +136,7 @@ func TestNativeIPRequiresLiveAuthorization(t *testing.T) {
 func TestNativeIPVersionAndALPNSeparation(t *testing.T) {
 	pair := newTestPair(t, "udp")
 	c := pair.backends[0].factory.cfg
+	c.Version = 1
 	c.Payload = "ip"
 	if _, err := NewFactory(c); err == nil {
 		t.Fatal("legacy config silently switched plaintext format")
