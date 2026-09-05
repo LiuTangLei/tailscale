@@ -33,6 +33,8 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 	"tailscale.com/tstest/integration/testcontrol"
+	"tailscale.com/wgengine/wgtransport"
+	"tailscale.com/wgengine/wgtransport/quicbind"
 )
 
 const maxPayload = 4 << 20
@@ -61,6 +63,9 @@ func run() error {
 	profileName := fs.String("profile", "standard", "standard|awg2|awg3|awg31")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		return err
+	}
+	if os.Args[1] == "identity" {
+		return generateIdentity(*dir)
 	}
 	if fs.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
@@ -96,6 +101,14 @@ func run() error {
 		return err
 	}
 	s := &tsnet.Server{Dir: *dir, Hostname: *hostname, ControlURL: *control, Port: uint16(*port), Logf: log.Printf, UserLogf: log.Printf}
+	var quicFactory *quicbind.Factory
+	if os.Getenv("TS_EXPERIMENTAL_WG_TRANSPORT") == "quic" {
+		quicFactory, err = quicbind.Load(os.Getenv("TS_EXPERIMENTAL_QUIC_CONFIG"))
+		if err != nil {
+			return err
+		}
+		s.Transport = wgtransport.Config{Mode: wgtransport.QUIC, Factory: quicFactory}
+	}
 	defer s.Close()
 	if err := s.Start(); err != nil {
 		return err
@@ -116,7 +129,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	dataServer := &http.Server{Handler: http.HandlerFunc(payloadHandler), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 45 * time.Second, WriteTimeout: 45 * time.Second}
+	tailnetMux := http.NewServeMux()
+	tailnetMux.HandleFunc("/payload", payloadHandler)
+	registerTailnetHandlers(tailnetMux)
+	dataServer := &http.Server{Handler: tailnetMux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 45 * time.Second, WriteTimeout: 45 * time.Second}
 	defer dataServer.Close()
 	go func() {
 		if err := dataServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -128,6 +144,18 @@ func run() error {
 	mux.HandleFunc("/status", n.status)
 	mux.HandleFunc("/profile", n.setProfile)
 	mux.HandleFunc("/probe", n.probe)
+	registerAdminHandlers(mux, n)
+	mux.HandleFunc("/quic", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "GET required", 405)
+			return
+		}
+		if quicFactory == nil {
+			writeJSON(w, map[string]any{"quic": false})
+			return
+		}
+		writeJSON(w, quicFactory.Snapshot())
+	})
 	return serve(ctx, *listen, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// No browser-origin requests or CORS. Mutations need a custom header.
 		if r.Header.Get("Origin") != "" || (r.Method != "GET" && r.Header.Get("X-WG-Lab") != "1") {
@@ -200,6 +228,7 @@ func profile(name string) (ipn.AmneziaWGPrefs, error) {
 }
 
 type node struct {
+	opMu    sync.Mutex // exclusive probes/benchmarks/profile changes; status stays readable
 	server  *tsnet.Server
 	lc      *local.Client
 	mu      sync.Mutex // serialize probes/profile updates, not the data server
@@ -216,14 +245,18 @@ type peerInfo struct {
 	LastHandshake time.Time `json:"lastHandshake"`
 }
 type statusResult struct {
-	State   string       `json:"state"`
-	Profile string       `json:"profile"`
-	IPs     []netip.Addr `json:"ips"`
-	Peers   []peerInfo   `json:"peers"`
+	PublicKey string       `json:"public_key"`
+	State     string       `json:"state"`
+	Profile   string       `json:"profile"`
+	IPs       []netip.Addr `json:"ips"`
+	Peers     []peerInfo   `json:"peers"`
 }
 
 func snapshot(st *ipnstate.Status, name string) statusResult {
 	r := statusResult{State: st.BackendState, Profile: name, IPs: st.TailscaleIPs}
+	if st.Self != nil {
+		r.PublicKey = st.Self.PublicKey.String()
+	}
 	for _, p := range st.Peer {
 		r.Peers = append(r.Peers, peerInfo{Name: p.HostName, IPs: p.TailscaleIPs, Online: p.Online, Direct: p.CurAddr, Relay: p.Relay, Tx: p.TxBytes, Rx: p.RxBytes, LastHandshake: p.LastHandshake})
 	}
@@ -256,18 +289,20 @@ func (n *node) setProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if !n.mu.TryLock() {
+	if !n.opMu.TryLock() {
 		http.Error(w, "operation in progress", 409)
 		return
 	}
-	defer n.mu.Unlock()
+	defer n.opMu.Unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if _, err := n.lc.EditPrefs(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{AmneziaWG: p}, AmneziaWGSet: true}); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	n.mu.Lock()
 	n.profile = r.URL.Query().Get("name")
+	n.mu.Unlock()
 	writeJSON(w, map[string]any{"profile": n.profile, "applied": true})
 }
 
@@ -329,11 +364,11 @@ func (n *node) probe(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", 405)
 		return
 	}
-	if !n.mu.TryLock() {
+	if !n.opMu.TryLock() {
 		http.Error(w, "operation in progress", 409)
 		return
 	}
-	defer n.mu.Unlock()
+	defer n.opMu.Unlock()
 	ip, err := netip.ParseAddr(r.URL.Query().Get("target"))
 	if err != nil {
 		http.Error(w, "invalid target", 400)
@@ -404,7 +439,7 @@ func (n *node) probe(w http.ResponseWriter, r *http.Request) {
 	res.Body.Close()
 	want := payload(size)
 	if readErr != nil || res.StatusCode != 200 || !bytes.Equal(b, want) {
-		http.Error(w, "download payload verification failed", 502)
+		http.Error(w, fmt.Sprintf("download verification failed: status=%d bytes=%d want=%d read=%v", res.StatusCode, len(b), size, readErr), 502)
 		return
 	}
 	result.Download = payloadResult{len(b), digest(b)}

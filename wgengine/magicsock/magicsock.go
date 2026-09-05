@@ -3516,6 +3516,22 @@ var _ conn.Bind = (*connBind)(nil)
 // the ReceiveFuncs, and the maximum expected to be passed to SendBatch.
 //
 // See https://pkg.go.dev/golang.zx2c4.com/wireguard/conn#Bind.BatchSize
+// ReceiveBufferSizes describes the buffers needed by this Bind's receive
+// functions. Linux batching reads GRO aggregates into the last two buffers
+// before splitting individual datagrams into the head. Carrier adapters can
+// preserve this layout without allocating 64 KiB for every batch slot.
+func (c *connBind) ReceiveBufferSizes() []int {
+	sizes := make([]int, c.BatchSize())
+	for i := range sizes {
+		sizes[i] = 2048 // individual outer QUIC datagrams fit here
+	}
+	if runtime.GOOS == "linux" && len(sizes) >= 2 {
+		sizes[len(sizes)-2] = 65535
+		sizes[len(sizes)-1] = 65535
+	}
+	return sizes
+}
+
 func (c *connBind) BatchSize() int {
 	// TODO(raggi): determine by properties rather than hardcoding platform behavior
 	switch runtime.GOOS {

@@ -7,8 +7,10 @@
 package wgtransport
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"strings"
 	"sync"
@@ -22,7 +24,7 @@ type Mode string
 
 const (
 	Native Mode = "native"
-	QUIC   Mode = "quic" // Reserved; this phase deliberately has no QUIC provider.
+	QUIC   Mode = "quic" // Requires an explicitly configured, authenticated provider.
 )
 
 var (
@@ -53,6 +55,10 @@ type Factory interface {
 type Host struct {
 	Bind conn.Bind
 	Logf logger.Logf
+	// ListenPacket creates host-protected outbound UDP sockets (for example
+	// using Tailscale netns marks to avoid recursive exit-node routing). A
+	// provider must not replace this with an unprotected global socket.
+	ListenPacket func(context.Context, string, string) (net.PacketConn, error)
 }
 
 // Backend exposes a WireGuard-compatible Bind and a final shutdown operation.
@@ -102,7 +108,7 @@ func Resolve(c Config, environment string) (Config, error) {
 		return c, nil
 	case QUIC:
 		if isNil(c.Factory) {
-			return Config{}, fmt.Errorf("%w: %q (QUIC-WG is not implemented; refusing native fallback)", ErrUnsupported, c.Mode)
+			return Config{}, fmt.Errorf("%w: %q (no QUIC provider configured; refusing native fallback)", ErrUnsupported, c.Mode)
 		}
 		if c.Factory.Mode() != c.Mode {
 			return Config{}, fmt.Errorf("%w: requested %q, provider implements %q", ErrInvalidConfig, c.Mode, c.Factory.Mode())

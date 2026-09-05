@@ -198,6 +198,7 @@ import (
 	"tailscale.com/util/testenv"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/netstack"
+	"tailscale.com/wgengine/wgtransport"
 )
 
 // Server is an embedded Tailscale server.
@@ -296,6 +297,10 @@ type Server struct {
 	// traffic. If zero, a port is automatically selected. Leave this
 	// field at zero unless you know what you are doing.
 	Port uint16
+
+	// Transport optionally selects a statically configured experimental WG
+	// carrier. The zero value preserves the existing native transport.
+	Transport wgtransport.Config
 
 	// AdvertiseTags specifies tags that should be applied to this node, for
 	// purposes of ACL enforcement. These can be referenced from the ACL policy
@@ -850,6 +855,7 @@ func (s *Server) start() (reterr error) {
 		Tun:           s.Tun,
 		EventBus:      sys.Bus.Get(),
 		ListenPort:    s.Port,
+		Transport:     s.Transport,
 		NetMon:        s.netMon,
 		Dialer:        s.dialer,
 		SetSubsystem:  sys.Set,

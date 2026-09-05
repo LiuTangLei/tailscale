@@ -33,6 +33,7 @@ import (
 	"tailscale.com/net/dns/resolver"
 	"tailscale.com/net/ipset"
 	"tailscale.com/net/netmon"
+	"tailscale.com/net/netns"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/routemanager"
 	"tailscale.com/net/sockstats"
@@ -64,6 +65,7 @@ import (
 	"tailscale.com/wgengine/wgint"
 	"tailscale.com/wgengine/wglog"
 	"tailscale.com/wgengine/wgtransport"
+	"tailscale.com/wgengine/wgtransport/quicbind"
 )
 
 type userspaceEngine struct {
@@ -175,7 +177,7 @@ type Config struct {
 	Tun tun.Device
 
 	// Transport selects an experimental outer carrier independently of AWG.
-	// Zero preserves the native Bind. A QUIC provider is not included yet.
+	// Zero preserves the native Bind. QUIC requires pinned peer configuration.
 	Transport wgtransport.Config
 
 	// IsTAP is whether Tun is actually a TAP (Layer 2) device that'll
@@ -308,7 +310,23 @@ func NewFakeUserspaceEngine(logf logger.Logf, opts ...any) (Engine, error) {
 // NewUserspaceEngine creates the named tun device and returns a
 // Tailscale Engine running on it.
 func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) {
-	transportConfig, transportErr := wgtransport.Resolve(conf.Transport, envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
+	transportChoice := conf.Transport
+	mode := transportChoice.Mode
+	if mode == "" {
+		mode = wgtransport.Mode(envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
+	}
+	if mode == wgtransport.QUIC && transportChoice.Factory == nil {
+		path := envknob.String("TS_EXPERIMENTAL_QUIC_CONFIG")
+		if path == "" {
+			return nil, fmt.Errorf("%w: quic requires TS_EXPERIMENTAL_QUIC_CONFIG with trusted peer pins; native fallback is forbidden", wgtransport.ErrUnsupported)
+		}
+		factory, err := quicbind.Load(path)
+		if err != nil {
+			return nil, fmt.Errorf("wgengine: QUIC configuration: %w", err)
+		}
+		transportChoice.Factory = factory
+	}
+	transportConfig, transportErr := wgtransport.Resolve(transportChoice, envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
 	if transportErr != nil {
 		return nil, transportErr
 	}
@@ -520,7 +538,10 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 
 	// Keep carrier selection outside the WG/AWG cryptographic engine. Native
 	// returns the original magicsock Bind, including its optional interfaces.
-	e.transport, err = wgtransport.New(wgtransport.Host{Bind: e.magicConn.Bind(), Logf: e.logf}, transportConfig)
+	e.transport, err = wgtransport.New(wgtransport.Host{
+		Bind: e.magicConn.Bind(), Logf: e.logf,
+		ListenPacket: netns.Listener(e.logf, e.netMon).ListenPacket,
+	}, transportConfig)
 	if err != nil {
 		return nil, fmt.Errorf("wgengine: create transport: %w", err)
 	}
