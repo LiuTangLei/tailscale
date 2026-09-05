@@ -225,6 +225,9 @@ type LocalBackend struct {
 	// Serializes daemon-owned transport profile writes and revision checks.
 	// Never hold b.mu while acquiring it or performing filesystem operations.
 	transportProfileMu sync.Mutex
+	// Immutable for this engine lifetime; used while b.mu is held, without
+	// recursively querying engine/LocalBackend status from preference checks.
+	packetTransportMode string
 	// Elements that are thread-safe or constant after construction.
 	ctx         context.Context         // canceled by [LocalBackend.Shutdown]
 	ctxCancel   context.CancelCauseFunc // cancels ctx
@@ -587,25 +590,28 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 			"Bytes sent to peers on Serve connections for Tailscale Services, labeled by Tailscale Service name."),
 	}
 
+	var transportStatus ipnstate.StatusBuilder
+	e.UpdateStatus(&transportStatus)
 	b := &LocalBackend{
-		ctx:          ctx,
-		ctxCancel:    cancel,
-		logf:         logf,
-		keyLogf:      logger.LogOnChange(logf, 5*time.Minute, clock.Now),
-		statsLogf:    logger.LogOnChange(logf, 5*time.Minute, clock.Now),
-		sys:          sys,
-		polc:         sys.PolicyClientOrDefault(),
-		health:       sys.HealthTracker.Get(),
-		metrics:      m,
-		e:            e,
-		dialer:       dialer,
-		store:        store,
-		pm:           pm,
-		backendLogID: logID,
-		state:        ipn.NoState,
-		em:           newExpiryManager(logf, sys.Bus.Get()),
-		loginFlags:   loginFlags,
-		clock:        clock,
+		packetTransportMode: transportStatus.Status().PacketTransport,
+		ctx:                 ctx,
+		ctxCancel:           cancel,
+		logf:                logf,
+		keyLogf:             logger.LogOnChange(logf, 5*time.Minute, clock.Now),
+		statsLogf:           logger.LogOnChange(logf, 5*time.Minute, clock.Now),
+		sys:                 sys,
+		polc:                sys.PolicyClientOrDefault(),
+		health:              sys.HealthTracker.Get(),
+		metrics:             m,
+		e:                   e,
+		dialer:              dialer,
+		store:               store,
+		pm:                  pm,
+		backendLogID:        logID,
+		state:               ipn.NoState,
+		em:                  newExpiryManager(logf, sys.Bus.Get()),
+		loginFlags:          loginFlags,
+		clock:               clock,
 	}
 
 	sys.NoiseRoundTripper.Set(noiseRoundTripper{b})
@@ -4976,6 +4982,9 @@ func (b *LocalBackend) checkPrefsLocked(p *ipn.Prefs) error {
 		errs = append(errs, err)
 	}
 	if err := validateAmneziaWGPrefsChange(b.pm.CurrentPrefs(), p); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateAWGForTransport(b.packetTransportMode, b.pm.CurrentPrefs(), p); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

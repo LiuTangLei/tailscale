@@ -123,6 +123,12 @@ func TestManagedTransportLifecycle(t *testing.T) {
 			if st.ActiveMode != mode || st.PendingRestart || st.Identity.PublicKey != cards[i].PublicKey {
 				t.Fatalf("restart did not apply: %+v", st)
 			}
+			if mode != "native" {
+				_, err := clients[i].EditPrefs(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{AmneziaWG: ipn.AmneziaWGPrefs{JC: 1, JMin: 50, JMax: 100}}, AmneziaWGSet: true})
+				if err == nil {
+					t.Fatal("legacy AWG preference update accepted by active QUIC engine")
+				}
+			}
 			pingCtx, pingCancel := context.WithTimeout(ctx, 8*time.Second)
 			pong, err := clients[i].Ping(pingCtx, ips[i^1], tailcfg.PingTSMP)
 			pingCancel()

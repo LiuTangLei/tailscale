@@ -97,6 +97,7 @@ def main():
     p.add_argument("--a-name", default="sg", help="report label and test-only HTTP authority")
     p.add_argument("--b-name", default="zjg", help="report label and test-only HTTP authority")
     p.add_argument("--a-hostname", default="sg2222", help="expected SSH hostname; mismatch aborts")
+    p.add_argument("--a-via", help="optional SSH jump host for host A management only; data-path addresses stay unchanged")
     p.add_argument("--b-hostname", default="zjg", help="expected SSH hostname; mismatch aborts")
     p.add_argument("--latency-samples", type=int, default=10, help="encrypted idle RTT samples per direction, 0 disables")
     p.add_argument("--variants", default="native,quic-ip-udp,http3-ip-udp,http3-ip-magicsock")
@@ -177,7 +178,9 @@ def main():
             for name, host, expected, address in [(args.a_name, args.sg, args.a_hostname, args.sg_address), (args.b_name, args.zjg, args.b_hostname, args.zjg_address)]:
                 node = {"name": name, "host": host, "address": address, "dir": f"/var/tmp/quicwg-lab-{ident}-{name}",
                         "socket": str(temp / name), "admin": 18441}
-                ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12"]
+                ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
+                if args.a_via and name == args.a_name:
+                    ssh += ["-J", args.a_via]
                 actual = run(ssh + [host, "hostname"]).stdout.strip()
                 if actual != expected:
                     raise RuntimeError(f"wrong host: {actual}, expected {expected}")
