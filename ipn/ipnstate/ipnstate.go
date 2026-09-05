@@ -29,6 +29,11 @@ import (
 
 // Status represents the entire state of the IPN network.
 type Status struct {
+	// Running packet-engine metadata; these never describe a pending profile.
+	PacketTransport         string `json:",omitempty"`
+	PacketTransportSource   string `json:",omitempty"`
+	PacketTransportRevision string `json:",omitempty"`
+	PacketTransportManaged  bool   `json:",omitempty"`
 	// Version is the daemon's long version (see version.Long).
 	Version string
 

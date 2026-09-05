@@ -58,6 +58,7 @@ func run() error {
 	publicSTUN := fs.Bool("public-stun", false, "add public Tailscale STUN probes to the isolated relay map")
 	control := fs.String("control", "http://127.0.0.1:18440", "isolated test control URL")
 	dir := fs.String("dir", "", "isolated node state directory (required for node)")
+	cliSocket := fs.String("localapi-socket", "", "optional private Unix socket inside --dir for actual CLI tests")
 	hostname := fs.String("hostname", "wgcompat-lab", "test node hostname")
 	port := fs.Uint("port", 42641, "test node UDP port, separate from production")
 	profileName := fs.String("profile", "standard", "standard|awg2|awg3|awg31")
@@ -125,6 +126,11 @@ func run() error {
 	if _, err := s.Up(startup); err != nil {
 		return fmt.Errorf("bring up test node: %w", err)
 	}
+	closeCLI, err := serveCLISocket(ctx, *dir, *cliSocket, lc)
+	if err != nil {
+		return err
+	}
+	defer closeCLI()
 	ln, err := s.Listen("tcp", ":18080")
 	if err != nil {
 		return err

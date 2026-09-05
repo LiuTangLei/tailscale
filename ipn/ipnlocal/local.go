@@ -222,6 +222,9 @@ var (
 // into LocalBackend to advance the state machine, and advancing the
 // state machine generates events back out to zero or more components.
 type LocalBackend struct {
+	// Serializes daemon-owned transport profile writes and revision checks.
+	// Never hold b.mu while acquiring it or performing filesystem operations.
+	transportProfileMu sync.Mutex
 	// Elements that are thread-safe or constant after construction.
 	ctx         context.Context         // canceled by [LocalBackend.Shutdown]
 	ctxCancel   context.CancelCauseFunc // cancels ctx

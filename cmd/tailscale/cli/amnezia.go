@@ -26,16 +26,29 @@ import (
 var amneziaCmd = &ffcli.Command{
 	Name:       "amnezia-wg",
 	ShortUsage: "tailscale amnezia-wg [subcommand]",
-	ShortHelp:  "Configure Amnezia-WG parameters",
-	LongHelp: `"tailscale awg" configures Amnezia-WG parameters. The historical
-"tailscale amnezia-wg" command remains available as a compatibility alias.
-Amnezia-WG is backward compatible with standard WireGuard when all parameters are zero.
+	ShortHelp:  "Manage native WG/AWG and experimental QUIC transports",
+	LongHelp: `"tailscale awg" opens an interactive transport menu in a terminal.
+Without a terminal it prints usage. "tailscale amnezia-wg" remains an alias,
+and existing set/get/sync/reset/validate commands keep their AWG meaning.
 
-⚠️  CRITICAL: Certain parameters require network-wide consistency!
-- H1-H4, S1-S4 and HeaderProtectionKey: ALL nodes must use IDENTICAL values
-- I1-I5, JC, JMin, JMax and v3 padding/timing ranges: Can differ between nodes
+Production modes:
+  native    Existing WG/AWG. Zero AWG parameters mean standard WireGuard.
+  quic-ip   Native IP over QUIC; no inner WireGuard or AWG parameters.
+  http3-ip  Experimental native IP over HTTP/3; not a Chrome fingerprint clone.
+WG-over-QUIC is development-only and is not offered by this command.
 
-Use 'tailscale awg get' on one node and 'tailscale awg set' on others to maintain consistency for required parameters.`,
+Use status to distinguish the active mode from a staged next-start mode.
+transport changes never restart the daemon automatically. Environment or
+embedding overrides must be removed separately before using managed profiles.
+
+QUIC needs no client IP certificate and no AWG parameter sync, but peers still
+need trusted PUBLIC identity cards. Use identity --init, identity, peer add,
+then transport --yes quic-ip; restart deliberately and check status again.
+Never copy the private daemon profile file to another node.
+
+For native AWG only, communicating nodes must agree on H1-H4, S1-S4 and the
+header-protection key. Existing awg sync continues to manage those parameters.`,
+	Exec: runAWGRoot,
 	Subcommands: []*ffcli.Command{
 		{
 			Name:       "sync",
@@ -89,6 +102,11 @@ This helps identify potential connectivity issues before they occur.`,
 After resetting, you will be prompted to restart tailscaled.`,
 			Exec: runAmneziaWGReset,
 		},
+		transportStatusCommand(),
+		transportCommand(),
+		identityCommand(),
+		peerCommand(),
+		doctorCommand(),
 	},
 }
 
@@ -96,8 +114,9 @@ After resetting, you will be prompted to restart tailscaled.`,
 var awgCmd = &ffcli.Command{
 	Name:        "awg",
 	ShortUsage:  "tailscale awg [subcommand]",
-	ShortHelp:   "Configure Amnezia-WG parameters",
+	ShortHelp:   "Manage native WG/AWG and experimental QUIC transports",
 	LongHelp:    amneziaCmd.LongHelp,
+	Exec:        runAWGRoot,
 	Subcommands: cloneAWGSubcommands(amneziaCmd.Subcommands),
 }
 

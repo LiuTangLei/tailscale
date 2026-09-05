@@ -5,13 +5,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"net/http"
 	"slices"
-	"time"
 
 	"tailscale.com/tailcfg"
 )
@@ -20,25 +15,11 @@ import (
 // or registering them with a production control plane. Otherwise a relay-only
 // test map reports IPv4CanSend=false and repeatedly triggers magicsock rebinds.
 func addPublicSTUN(ctx context.Context, dst *tailcfg.DERPMap) error {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://controlplane.tailscale.com/derpmap/default", nil)
+	public, err := loadLabSTUNMap(ctx)
 	if err != nil {
 		return err
 	}
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("load public STUN map: %w", err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("public STUN map HTTP %d", res.StatusCode)
-	}
-	var public tailcfg.DERPMap
-	if err := json.NewDecoder(io.LimitReader(res.Body, 2<<20)).Decode(&public); err != nil {
-		return err
-	}
-	return attachSTUNNodes(dst, &public)
+	return attachSTUNNodes(dst, public)
 }
 
 func attachSTUNNodes(dst, public *tailcfg.DERPMap) error {

@@ -89,6 +89,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--local-binary", type=Path, required=True)
     p.add_argument("--linux-binary", type=Path, required=True)
+    p.add_argument("--managed-cli", type=Path, help="test actual CLI identity/trust/staging and restart, without transport environment overrides")
     p.add_argument("--sg", "--a-host", dest="sg", default="root@sg.yesican.top")
     p.add_argument("--zjg", "--b-host", dest="zjg", default="root@173.249.215.87")
     p.add_argument("--sg-address", "--a-address", dest="sg_address", default="96.9.212.12")
@@ -136,6 +137,8 @@ def main():
         p.error("independent UDP mode does not use DERP; test magicsock instead")
     if args.profile != "standard" and any(v.startswith(("quic-ip-", "http3-ip-")) for v in variants):
         p.error("native QUIC IP rejects AWG profiles; use --profile=standard")
+    if args.managed_cli and (not args.managed_cli.is_file() or args.profile != "standard" or any(v not in ("native", "quic-ip-magicsock", "http3-ip-magicsock") for v in variants)):
+        p.error("managed CLI tests require a real CLI binary, standard profile and native/magicsock modes")
     ident = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
     result = {"run": ident, "linux_sha256": hashlib.sha256(args.linux_binary.read_bytes()).hexdigest(),
               "profile": args.profile, "force_derp": args.force_derp,
@@ -159,7 +162,7 @@ def main():
             cmd += ["--public-stun"]
         processes.append(subprocess.Popen(cmd, stdout=log, stderr=log))
         try:
-            for _ in range(60):
+            for _ in range(300):
                 if processes[0].poll() is not None:
                     log.seek(0)
                     raise RuntimeError("control failed: " + log.read()[-2000:])
@@ -181,7 +184,9 @@ def main():
                     "-R", f"127.0.0.1:{control_port}:127.0.0.1:{control_port}",
                     "-R", f"127.0.0.1:{derp_port}:127.0.0.1:{derp_port}", host], stdout=subprocess.DEVNULL, stderr=log)
                 processes.append(tunnel)
-                for _ in range(60):
+                # SSH may finish key exchange after ConnectTimeout's TCP phase;
+                # a six-second socket wait falsely failed on this real WAN.
+                for _ in range(300):
                     if tunnel.poll() is not None:
                         raise RuntimeError(f"SSH tunnel failed: {name}")
                     if Path(node["socket"]).exists():
@@ -199,6 +204,9 @@ def main():
                 run(["scp", "-C", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}",
                      str(args.linux_binary.resolve()), f"{host}:{node['dir']}/lab"], timeout=120)
                 remote(node, f"chmod 700 {node['dir']}/lab")
+                if args.managed_cli:
+                    run(["scp", "-C", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}", str(args.managed_cli.resolve()), f"{host}:{node['dir']}/cli"], timeout=120)
+                    remote(node, f"chmod 700 {node['dir']}/cli")
                 node["identity"] = json.loads(remote(node, shlex.join([node["dir"] + "/lab", "identity", "--dir", node["dir"] + "/tls"])).stdout)
 
             def stop_current():
@@ -210,7 +218,9 @@ def main():
             def start(variant, index, profile):
                 for i, node in enumerate(nodes):
                     env = ["TS_NO_LOGS_NO_SUPPORT=true", f"TS_DEBUG_ALWAYS_USE_DERP={'true' if args.force_derp else 'false'}"]
-                    if variant == "native":
+                    if args.managed_cli:
+                        pass  # mode and pinned identity come from the daemon-owned profile
+                    elif variant == "native":
                         env += ["TS_EXPERIMENTAL_WG_TRANSPORT=native"]
                     else:
                         h3 = variant.startswith("http3-ip-")
@@ -242,6 +252,8 @@ def main():
                     command = ["systemd-run", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=300", "--property=TimeoutStopSec=15", "--property=Restart=no",
                                "env"] + env + [node["dir"] + "/lab", "node", "--dir", node["dir"] + "/state", "--hostname", "quicwg-" + node["name"],
                                 "--control", f"http://127.0.0.1:{control_port}", "--listen", "127.0.0.1:18441", "--port", "42641", "--profile", profile]
+                    if args.managed_cli:
+                        command += ["--localapi-socket", node["dir"] + "/state/localapi.sock"]
                     remote(node, shlex.join(command))
                     node["unit"] = unit
                     units.append((node, unit))
@@ -253,18 +265,49 @@ def main():
                     time.sleep(1)
                 raise RuntimeError(f"nodes not ready for {variant}: {statuses}")
 
+            def cli(node, *arguments, json_result=False):
+                command = [node["dir"] + "/cli", "--socket", node["dir"] + "/state/localapi.sock", "awg"] + list(arguments)
+                value = remote(node, shlex.join(command), timeout=25).stdout
+                return json.loads(value) if json_result else value
+
+            def stage_managed(variant):
+                desired = "native" if variant == "native" else "http3-ip" if variant.startswith("http3") else "quic-ip"
+                evidence = {}
+                for node in nodes:
+                    before = cli(node, "status", "--json", json_result=True)
+                    cli(node, "transport", "--yes", desired)
+                    after = cli(node, "status", "--json", json_result=True)
+                    if after["active_mode"] != before["active_mode"] or after["desired_mode"] != desired:
+                        raise RuntimeError("CLI staging incorrectly claimed a live mode switch")
+                    evidence[node["name"]] = after
+                return evidence
+
             print("BOOTSTRAP isolated identities", flush=True)
             statuses = start("native", "bootstrap", "standard")
             for i, node in enumerate(nodes):
                 node["public_key"] = statuses[i]["public_key"]
                 node["test_ip"] = next(x for x in statuses[i]["ips"] if ":" not in x)
                 node["test_ipv6"] = next((x for x in statuses[i]["ips"] if ":" in x), None)
+            if args.managed_cli:
+                cards = [cli(n, "identity", "--init", json_result=True) for n in nodes]
+                for i, node in enumerate(nodes):
+                    cli(node, "peer", "add", "--yes", json.dumps(cards[i ^ 1], separators=(",", ":")))
+                    cli(node, "doctor")
+                result["cli_setup"] = stage_managed(variants[0])
+                checkpoint()
             stop_current()
             for index, variant in enumerate(variants):
                 print(f"START {variant}/{args.profile}", flush=True)
                 phase = {"variant": variant, "probes": [], "benchmarks": [], "passed": False}
                 result["phases"].append(phase)
                 statuses = start(variant, index, args.profile)
+                if args.managed_cli:
+                    phase["cli_status"] = {n["name"]: cli(n, "status", "--json", json_result=True) for n in nodes}
+                    for value in phase["cli_status"].values():
+                        expected = "native" if variant == "native" else "http3-ip" if variant.startswith("http3") else "quic-ip"
+                        if value["active_mode"] != expected or value["pending_restart"] or value["source"] != "managed":
+                            raise RuntimeError("managed profile did not activate on actual restart: " + json.dumps(value))
+                    print("CLI mode applied after restart:", variant, flush=True)
                 for i, node in enumerate(nodes):
                     if statuses[i]["public_key"] != node["public_key"]:
                         raise RuntimeError("persisted test node identity changed")
@@ -331,6 +374,8 @@ def main():
                 phase["final_transport"] = {n["name"]: api(n, "/quic") for n in nodes}
                 phase["data_plane_passed"] = True
                 phase["passed"] = all(e["passed"] for e in phase.get("browser", []))
+                if args.managed_cli:
+                    phase["next_start"] = stage_managed(variants[index + 1] if index + 1 < len(variants) else "native")
                 checkpoint()
                 stop_current()
             result["data_plane_passed"] = all(p.get("data_plane_passed", False) for p in result["phases"])

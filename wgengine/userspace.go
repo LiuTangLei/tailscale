@@ -74,25 +74,28 @@ type userspaceEngine struct {
 
 	linkChangeQueue execqueue.ExecQueue
 
-	logf           logger.Logf
-	wgLogger       *wglog.Logger // a wireguard-go logging wrapper
-	reqCh          chan struct{}
-	waitCh         chan struct{} // chan is closed when first Close call completes; contrast with closing bool
-	timeNow        func() mono.Time
-	tundev         *tstun.Wrapper
-	packet         packetEngine
-	packetPolicy   atomic.Pointer[packetPolicy]
-	packetIdentity atomic.Pointer[key.NodePublic]
-	transport      *wgtransport.Manager
-	router         router.Router
-	dialer         *tsdial.Dialer
-	confListenPort uint16 // original conf.ListenPort
-	dns            *dns.Manager
-	magicConn      *magicsock.Conn
-	netMon         *netmon.Monitor
-	health         *health.Tracker
-	netMonOwned    bool                // whether we created netMon (and thus need to close it)
-	controlKnobs   *controlknobs.Knobs // or nil
+	logf              logger.Logf
+	wgLogger          *wglog.Logger // a wireguard-go logging wrapper
+	reqCh             chan struct{}
+	waitCh            chan struct{} // chan is closed when first Close call completes; contrast with closing bool
+	timeNow           func() mono.Time
+	tundev            *tstun.Wrapper
+	packet            packetEngine
+	packetPolicy      atomic.Pointer[packetPolicy]
+	packetIdentity    atomic.Pointer[key.NodePublic]
+	transport         *wgtransport.Manager
+	transportSource   string
+	transportRevision string
+	transportManaged  bool
+	router            router.Router
+	dialer            *tsdial.Dialer
+	confListenPort    uint16 // original conf.ListenPort
+	dns               *dns.Manager
+	magicConn         *magicsock.Conn
+	netMon            *netmon.Monitor
+	health            *health.Tracker
+	netMonOwned       bool                // whether we created netMon (and thus need to close it)
+	controlKnobs      *controlknobs.Knobs // or nil
 
 	// bird is the BIRD integration handle constructed via
 	// [HookNewBird], or nil if [Config.BIRDSocket] was empty or the
@@ -180,6 +183,11 @@ type Config struct {
 	// Transport selects an experimental outer carrier independently of AWG.
 	// Zero preserves the native Bind. QUIC requires pinned peer configuration.
 	Transport wgtransport.Config
+	// Metadata describing the immutable running configuration, not a pending
+	// profile staged by a LocalAPI caller. Embedders may leave these empty.
+	TransportSource   string
+	TransportRevision string
+	TransportManaged  bool // host reloads daemon-managed profile on restart
 
 	// IsTAP is whether Tun is actually a TAP (Layer 2) device that'll
 	// require ethernet headers.
@@ -393,19 +401,33 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		rtr = router.ConsolidatingRoutes(logf, rtr)
 	}
 
+	transportSource := conf.TransportSource
+	if transportSource == "" {
+		switch {
+		case conf.Transport.Mode != "" || conf.Transport.Factory != nil:
+			transportSource = "embedded"
+		case envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT") != "":
+			transportSource = "environment"
+		default:
+			transportSource = "default"
+		}
+	}
 	e := &userspaceEngine{
-		eventBus:       conf.EventBus,
-		timeNow:        mono.Now,
-		logf:           logf,
-		reqCh:          make(chan struct{}, 1),
-		waitCh:         make(chan struct{}),
-		tundev:         tsTUNDev,
-		router:         rtr,
-		dialer:         conf.Dialer,
-		confListenPort: conf.ListenPort,
-		controlKnobs:   conf.ControlKnobs,
-		reconfigureVPN: conf.ReconfigureVPN,
-		health:         conf.HealthTracker,
+		transportSource:   transportSource,
+		transportRevision: conf.TransportRevision,
+		transportManaged:  conf.TransportManaged,
+		eventBus:          conf.EventBus,
+		timeNow:           mono.Now,
+		logf:              logf,
+		reqCh:             make(chan struct{}, 1),
+		waitCh:            make(chan struct{}),
+		tundev:            tsTUNDev,
+		router:            rtr,
+		dialer:            conf.Dialer,
+		confListenPort:    conf.ListenPort,
+		controlKnobs:      conf.ControlKnobs,
+		reconfigureVPN:    conf.ReconfigureVPN,
+		health:            conf.HealthTracker,
 	}
 
 	if buildfeatures.HasBird && conf.BIRDSocket != "" {
@@ -1289,6 +1311,14 @@ func (e *userspaceEngine) SetSelfNode(self tailcfg.NodeView) {
 }
 
 func (e *userspaceEngine) UpdateStatus(sb *ipnstate.StatusBuilder) {
+	if e.transport != nil {
+		sb.MutateStatus(func(s *ipnstate.Status) {
+			s.PacketTransport = string(e.transport.Mode())
+			s.PacketTransportSource = e.transportSource
+			s.PacketTransportRevision = e.transportRevision
+			s.PacketTransportManaged = e.transportManaged
+		})
+	}
 	st, err := e.getStatus()
 	if err != nil {
 		e.logf("wgengine: getStatus: %v", err)

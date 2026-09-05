@@ -198,6 +198,7 @@ import (
 	"tailscale.com/util/testenv"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/netstack"
+	"tailscale.com/wgengine/transportprofile"
 	"tailscale.com/wgengine/wgtransport"
 )
 
@@ -851,18 +852,35 @@ func (s *Server) start() (reterr error) {
 
 	s.dialer = &tsdial.Dialer{Logf: tsLogf} // mutated below (before used)
 	s.dialer.SetBus(sys.Bus.Get())
+	transport := s.Transport
+	transportSource, transportRevision := "", "0"
+	transportManaged := transport.Mode == "" && transport.Factory == nil
+	if transportManaged && os.Getenv("TS_EXPERIMENTAL_WG_TRANSPORT") == "" {
+		var loadErr error
+		transport, transportRevision, loadErr = transportprofile.LoadForStart(s.rootPath)
+		if loadErr != nil {
+			return fmt.Errorf("packet transport profile: %w", loadErr)
+		}
+		transportSource = "default"
+		if transportRevision != "0" {
+			transportSource = "managed"
+		}
+	}
 	eng, err := wgengine.NewUserspaceEngine(tsLogf, wgengine.Config{
-		Tun:           s.Tun,
-		EventBus:      sys.Bus.Get(),
-		ListenPort:    s.Port,
-		Transport:     s.Transport,
-		NetMon:        s.netMon,
-		Dialer:        s.dialer,
-		SetSubsystem:  sys.Set,
-		ControlKnobs:  sys.ControlKnobs(),
-		HealthTracker: sys.HealthTracker.Get(),
-		ExtraRootCAs:  sys.ExtraRootCAs,
-		Metrics:       sys.UserMetricsRegistry(),
+		Tun:               s.Tun,
+		EventBus:          sys.Bus.Get(),
+		ListenPort:        s.Port,
+		Transport:         transport,
+		TransportSource:   transportSource,
+		TransportRevision: transportRevision,
+		TransportManaged:  transportManaged,
+		NetMon:            s.netMon,
+		Dialer:            s.dialer,
+		SetSubsystem:      sys.Set,
+		ControlKnobs:      sys.ControlKnobs(),
+		HealthTracker:     sys.HealthTracker.Get(),
+		ExtraRootCAs:      sys.ExtraRootCAs,
+		Metrics:           sys.UserMetricsRegistry(),
 	})
 	if err != nil {
 		return err
