@@ -232,6 +232,12 @@ func renderTransportStatus(status ipn.TransportControlStatus, out io.Writer, jso
 		fmt.Fprintf(out, "  Identity: %s (%s)\n", status.Identity.Name, status.Identity.PublicKey)
 	}
 	fmt.Fprintf(out, "  Trusted peers: %d\n", len(status.Peers))
+	if !status.MixedPeerSupport {
+		fmt.Fprintln(out, "  Concurrent native/QUIC peers: not supported by this build")
+	}
+	if len(status.UnconfiguredPeers) != 0 {
+		fmt.Fprintf(out, "  Routable peers without QUIC identity: %d (QUIC activation is blocked)\n", len(status.UnconfiguredPeers))
+	}
 	if status.AWGConfigured {
 		fmt.Fprintln(out, "  AWG configured: yes")
 		if transportModeUsesQUIC(status.DesiredMode) || transportModeUsesQUIC(status.ActiveMode) {

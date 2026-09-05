@@ -55,6 +55,8 @@ func (b *LocalBackend) transportStatusLocked() (ipn.TransportControlStatus, erro
 	s.Revision = rev
 	s.Identity = p.Identity
 	s.Peers = p.Public(rev).Peers
+	s.MixedPeerSupport = false
+	s.UnconfiguredPeers = b.transportPeerCoverage(p)
 	if s.Source == "environment" || s.Source == "embedded" {
 		s.DesiredMode = s.ActiveMode
 		s.Warnings = append(s.Warnings, "The running transport is explicitly configured outside this CLI. Remove that override before staging a mode; no service configuration is edited automatically.")
@@ -67,6 +69,12 @@ func (b *LocalBackend) transportStatusLocked() (ipn.TransportControlStatus, erro
 	}
 	if p.Identity != nil && p.LocalKey != "" && "nodekey:"+p.LocalKey != s.LocalPublicKey {
 		s.Warnings = append(s.Warnings, "Stored transport identity belongs to a different node/profile; QUIC activation is blocked.")
+	}
+	if p.Mode != "native" || (s.ActiveMode != "native" && s.ActiveMode != "unknown") {
+		s.Warnings = append(s.Warnings, "QUIC is a node-wide data plane in this build; native communication with old peers does not run concurrently. A trusted identity card is not evidence that the peer enabled the same protocol.")
+		if len(s.UnconfiguredPeers) != 0 {
+			s.Warnings = append(s.Warnings, fmt.Sprintf("%d routable peers are missing QUIC identity configuration. Control-plane online status does not prove their data-plane reachability.", len(s.UnconfiguredPeers)))
+		}
 	}
 	if p.Mode == "http3-ip" {
 		s.Warnings = append(s.Warnings, "HTTP/3 is experimental, not a Chrome fingerprint clone. The generated .invalid authority is private and authenticated by a pinned key, not a public domain certificate.")
@@ -118,6 +126,9 @@ func (b *LocalBackend) ConfigureTransport(ctx context.Context, req ipn.Transport
 	}
 	p, err = transportprofile.Apply(p, req, s.LocalPublicKey)
 	if err != nil {
+		return s, err
+	}
+	if err := b.checkTransportPeerCoverage(p); err != nil {
 		return s, err
 	}
 	if req.Action == "validate" {

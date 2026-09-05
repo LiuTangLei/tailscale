@@ -8,6 +8,7 @@ package quicbind
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
@@ -21,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -245,6 +247,12 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	if err := validCertificate(leaf); err != nil {
 		return nil, err
 	}
+	// tls.LoadX509KeyPair verifies file-backed pairs. Embedded callers can
+	// construct tls.Certificate directly, so validate the same invariant here
+	// before advertising an unusable identity or starting network workers.
+	if err := validateLocalCertificateKey(cert, leaf); err != nil {
+		return nil, err
+	}
 	cert.Leaf = leaf
 	f := &Factory{cfg: c, local: local, cert: cert, peers: make(map[[32]byte]peerConfig), byPin: make(map[[32]byte][32]byte), http3URL: h3URL}
 	privateDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
@@ -317,9 +325,21 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	return f, nil
 }
 
+func validateLocalCertificateKey(cert tls.Certificate, leaf *x509.Certificate) error {
+	signer, ok := cert.PrivateKey.(crypto.Signer)
+	if !ok || signer == nil || (reflect.ValueOf(signer).Kind() == reflect.Pointer && reflect.ValueOf(signer).IsNil()) {
+		return errors.New("QUIC TLS identity requires a signing private key")
+	}
+	public, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil || !bytes.Equal(public, leaf.RawSubjectPublicKeyInfo) {
+		return errors.New("QUIC TLS certificate and private key do not match")
+	}
+	return nil
+}
+
 func validCertificate(cert *x509.Certificate) error {
 	now := time.Now()
-	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+	if now.Before(cert.NotBefore) || !now.Before(cert.NotAfter) {
 		return errors.New("QUIC certificate is not currently valid")
 	}
 	if len(cert.RawSubjectPublicKeyInfo) == 0 {

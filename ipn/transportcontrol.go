@@ -13,20 +13,30 @@ type TransportPeer struct {
 	HTTP3URL   string `json:"http3_url,omitempty"`
 }
 
+// TransportUnconfiguredPeer identifies a routable Tailnet peer for which the
+// managed QUIC profile has no authenticated transport identity. It is not a
+// claim about the peer's software version or protocol support.
+type TransportUnconfiguredPeer struct {
+	PublicKey string `json:"public_key"`
+	Name      string `json:"name,omitempty"`
+}
+
 // TransportControlStatus separates the running engine from the next-start
 // profile. A successful mutation never implies a running mode switch.
 type TransportControlStatus struct {
-	ActiveMode     string          `json:"active_mode"`
-	DesiredMode    string          `json:"desired_mode"`
-	PendingRestart bool            `json:"pending_restart"`
-	Available      bool            `json:"available"`
-	Source         string          `json:"source"`
-	Revision       string          `json:"revision"`
-	LocalPublicKey string          `json:"local_public_key,omitempty"`
-	Identity       *TransportPeer  `json:"identity,omitempty"`
-	Peers          []TransportPeer `json:"peers"`
-	AWGConfigured  bool            `json:"awg_configured"`
-	Warnings       []string        `json:"warnings,omitempty"`
+	ActiveMode        string                      `json:"active_mode"`
+	DesiredMode       string                      `json:"desired_mode"`
+	PendingRestart    bool                        `json:"pending_restart"`
+	Available         bool                        `json:"available"`
+	Source            string                      `json:"source"`
+	Revision          string                      `json:"revision"`
+	LocalPublicKey    string                      `json:"local_public_key,omitempty"`
+	Identity          *TransportPeer              `json:"identity,omitempty"`
+	Peers             []TransportPeer             `json:"peers"`
+	AWGConfigured     bool                        `json:"awg_configured"`
+	Warnings          []string                    `json:"warnings,omitempty"`
+	MixedPeerSupport  bool                        `json:"mixed_peer_support"`
+	UnconfiguredPeers []TransportUnconfiguredPeer `json:"unconfigured_peers,omitempty"`
 }
 
 // TransportControlRequest is an explicit local mutation. ExpectedRevision is

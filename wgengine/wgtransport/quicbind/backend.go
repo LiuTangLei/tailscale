@@ -52,15 +52,16 @@ type Counters struct {
 }
 
 type Backend struct {
-	factory    *Factory
-	host       wgtransport.Host
-	bind       carrierBind
-	mu         sync.Mutex
-	closed     bool
-	active     atomic.Pointer[generation]
-	identityOK atomic.Bool
-	networkUp  atomic.Bool
-	counters   Counters
+	factory       *Factory
+	host          wgtransport.Host
+	bind          carrierBind
+	mu            sync.Mutex
+	closed        bool
+	active        atomic.Pointer[generation]
+	identityOK    atomic.Bool
+	identityEpoch atomic.Uint64 // invalidates queued work across local identity changes
+	networkUp     atomic.Bool
+	counters      Counters
 }
 type carrierBind struct{ b *Backend }
 
@@ -83,12 +84,15 @@ type generation struct {
 }
 
 type received struct {
-	data []byte
-	ep   *endpoint
+	data  []byte
+	ep    *endpoint
+	peer  *peer
+	stamp lifecycleStamp
 }
 type packetBuffer struct {
 	small [2048]byte
 	data  []byte
+	stamp lifecycleStamp
 }
 
 var packetPool = sync.Pool{New: func() any { return new(packetBuffer) }}
@@ -119,6 +123,7 @@ type peer struct {
 	session          *session
 	dialing          chan struct{}
 	disabled         atomic.Bool
+	epoch            atomic.Uint64 // changes on explicit reset/revocation, not ordinary reconnect
 	nextID           atomic.Uint32
 }
 type datagramChannel interface {
@@ -134,6 +139,7 @@ type session struct {
 	fragmentMu sync.Mutex
 	frames     reassembler
 	preferred  bool
+	stamp      lifecycleStamp
 }
 
 func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
@@ -173,6 +179,9 @@ func (b *Backend) Close() error        { return b.stop(true) }
 func (b *Backend) LocalIdentityChanged(k [32]byte) {
 	valid := k == b.factory.local
 	old := b.identityOK.Swap(valid)
+	if old != valid {
+		b.identityEpoch.Add(1)
+	}
 	if old && !valid {
 		b.resetConnections("local identity changed")
 	}
@@ -227,6 +236,7 @@ func (p *peer) publishState(state wgtransport.SessionState) {
 
 func (p *peer) closeSession(reason string) {
 	p.mu.Lock()
+	p.epoch.Add(1) // queued packets belong to the pre-reset peer, even if re-added
 	s := p.session
 	p.session = nil
 	p.mu.Unlock()
@@ -437,6 +447,7 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 		return nil
 	}
 	p.sendMu.Unlock()
+	stamp := p.lifecycleStamp()
 	for _, buf := range bufs {
 		data := buf[offset:]
 		if g.txBytes.Add(int64(len(data))) > packetBudget {
@@ -445,6 +456,7 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 			return ErrQueueFull
 		}
 		packet := acquirePacket(data)
+		packet.stamp = stamp
 		select {
 		case <-g.ctx.Done():
 			g.txBytes.Add(-int64(len(data)))
@@ -557,10 +569,10 @@ func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChann
 		return nil
 	}
 	preferred := (bytes.Compare(p.g.b.factory.local[:], p.cfg.key[:]) < 0) == outgoing
-	ns := &session{q: q, dgram: channel, preferred: preferred}
+	ns := &session{q: q, dgram: channel, preferred: preferred, stamp: p.lifecycleStamp()}
 	p.mu.Lock()
 	old := p.session
-	if p.disabled.Load() || p.g.ctx.Err() != nil || !p.g.b.peerAllowed(p.cfg.key) {
+	if p.g.ctx.Err() != nil || !p.stampValid(ns.stamp) {
 		p.mu.Unlock()
 		q.CloseWithError(0, "closed")
 		return nil
@@ -657,11 +669,15 @@ func (p *peer) run() {
 			return
 		case packet := <-p.tx:
 			p.connectingPacket.Store(true)
-			if !p.disabled.Load() {
+			if p.stampValid(packet.stamp) {
 				s, err := p.getSession()
 				if err == nil {
 					p.sendMu.Lock()
-					err = p.sendPacket(s, packet.data, p.scratch[:])
+					if p.stampValid(packet.stamp) {
+						err = p.sendPacket(s, packet.data, p.scratch[:])
+					} else {
+						p.g.b.counters.SendQueueDrops.Add(1)
+					}
 					p.sendMu.Unlock()
 				}
 				if err != nil && p.g.ctx.Err() == nil {
@@ -671,6 +687,8 @@ func (p *peer) run() {
 						p.g.b.host.Logf("quic-wg: peer %x handshake failed: %v", p.cfg.key[:4], err)
 					}
 				}
+			} else {
+				p.g.b.counters.SendQueueDrops.Add(1)
 			}
 			p.g.txBytes.Add(-int64(len(packet.data)))
 			releasePacket(packet)
@@ -680,7 +698,7 @@ func (p *peer) run() {
 }
 
 func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
-	if !p.g.b.peerAllowed(p.cfg.key) || p.disabled.Load() {
+	if !p.stampValid(s.stamp) {
 		return ErrUnknownPeer
 	}
 	var tooLarge *quic.DatagramTooLargeError
@@ -754,7 +772,7 @@ func (p *peer) receiveSession(s *session) {
 // deliverFrame is shared with the infrequent HTTP Capsule reader. In both
 // cases packets cross the identical live authorization and bounded IP queue.
 func (p *peer) deliverFrame(s *session, data []byte) {
-	if s.q.Context().Err() != nil || p.disabled.Load() || !p.g.b.identityOK.Load() || !p.g.b.peerAllowed(p.cfg.key) {
+	if s.q.Context().Err() != nil || !p.stampValid(s.stamp) {
 		return
 	}
 	var packet []byte
@@ -779,7 +797,7 @@ func (p *peer) deliverFrame(s *session, data []byte) {
 		return
 	}
 	select {
-	case p.g.rx <- received{packet, p.ep.Load()}:
+	case p.g.rx <- received{data: packet, ep: p.ep.Load(), peer: p, stamp: s.stamp}:
 		p.g.b.counters.ReceivedPackets.Add(1)
 	case <-p.g.ctx.Done():
 		p.g.rxBytes.Add(-int64(len(packet)))
@@ -799,7 +817,7 @@ func (g *generation) receive(bufs [][]byte, sizes []int, eps []conn.Endpoint) (i
 	}
 	take := func(i int, r received) {
 		g.rxBytes.Add(-int64(len(r.data)))
-		if len(r.data) > len(bufs[i]) {
+		if r.peer == nil || !r.peer.stampValid(r.stamp) || len(r.data) > len(bufs[i]) {
 			g.b.counters.ReceiveQueueDrops.Add(1)
 			return
 		}
