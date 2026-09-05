@@ -7,6 +7,8 @@ import argparse
 import base64
 import os
 import signal
+import fcntl
+import re
 from urllib.parse import urlsplit
 import datetime as dt
 import hashlib
@@ -87,10 +89,15 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--local-binary", type=Path, required=True)
     p.add_argument("--linux-binary", type=Path, required=True)
-    p.add_argument("--sg", default="root@sg.yesican.top")
-    p.add_argument("--zjg", default="root@173.249.215.87")
-    p.add_argument("--sg-address", default="96.9.212.12")
-    p.add_argument("--zjg-address", default="173.249.215.87")
+    p.add_argument("--sg", "--a-host", dest="sg", default="root@sg.yesican.top")
+    p.add_argument("--zjg", "--b-host", dest="zjg", default="root@173.249.215.87")
+    p.add_argument("--sg-address", "--a-address", dest="sg_address", default="96.9.212.12")
+    p.add_argument("--zjg-address", "--b-address", dest="zjg_address", default="173.249.215.87")
+    p.add_argument("--a-name", default="sg", help="report label and test-only HTTP authority")
+    p.add_argument("--b-name", default="zjg", help="report label and test-only HTTP authority")
+    p.add_argument("--a-hostname", default="sg2222", help="expected SSH hostname; mismatch aborts")
+    p.add_argument("--b-hostname", default="zjg", help="expected SSH hostname; mismatch aborts")
+    p.add_argument("--latency-samples", type=int, default=10, help="encrypted idle RTT samples per direction, 0 disables")
     p.add_argument("--variants", default="native,quic-ip-udp,http3-ip-udp,http3-ip-magicsock")
     p.add_argument("--dev-wg-over-quic", action="store_true", help="requires a ts_dev_wg_over_quic binary")
     p.add_argument("--browser-smoke", action="store_true", help="isolated headless Chrome visit to the HTTP/3 public site (UDP mode)")
@@ -103,6 +110,21 @@ def main():
     p.add_argument("--ipv6-proof", action="store_true", help="also verify inner IPv6 TSMP and file transfer")
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
+    if args.a_name == args.b_name or any(not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,30}", x) for x in (args.a_name, args.b_name)):
+        p.error("node labels must be distinct lowercase DNS labels")
+    if not 0 <= args.latency_samples <= 30:
+        p.error("latency-samples must be 0..30")
+    # All invocations use the same isolated ports. Never overlap two runs and
+    # then mistake another run's listener for a production service or our own.
+    lock = open(Path(tempfile.gettempdir()) / "tailscale-transport-lab.lock", "a+")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        p.error("another transport lab holds the test ports; no remote changes made")
+    def interrupted(signum, frame):
+        raise RuntimeError(f"test interrupted by signal {signum}; cleaning owned resources")
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
     variants = args.variants.split(",")
     if not variants or any(v not in ("native", "quic-udp", "quic-magicsock", "quic-ip-udp", "quic-ip-magicsock", "http3-ip-udp", "http3-ip-magicsock") for v in variants):
         p.error("invalid variants")
@@ -117,6 +139,9 @@ def main():
     ident = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
     result = {"run": ident, "linux_sha256": hashlib.sha256(args.linux_binary.read_bytes()).hexdigest(),
               "profile": args.profile, "force_derp": args.force_derp,
+              "nodes": [{"name": args.a_name, "address": args.sg_address}, {"name": args.b_name, "address": args.zjg_address}],
+              "source_commit": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
+              "source_dirty": bool(run(["git", "status", "--porcelain"]).stdout.strip()),
               "settings": {"mib_per_stream": args.mib, "parallel": args.parallel, "rounds": args.rounds},
               "phases": [], "passed": False, "cleanup_errors": []}
     nodes, units, processes = [], [], []
@@ -145,7 +170,7 @@ def main():
                     time.sleep(0.2)
             else:
                 raise RuntimeError("control startup timeout")
-            for name, host, expected, address in [("sg", args.sg, "sg2222", args.sg_address), ("zjg", args.zjg, "zjg", args.zjg_address)]:
+            for name, host, expected, address in [(args.a_name, args.sg, args.a_hostname, args.sg_address), (args.b_name, args.zjg, args.b_hostname, args.zjg_address)]:
                 node = {"name": name, "host": host, "address": address, "dir": f"/var/tmp/quicwg-lab-{ident}-{name}",
                         "socket": str(temp / name), "admin": 18441}
                 ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12"]
@@ -214,7 +239,7 @@ def main():
                              str(local_config), f"{node['host']}:{node['dir']}/quic.json"])
                         env += [f"TS_EXPERIMENTAL_WG_TRANSPORT={'http3-ip' if h3 else 'quic-ip' if native_ip else 'quic'}", f"TS_EXPERIMENTAL_QUIC_CONFIG={node['dir']}/quic.json"]
                     unit = f"quicwg-{ident}-{node['name']}-{index}"
-                    command = ["systemd-run", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=600", "--property=TimeoutStopSec=15", "--property=Restart=no",
+                    command = ["systemd-run", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=300", "--property=TimeoutStopSec=15", "--property=Restart=no",
                                "env"] + env + [node["dir"] + "/lab", "node", "--dir", node["dir"] + "/state", "--hostname", "quicwg-" + node["name"],
                                 "--control", f"http://127.0.0.1:{control_port}", "--listen", "127.0.0.1:18441", "--port", "42641", "--profile", profile]
                     remote(node, shlex.join(command))
@@ -276,6 +301,14 @@ def main():
                             for peer_status in current.get("peers", []):
                                 if peer_status.get("session_protocol") != ("http3-ip" if variant.startswith("http3-ip-") else "quic-ip") or peer_status.get("session_state") != 2 or not peer_status.get("lastHandshake", "").startswith("0001-"):
                                     raise RuntimeError("native-IP peer missing truthful TLS session status: " + json.dumps(peer_status))
+                if args.latency_samples:
+                    for i, node in enumerate(nodes):
+                        latency = api(node, f"/latency?target={nodes[i ^ 1]['test_ip']}&samples={args.latency_samples}", method="POST", timeout=45)
+                        latency["from"] = node["name"]
+                        phase.setdefault("latency", []).append(latency)
+                        if latency.get("failed"):
+                            raise RuntimeError("encrypted idle latency probe lost responses: " + json.dumps(latency))
+                        print(f"RTT {variant} {node['name']}: median={latency['median_ms']:.2f}ms p95={latency['p95_ms']:.2f}ms", flush=True)
                 for i, node in enumerate(nodes if not args.proof_only else []):
                     target = nodes[i ^ 1]["test_ip"]
                     before = {n["name"]: {"process": api(n, "/metrics"), "quic": api(n, "/quic")} for n in nodes}

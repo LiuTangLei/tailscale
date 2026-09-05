@@ -109,14 +109,21 @@ func (p *wgPacketEngine) Status(k key.NodePublic) (ipnstate.PeerStatusLite, bool
 
 // ipPacketEngine never creates *device.Device. key.NodePrivate is accepted only
 // at the old host API boundary; only Public() is supplied to the IP pump.
-type ipPacketEngine struct{ dev *quicip.Device }
+type ipPacketEngine struct {
+	dev      *quicip.Device
+	protocol string
+}
 
-func newIPPacketEngine(t tun.Device, b conn.Bind) (*ipPacketEngine, error) {
+func newIPPacketEngine(t tun.Device, b conn.Bind, mode ...wgtransport.Mode) (*ipPacketEngine, error) {
 	d, err := quicip.New(t, b)
 	if err != nil {
 		return nil, err
 	}
-	return &ipPacketEngine{dev: d}, nil
+	protocol := string(wgtransport.QUICIP)
+	if len(mode) > 0 {
+		protocol = string(mode[0])
+	}
+	return &ipPacketEngine{dev: d, protocol: protocol}, nil
 }
 func (p *ipPacketEngine) Up() error             { return p.dev.Up() }
 func (p *ipPacketEngine) Close()                { p.dev.Close() }
@@ -185,7 +192,7 @@ func (p *ipPacketEngine) Status(k key.NodePublic) (ipnstate.PeerStatusLite, bool
 	if !ok {
 		return ipnstate.PeerStatusLite{}, false
 	}
-	return ipnstate.PeerStatusLite{NodeKey: k, TxBytes: int64(st.TxBytes), RxBytes: int64(st.RxBytes), SessionProtocol: "quic-ip", LastSessionEstablished: st.LastEstablished, SessionState: uint8(st.SessionState)}, true
+	return ipnstate.PeerStatusLite{NodeKey: k, TxBytes: int64(st.TxBytes), RxBytes: int64(st.RxBytes), SessionProtocol: p.protocol, LastSessionEstablished: st.LastEstablished, SessionState: uint8(st.SessionState)}, true
 }
 func keyFromRaw(k [32]byte) key.NodePublic { return key.NodePublicFromRaw32(mem.B(k[:])) }
 

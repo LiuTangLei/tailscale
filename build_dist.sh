@@ -72,4 +72,20 @@ while [ "$#" -gt 1 ]; do
 	esac
 done
 
-exec $go build ${tags:+-tags=$tags} -trimpath -ldflags "$ldflags" "$@"
+# A distribution must never accidentally enable the development-only double
+# encryption path. Normal peer compatibility remains native WG/AWG.
+case ",$tags, $* ${GOFLAGS:-}" in
+	*ts_dev_wg_over_quic*)
+		echo "WG-over-QUIC is development-only; use go build with the explicit tag, not build_dist.sh" >&2
+		exit 1
+		;;
+esac
+
+# A checked-in, checksum-pinned queue patch prevents the upstream 32-datagram
+# HTTP/3 stream queue from truncating ordinary UDP bursts. Go's shared module
+# cache and project go.mod remain unchanged. See third_party/quic-go-overlay.
+overlay=$(CGO_ENABLED=0 GOOS=$($go env GOHOSTOS) GOARCH=$($go env GOHOSTARCH) $go run ./cmd/quic-overlay)
+trap 'rm -f "$overlay" "$overlay.mod" "$overlay.sum"' 0
+# Build tags passed via TAGS are merged with the required queue-profile tag.
+tags="${tags:+$tags,}ts_http3_queue_overlay"
+$go build -modfile "$overlay.mod" -overlay "$overlay" ${tags:+-tags=$tags} -trimpath -ldflags "$ldflags" "$@"
