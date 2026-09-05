@@ -670,6 +670,9 @@ const (
 	// AmneziaWGConfigVersionV3 is the highest configuration version supported
 	// by current requests.
 	AmneziaWGConfigVersionV3 uint8 = 3
+	// V31 uses capability level 4, not decimal version arithmetic. A v3
+	// client would otherwise silently ignore the new boolean profile fields.
+	AmneziaWGConfigVersionV31 uint8 = 4
 )
 
 // AmneziaWGConfigRequest is a message sent to request Amnezia-WG configuration

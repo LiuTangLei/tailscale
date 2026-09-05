@@ -429,6 +429,11 @@ type AmneziaWGPrefs struct {
 	RejectAfterTime        MagicHeaderRange `json:",omitempty"`
 	KeepaliveTimeout       MagicHeaderRange `json:",omitempty"`
 	MaxHandshakeAttempts   MagicHeaderRange `json:",omitempty"`
+
+	// AWG 3.1 flags are opt-in. In particular, do not disable handshake
+	// cookies as a side effect of choosing a different outer transport.
+	RandomTrailers bool `json:",omitempty"`
+	DisableCookies bool `json:",omitempty"`
 }
 
 // IsZero reports whether p disables all Amnezia-WG behavior and therefore
@@ -443,10 +448,15 @@ func (p AmneziaWGPrefs) IsZero() bool {
 	return p == (AmneziaWGPrefs{})
 }
 
-// IsV3 reports whether p uses any AWG v3-only parameter. A configuration with
-// only the historical fields is an AWG v2 configuration.
+// IsV31 reports whether p needs support for the opt-in AWG 3.1 flags.
+func (p AmneziaWGPrefs) IsV31() bool {
+	return p.RandomTrailers || p.DisableCookies
+}
+
+// IsV3 reports whether p uses any AWG v3 or newer parameter. A configuration
+// with only the historical fields is an AWG v2 configuration.
 func (p AmneziaWGPrefs) IsV3() bool {
-	return (p.HeaderProtectionKey != "" && p.HeaderProtectionKey != zeroHeaderProtectionKey) ||
+	return p.IsV31() || (p.HeaderProtectionKey != "" && p.HeaderProtectionKey != zeroHeaderProtectionKey) ||
 		!p.ContentPaddingAddition.IsZero() ||
 		!p.RekeyAfterTime.IsZero() ||
 		!p.RekeyTimeout.IsZero() ||
@@ -480,6 +490,8 @@ func (a *AmneziaWGPrefs) UnmarshalJSON(data []byte) error {
 		RejectAfterTime        *MagicHeaderRange `json:"reject_after_time"`
 		KeepaliveTimeout       *MagicHeaderRange `json:"keepalive_timeout"`
 		MaxHandshakeAttempts   *MagicHeaderRange `json:"max_handshake_attempts"`
+		RandomTrailers         *bool             `json:"random_trailers"`
+		DisableCookies         *bool             `json:"disable_cookies"`
 	}
 	if err := json.Unmarshal(data, &uapiNames); err != nil {
 		return err
@@ -504,6 +516,12 @@ func (a *AmneziaWGPrefs) UnmarshalJSON(data []byte) error {
 	}
 	if uapiNames.MaxHandshakeAttempts != nil {
 		a.MaxHandshakeAttempts = *uapiNames.MaxHandshakeAttempts
+	}
+	if uapiNames.RandomTrailers != nil {
+		a.RandomTrailers = *uapiNames.RandomTrailers
+	}
+	if uapiNames.DisableCookies != nil {
+		a.DisableCookies = *uapiNames.DisableCookies
 	}
 	return nil
 }

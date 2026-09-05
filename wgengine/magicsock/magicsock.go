@@ -1549,7 +1549,9 @@ func (c *Conn) Send(buffs [][]byte, ep conn.Endpoint, offset int) (err error) {
 		}
 		return c.pconn4.WriteWireGuardBatchTo(buffs, ep.src, offset)
 	}
-	return nil
+	// Carrier implementations must unwrap their endpoint metadata before
+	// calling the host Bind. Do not silently report a dropped send as success.
+	return conn.ErrWrongEndpointType
 }
 
 var errConnClosed = errors.New("Conn closed")
@@ -4773,6 +4775,9 @@ func amneziaWGConfigRequestCompatible(req *disco.AmneziaWGConfigRequest, prefs i
 	if prefs.IsV3() {
 		version = disco.AmneziaWGConfigVersionV3
 	}
+	if prefs.IsV31() {
+		version = disco.AmneziaWGConfigVersionV31
+	}
 	return req.SupportsConfigVersion(version)
 }
 
@@ -4884,7 +4889,7 @@ func (c *Conn) requestAmneziaWGConfigCtx(ctx context.Context, nodeKey key.NodePu
 
 	req := &disco.AmneziaWGConfigRequest{
 		RequestID:        requestID,
-		MaxConfigVersion: disco.AmneziaWGConfigVersionV3,
+		MaxConfigVersion: disco.AmneziaWGConfigVersionV31,
 	}
 
 	// Register waiter

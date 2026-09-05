@@ -262,6 +262,10 @@ func amneziaUAPIConfig(prefs ipn.AmneziaWGPrefs) (string, error) {
 	set("reject_after_time", prefs.RejectAfterTime.String())
 	set("keepalive_timeout", prefs.KeepaliveTimeout.String())
 	set("max_handshake_attempts", prefs.MaxHandshakeAttempts.String())
+	// Emit false as well, so resetting or downgrading a profile cannot leave
+	// AWG 3.1 behavior enabled in a long-running device.
+	set("random_trailers", strconv.FormatBool(prefs.RandomTrailers))
+	set("disable_cookies", strconv.FormatBool(prefs.DisableCookies))
 
 	buf.WriteByte('\n')
 	return buf.String(), nil

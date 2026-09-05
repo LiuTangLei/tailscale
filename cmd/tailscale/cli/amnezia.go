@@ -204,6 +204,8 @@ func printAmneziaWGConfig(config ipn.AmneziaWGPrefs) {
 	fmt.Printf("  RejectAfterTime: %s\n", rangeOrDisabled(config.RejectAfterTime))
 	fmt.Printf("  KeepaliveTimeout: %s\n", rangeOrDisabled(config.KeepaliveTimeout))
 	fmt.Printf("  MaxHandshakeAttempts: %s\n", rangeOrDisabled(config.MaxHandshakeAttempts))
+	fmt.Printf("  RandomTrailers: %t\n", config.RandomTrailers)
+	fmt.Printf("  DisableCookies: %t\n", config.DisableCookies)
 }
 
 func hasV3Config(config ipn.AmneziaWGPrefs) bool {
@@ -213,6 +215,9 @@ func hasV3Config(config ipn.AmneziaWGPrefs) bool {
 func amneziaConfigVersion(config ipn.AmneziaWGPrefs) string {
 	if isConfigZero(config) {
 		return "standard WireGuard"
+	}
+	if config.IsV31() {
+		return "AWG v3.1"
 	}
 	if hasV3Config(config) {
 		return "AWG v3"
@@ -270,6 +275,8 @@ func formatConfigAsJSON(config ipn.AmneziaWGPrefs) (string, error) {
 		RejectAfterTime        any    `json:"reject_after_time,omitempty"`
 		KeepaliveTimeout       any    `json:"keepalive_timeout,omitempty"`
 		MaxHandshakeAttempts   any    `json:"max_handshake_attempts,omitempty"`
+		RandomTrailers         bool   `json:"random_trailers,omitempty"`
+		DisableCookies         bool   `json:"disable_cookies,omitempty"`
 	}
 	rangeValue := func(value ipn.MagicHeaderRange) any {
 		if value.IsZero() {
@@ -304,6 +311,8 @@ func formatConfigAsJSON(config ipn.AmneziaWGPrefs) (string, error) {
 		RejectAfterTime:        rangeValue(config.RejectAfterTime),
 		KeepaliveTimeout:       rangeValue(config.KeepaliveTimeout),
 		MaxHandshakeAttempts:   rangeValue(config.MaxHandshakeAttempts),
+		RandomTrailers:         config.RandomTrailers,
+		DisableCookies:         config.DisableCookies,
 	}
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)

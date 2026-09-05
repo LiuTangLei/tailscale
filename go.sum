@@ -79,8 +79,8 @@ github.com/GaijinEntertainment/go-exhaustruct/v3 v3.2.0 h1:sATXp1x6/axKxz2Gjxv8M
 github.com/GaijinEntertainment/go-exhaustruct/v3 v3.2.0/go.mod h1:Nl76DrGNJTA1KJ0LePKBw/vznBX1EHbAZX8mwjR82nI=
 github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9 h1:1ltqoej5GtaWF8jaiA49HwsZD459jqm9YFz9ZtMFpQA=
 github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9/go.mod h1:7uhhqiBaR4CpN0k9rMjOtjpcfGd6DG2m04zQxKnWQ0I=
-github.com/LiuTangLei/wireguard-go v0.0.30 h1:Ft7EoJbo4l6oCoOlxNj31XBJecBapeNA5nMK77BpMH8=
-github.com/LiuTangLei/wireguard-go v0.0.30/go.mod h1:vf4iDX4VWTkjjQRFVAYbAFCDladp+HMfBTkiLBhPm3o=
+github.com/LiuTangLei/wireguard-go v0.0.31-0.20260905021413-8835972ec5d8 h1:gbSPtfozq71C4FsXjfnwGgK4t+HdZhK9tV5lKWUxZWw=
+github.com/LiuTangLei/wireguard-go v0.0.31-0.20260905021413-8835972ec5d8/go.mod h1:vf4iDX4VWTkjjQRFVAYbAFCDladp+HMfBTkiLBhPm3o=
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=
 github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
 github.com/Masterminds/goutils v1.1.1 h1:5nUrii3FMTL5diU80unEVvNevw1nH4+ZV4DSLVJLSYI=

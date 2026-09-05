@@ -63,6 +63,7 @@ import (
 	"tailscale.com/wgengine/wgcfg"
 	"tailscale.com/wgengine/wgint"
 	"tailscale.com/wgengine/wglog"
+	"tailscale.com/wgengine/wgtransport"
 )
 
 type userspaceEngine struct {
@@ -79,6 +80,7 @@ type userspaceEngine struct {
 	timeNow        func() mono.Time
 	tundev         *tstun.Wrapper
 	wgdev          *device.Device
+	transport      *wgtransport.Manager
 	router         router.Router
 	dialer         *tsdial.Dialer
 	confListenPort uint16 // original conf.ListenPort
@@ -171,6 +173,10 @@ type Config struct {
 	// the OS.
 	// If nil, a fake Device that does nothing is used.
 	Tun tun.Device
+
+	// Transport selects an experimental outer carrier independently of AWG.
+	// Zero preserves the native Bind. A QUIC provider is not included yet.
+	Transport wgtransport.Config
 
 	// IsTAP is whether Tun is actually a TAP (Layer 2) device that'll
 	// require ethernet headers.
@@ -302,6 +308,10 @@ func NewFakeUserspaceEngine(logf logger.Logf, opts ...any) (Engine, error) {
 // NewUserspaceEngine creates the named tun device and returns a
 // Tailscale Engine running on it.
 func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) {
+	transportConfig, transportErr := wgtransport.Resolve(conf.Transport, envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
+	if transportErr != nil {
+		return nil, transportErr
+	}
 	var closePool closeOnErrorPool
 	defer closePool.closeAllIfError(&reterr)
 
@@ -508,9 +518,17 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		return true
 	}
 
+	// Keep carrier selection outside the WG/AWG cryptographic engine. Native
+	// returns the original magicsock Bind, including its optional interfaces.
+	e.transport, err = wgtransport.New(wgtransport.Host{Bind: e.magicConn.Bind(), Logf: e.logf}, transportConfig)
+	if err != nil {
+		return nil, fmt.Errorf("wgengine: create transport: %w", err)
+	}
+	closePool.add(e.transport)
+	e.logf("WireGuard outer transport: %s", e.transport.Mode())
 	// wgdev takes ownership of tundev, will close it when closed.
 	e.logf("Creating WireGuard device...")
-	e.wgdev = wgcfg.NewDevice(e.tundev, e.magicConn.Bind(), e.wgLogger.DeviceLogger)
+	e.wgdev = wgcfg.NewDevice(e.tundev, e.transport.Bind(), e.wgLogger.DeviceLogger)
 	closePool.addFunc(e.wgdev.Close)
 	closePool.addFunc(func() {
 		if err := e.magicConn.Close(); err != nil {
@@ -709,6 +727,7 @@ func (e *userspaceEngine) SyncDevicePeer(k key.NodePublic) {
 	e.wgLogger.Invalidate()
 	allowedIPs, ok := (*fn)(k)
 	if !ok {
+		e.transport.PeerRemoved(k.Raw32())
 		e.wgdev.RemovePeer(k.Raw32())
 		return
 	}
@@ -722,6 +741,7 @@ func (e *userspaceEngine) ResetDevicePeer(k key.NodePublic) {
 	e.wgLock.Lock()
 	defer e.wgLock.Unlock()
 	e.wgLogger.Invalidate()
+	e.transport.PeerRemoved(k.Raw32())
 	e.wgdev.RemovePeer(k.Raw32())
 }
 
@@ -883,6 +903,11 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 			e.logf("wgengine: Reconfig: SetPrivateKey: %v", err)
 		}
 
+		var publicKey [32]byte
+		if !cfg.PrivateKey.IsZero() {
+			publicKey = cfg.PrivateKey.Public().Raw32()
+		}
+		e.transport.LocalIdentityChanged(publicKey)
 		if err := e.wgdev.SetPrivateKey(key.NodePrivateAs[device.NoisePrivateKey](cfg.PrivateKey)); err != nil {
 			e.logf("wgengine: Reconfig: wgdev.SetPrivateKey: %v", err)
 		}
@@ -1122,6 +1147,9 @@ func (e *userspaceEngine) Close() {
 	e.mu.Unlock()
 
 	e.magicConn.Close()
+	if err := e.transport.Close(); err != nil {
+		e.logf("wgengine: closing transport: %v", err)
+	}
 	if e.netMonOwned {
 		e.netMon.Close()
 	}
@@ -1213,6 +1241,7 @@ func (e *userspaceEngine) linkChange(delta *netmon.ChangeDelta) {
 		}
 		e.magicConn.ReSTUN(why)
 	}
+	e.transport.NetworkChanged(up, delta.RebindLikelyRequired)
 }
 
 func (e *userspaceEngine) SetSelfNode(self tailcfg.NodeView) {

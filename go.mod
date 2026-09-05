@@ -6,7 +6,7 @@ require (
 	filippo.io/mkcert v1.4.4
 	fyne.io/systray v1.11.1-0.20250812065214-4856ac3adc3c
 	github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9
-	github.com/LiuTangLei/wireguard-go v0.0.30
+	github.com/LiuTangLei/wireguard-go v0.0.31-0.20260905021413-8835972ec5d8
 	github.com/akutz/memconn v0.1.0
 	github.com/alexbrainman/sspi v0.0.0-20231016080023-1a75b4708caa
 	github.com/andybalholm/brotli v1.1.0
