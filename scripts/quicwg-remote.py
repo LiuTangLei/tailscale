@@ -107,6 +107,7 @@ def main():
     p.add_argument("--parallel", type=int, default=1)
     p.add_argument("--rounds", type=int, default=1)
     p.add_argument("--force-derp", action="store_true")
+    p.add_argument("--private-stun", action="store_true", help="run a bounded test STUN responder on host A UDP 42643; no external STUN list needed")
     p.add_argument("--proof-only", action="store_true", help="run encrypted integrity checks without throughput benchmarks")
     p.add_argument("--ipv6-proof", action="store_true", help="also verify inner IPv6 TSMP and file transfer")
     p.add_argument("--output", type=Path, required=True)
@@ -159,7 +160,7 @@ def main():
         cmd = [str(args.local_binary.resolve()), "control", "--listen", f"127.0.0.1:{control_port}",
                "--derp-listen", f"127.0.0.1:{derp_port}"]
         if not args.force_derp:
-            cmd += ["--public-stun"]
+            cmd += ["--stun-server", f"{args.sg_address}:42643"] if args.private_stun else ["--public-stun"]
         processes.append(subprocess.Popen(cmd, stdout=log, stderr=log))
         try:
             for _ in range(300):
@@ -197,6 +198,8 @@ def main():
                 node["ssh"] = ssh + ["-S", node["socket"], host]
                 nodes.append(node)
                 busy = remote(node, "ss -H -lnt 'sport = :18441'; ss -H -lnu 'sport = :42641'; ss -H -lnu 'sport = :42642'; ss -H -lnt 'sport = :42642'").stdout.strip()
+                if args.private_stun and name == args.a_name:
+                    busy += remote(node, "ss -H -lnu 'sport = :42643'").stdout.strip()
                 if busy:
                     raise RuntimeError(f"test ports are occupied: {name}: {busy}")
                 node["baseline"] = remote(node, "systemctl show tailscaled -p MainPID -p ActiveState; tailscale version | head -1", check=False).stdout.strip()
@@ -254,6 +257,8 @@ def main():
                                 "--control", f"http://127.0.0.1:{control_port}", "--listen", "127.0.0.1:18441", "--port", "42641", "--profile", profile]
                     if args.managed_cli:
                         command += ["--localapi-socket", node["dir"] + "/state/localapi.sock"]
+                    if args.private_stun and node["name"] == args.a_name and not args.force_derp:
+                        command += ["--stun-listen", "0.0.0.0:42643"]
                     remote(node, shlex.join(command))
                     node["unit"] = unit
                     units.append((node, unit))

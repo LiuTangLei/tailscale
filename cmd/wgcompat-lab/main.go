@@ -56,6 +56,8 @@ func run() error {
 	listen := fs.String("listen", "127.0.0.1:18440", "loopback control/admin address")
 	derpListen := fs.String("derp-listen", "127.0.0.1:18442", "loopback-only isolated DERP TLS address (control command)")
 	publicSTUN := fs.Bool("public-stun", false, "add public Tailscale STUN probes to the isolated relay map")
+	privateSTUN := fs.String("stun-server", "", "literal test STUN IPv4:port instead of an external server list")
+	stunListen := fs.String("stun-listen", "", "optional isolated test STUN UDP listener (node command)")
 	control := fs.String("control", "http://127.0.0.1:18440", "isolated test control URL")
 	dir := fs.String("dir", "", "isolated node state directory (required for node)")
 	cliSocket := fs.String("localapi-socket", "", "optional private Unix socket inside --dir for actual CLI tests")
@@ -83,7 +85,11 @@ func run() error {
 			return err
 		}
 		defer closeDERP()
-		if *publicSTUN {
+		if *privateSTUN != "" {
+			if err := attachPrivateSTUN(derpMap, *privateSTUN); err != nil {
+				return err
+			}
+		} else if *publicSTUN {
 			if err := addPublicSTUN(ctx, derpMap); err != nil {
 				return err
 			}
@@ -97,6 +103,11 @@ func run() error {
 	if *dir == "" {
 		return errors.New("node requires a separate --dir")
 	}
+	closeSTUN, err := startPrivateSTUN(ctx, *stunListen)
+	if err != nil {
+		return err
+	}
+	defer closeSTUN()
 	p, err := profile(*profileName)
 	if err != nil {
 		return err
