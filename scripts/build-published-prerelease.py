@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import time
 
@@ -68,6 +69,15 @@ def main() -> None:
     commit = command(['git', 'rev-parse', 'HEAD'], env).strip()
     if command(['git', 'rev-parse', a.tag + '^{commit}'], env).strip() != commit:
         raise RuntimeError('release tag does not identify the current commit')
+    version_vars = {}
+    for line in command(['sh', './build_dist.sh', 'shellvars'], env).splitlines():
+        if '=' in line:
+            k, value = line.split('=', 1)
+            parts = shlex.split(value)
+            version_vars[k] = parts[0] if parts else ''
+    long_version = version_vars.get('VERSION_LONG', '')
+    if commit[:9] not in long_version or 'dirty' in long_version:
+        raise RuntimeError('Tailscale linker version does not identify the clean source commit')
     modules = decode_many(command(['go', 'list', '-mod=readonly', '-m', '-json', WG, QUIC], env))
     selected = {m['Path']: m for m in modules}
     if selected.get(WG, {}).get('Version') != WG_VERSION or selected[WG].get('Replace'):
@@ -78,7 +88,7 @@ def main() -> None:
     command(['go', 'mod', 'verify'], env)
     out.mkdir(parents=True, exist_ok=True)
     manifest = {
-        'release_tag': a.tag, 'source_commit': commit, 'source_dirty': False,
+        'release_tag': a.tag, 'source_commit': commit, 'source_dirty': False, 'long_version': long_version,
         'go_version': command(['go', 'version'], env).strip(),
         'dependency_mode': 'published Go modules; no local paths or overlays',
         'dependencies': {
@@ -96,9 +106,19 @@ def main() -> None:
         started = time.monotonic()
         command(['sh', './build_dist.sh', '-o', str(path), './cmd/' + name], {**env, 'GOOS': goos, 'GOARCH': arch})
         info = command(['go', 'version', '-m', str(path)], env)
-        for line in (f'\tdep\t{WG}\t{WG_VERSION}\t', f'\t=>\t{QUIC_FORK}\t{QUIC_VERSION}\t', f'vcs.revision={commit}', 'vcs.modified=false'):
-            if line not in info:
-                raise RuntimeError(f'{filename}: missing expected build metadata {line!r}')
+        # The CLI is an API client and need not link either crypto engine.
+        # Every daemon must link both exact published modules.
+        if name == 'tailscaled':
+            for line in (f'\tdep\t{WG}\t{WG_VERSION}\t', f'\t=>\t{QUIC_FORK}\t{QUIC_VERSION}\t'):
+                if line not in info:
+                    raise RuntimeError(f'{filename}: missing expected build metadata {line!r}')
+        # Tailscale uses explicit linker stamps; generic Go VCS fields are not
+        # emitted by every toolchain/worktree combination. Validate them when
+        # present, and always check the actual linked Tailscale version bytes.
+        if ('vcs.revision=' in info and f'vcs.revision={commit}' not in info) or 'vcs.modified=true' in info:
+            raise RuntimeError(f'{filename}: incorrect VCS build metadata')
+        if long_version.encode() not in path.read_bytes():
+            raise RuntimeError(f'{filename}: missing linked Tailscale source version')
         if 'ts_dev_wg_over_quic' in info or '/Users/lei/code/tailscale-all/quic-go' in info:
             raise RuntimeError('development-only code or local dependency leaked into release')
         if goos == 'darwin':
@@ -107,7 +127,7 @@ def main() -> None:
             # get an automatic linker signature, so sign both architectures.
             command(['/usr/bin/codesign', '--force', '--sign', '-', str(path)], env)
             command(['/usr/bin/codesign', '--verify', '--strict', str(path)], env)
-        result = {'name': filename, 'bytes': path.stat().st_size, 'sha256': digest(path), 'platform': platform, 'seconds': round(time.monotonic() - started, 2)}
+        result = {'name': filename, 'bytes': path.stat().st_size, 'sha256': digest(path), 'platform': platform, 'links_packet_engines': name == 'tailscaled', 'linked_long_version': long_version, 'seconds': round(time.monotonic() - started, 2)}
         print('BUILT', filename, result['sha256'], flush=True)
         return result
 
