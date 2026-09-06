@@ -37,18 +37,18 @@ def main():
     p.add_argument('--jobs',type=int,default=2)
     p.add_argument('--timeout',type=int,default=90)
     p.add_argument('--tags',default='')
-    p.add_argument('--stock-quic',action='store_true',help='compile upstream queue rather than distribution overlay')
+    p.add_argument('--stock-quic',action='store_true',help=argparse.SUPPRESS)
     a=p.parse_args()
+    if a.stock_quic:
+        p.error('stock-quic comparison belongs to the earlier experimental branch; this release requires the published fork')
     names=a.targets.split(',')
     if any(n not in TARGETS for n in names): p.error('unknown target')
     if not 1 <= a.jobs <= 4: p.error('jobs must be 1..4')
     a.output.mkdir(parents=True,exist_ok=True)
     commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
     dirty=bool(subprocess.check_output(['git','status','--porcelain'],text=True).strip())
-    overlay = None
-    if not a.stock_quic:
-        overlay = a.output.resolve() / 'queue-overlay.json'
-        subprocess.run(['go','run','./cmd/quic-overlay','-output',str(overlay)],check=True)
+    # Use the same versioned dependency graph as build_dist.sh. No overlay or
+    # local replacement is introduced by a platform check.
     def one(name):
         env=os.environ.copy();env.update(TARGETS[name]);env.update({'CGO_ENABLED':'0','GOMAXPROCS':'3'})
         for k in ('GOARM','GO386','GOAMD64','GOMIPS','GOMIPS64'):
@@ -78,9 +78,6 @@ def main():
                 env['CC']=str(ndk/(triples[env['GOARCH']]+'26-clang'))
                 cmd+=['-buildmode=c-shared','-o',str(output)+'.so']
         tags = a.tags
-        if overlay:
-            cmd += ['-modfile',str(overlay)+'.mod','-overlay',str(overlay)]
-            tags = ','.join(x for x in (tags,'ts_http3_queue_overlay') if x)
         if tags: cmd += ['-tags',tags]
         cmd+=packages
         start=time.monotonic()

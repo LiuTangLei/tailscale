@@ -6,7 +6,7 @@ require (
 	filippo.io/mkcert v1.4.4
 	fyne.io/systray v1.11.1-0.20250812065214-4856ac3adc3c
 	github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9
-	github.com/LiuTangLei/wireguard-go v0.0.31-0.20260905021413-8835972ec5d8
+	github.com/LiuTangLei/wireguard-go v0.0.31
 	github.com/akutz/memconn v0.1.0
 	github.com/alexbrainman/sspi v0.0.0-20231016080023-1a75b4708caa
 	github.com/andybalholm/brotli v1.1.0
@@ -529,5 +529,9 @@ require (
 	mvdan.cc/unparam v0.0.0-20240104100049-c549a3470d14 // indirect
 	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
 )
+
+// Published fork: preserve upstream import paths, but never depend on a local
+// directory or a build-time overlay for the prerelease's QUIC fixes.
+replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.62.0-tailscale.1
 
 tool github.com/stacklok/frizbee

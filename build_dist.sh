@@ -81,11 +81,7 @@ case ",$tags, $* ${GOFLAGS:-}" in
 		;;
 esac
 
-# A checked-in, checksum-pinned queue patch prevents the upstream 32-datagram
-# HTTP/3 stream queue from truncating ordinary UDP bursts. Go's shared module
-# cache and project go.mod remain unchanged. See third_party/quic-go-overlay.
-overlay=$(CGO_ENABLED=0 GOOS=$($go env GOHOSTOS) GOARCH=$($go env GOHOSTARCH) $go run ./cmd/quic-overlay)
-trap 'rm -f "$overlay" "$overlay.mod" "$overlay.sum"' 0
-# Build tags passed via TAGS are merged with the required queue-profile tag.
-tags="${tags:+$tags,}ts_http3_queue_overlay"
-$go build -modfile "$overlay.mod" -overlay "$overlay" ${tags:+-tags=$tags} -trimpath -ldflags "$ldflags" "$@"
+# QUIC fixes are in the published, checksum-pinned dependency in go.mod.
+# No temporary modfile, module-cache edit or source overlay is required.
+# readonly also prevents a distribution build from silently changing pins.
+$go build -mod=readonly ${tags:+-tags=$tags} -trimpath -ldflags "$ldflags" "$@"

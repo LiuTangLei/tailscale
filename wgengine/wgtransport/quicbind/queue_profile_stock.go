@@ -4,6 +4,12 @@
 
 package quicbind
 
-// Stock quic-go v0.62.0. Distribution builds use the checked-in Go overlay.
-const http3ReceiveQueueCapacity = 32
-const quicReceiveQueueCapacity = 128
+import (
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+)
+
+// All builds now consume the published fork. Read capacities from that library
+// rather than reporting stock values while patched queues are actually used.
+const http3ReceiveQueueCapacity = http3.TunnelDatagramQueueCapacity
+const quicReceiveQueueCapacity = quic.TunnelDatagramReceiveQueueCapacity

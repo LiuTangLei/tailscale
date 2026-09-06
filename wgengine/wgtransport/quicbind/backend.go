@@ -355,12 +355,9 @@ func (b *Backend) quicConfig() *quic.Config {
 		MaxIncomingStreams: streams, MaxIncomingUniStreams: uni, Allow0RTT: false,
 		MaxStreamReceiveWindow: 128 << 10, MaxConnectionReceiveWindow: 1 << 20,
 	}
-	// The versioned QUIC fork adds BBR without changing QUIC's wire format.
-	// Stock builds remain a Reno comparison; connection diagnostics identify
-	// the actual controller, so a benchmark cannot silently mislabel it.
-	if c, ok := any(cfg).(interface{ EnableBBRCongestionControl() }); ok {
-		c.EnableBBRCongestionControl()
-	}
+	// The released dependency is required at compile time. Never silently
+	// ship Reno when the advertised application-limited BBR fixes are absent.
+	cfg.EnableBBRCongestionControl()
 	return cfg
 }
 
