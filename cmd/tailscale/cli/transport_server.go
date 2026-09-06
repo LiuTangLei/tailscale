@@ -22,7 +22,7 @@ func serverCommand() *ffcli.Command {
 		Name:       "server",
 		ShortUsage: "tailscale amnezia-wg server [--yes] [on|off]",
 		ShortHelp:  "Declare this node an HTTP/3 server target (default off)",
-		LongHelp:   "One node-wide declaration; no per-peer roles. Default peers retain the existing H3 mesh behavior. Only outgoing connections to authenticated declared servers are eligible for browser fingerprinting. This build does not yet contain a browser fingerprint implementation. The declaration is exchanged automatically inside authenticated H3 CONNECT, without redistributing keys. Changes apply at the next daemon start, do not restart it, and do not change transport mode, firewall or listening ports.",
+		LongHelp:   "One node-wide declaration; no per-peer roles. Default peers retain the existing H3 mesh behavior. Only a non-server node dialing an authenticated declared server uses the chromium-h3 ClientHello profile. Server-to-server, incoming and ordinary mesh connections use standard TLS. This is a Chromium-inspired ClientHello, not a full browser fingerprint clone. The declaration is exchanged automatically inside authenticated H3 CONNECT, without redistributing keys. Changes apply at the next daemon start, do not restart it, and do not change transport mode, firewall or listening ports.",
 	}
 	cmd.FlagSet = flag.NewFlagSet("server", flag.ContinueOnError)
 	cmd.FlagSet.BoolVar(&yes, "yes", false, "save the declaration without an interactive confirmation")

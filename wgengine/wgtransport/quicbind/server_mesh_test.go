@@ -43,12 +43,12 @@ func TestH3ServerDeclarationsStayPerPeerUnderConcurrentMesh(t *testing.T) {
 		keys[i] = key.NewNode().Public().Raw32()
 		cert, priv, pin := testIdentity(t)
 		pins[i] = pin
-		configs[i] = Config{Version: 2, Payload: "ip", IO: "magicsock", HTTP3: true, Server: i%2 == 1, LocalPublicKey: hex.EncodeToString(keys[i][:]), Certificate: cert, PrivateKey: priv, HTTP3URL: "https://mesh.test/.well-known/masque/ip/*/*/"}
+		configs[i] = Config{Version: 2, Payload: "ip", IO: "magicsock", HTTP3: true, Server: i%2 == 1, LocalPublicKey: hex.EncodeToString(keys[i][:]), Certificate: cert, PrivateKey: priv, HTTP3URL: "https://mesh.invalid/.well-known/masque/ip/*/*/"}
 	}
 	for i := range count {
 		for j := range count {
 			if i != j {
-				configs[i].Peers = append(configs[i].Peers, PeerConfig{PublicKey: hex.EncodeToString(keys[j][:]), SPKISHA256: pins[j], HTTP3URL: configs[j].HTTP3URL})
+				configs[i].Peers = append(configs[i].Peers, PeerConfig{PublicKey: hex.EncodeToString(keys[j][:]), SPKISHA256: pins[j], HTTP3URL: configs[j].HTTP3URL, Server: configs[j].Server})
 			}
 		}
 		f, err := NewFactory(configs[i])
@@ -172,11 +172,37 @@ func TestH3ServerDeclarationsStayPerPeerUnderConcurrentMesh(t *testing.T) {
 			if b.peerServerHint(keys[j]) != want {
 				t.Fatalf("node%d learned wrong server flag for node%d", i, j)
 			}
-			if b.browserProfileEligible(keys[j], true) != configs[j].Server || b.browserProfileEligible(keys[j], false) {
+			p := b.active.Load().peers[keys[j]]
+			p.mu.Lock()
+			s := p.session
+			p.mu.Unlock()
+			if s == nil {
+				t.Fatal("missing real session")
+			}
+			actual := s.q.ConnectionState()
+			wantProfile := ""
+			if !configs[i].Server && configs[j].Server && s.outgoing {
+				wantProfile = "chromium-h3"
+			}
+			if actual.ClientHelloProfile != wantProfile {
+				t.Fatalf("node%d peer%d actual profile %q want %q", i, j, actual.ClientHelloProfile, wantProfile)
+			}
+			if actual.TLS.ServerName != "" {
+				t.Fatal("private origin leaked into actual ClientHello SNI", actual.TLS.ServerName)
+			}
+			eligible := !configs[i].Server && configs[j].Server
+			if b.browserProfileEligible(keys[j], true) != eligible || b.browserProfileEligible(keys[j], false) {
 				t.Fatal("browser selection leaked across peers or direction")
 			}
 		}
 		stats := b.Snapshot()
+		wantAggregate := "mixed"
+		if configs[i].Server {
+			wantAggregate = "none"
+		}
+		if stats["browser_fingerprint"] != wantAggregate {
+			t.Fatalf("node%d aggregate profile %v want %v", i, stats["browser_fingerprint"], wantAggregate)
+		}
 		if stats["active_connections"] != count-1 {
 			t.Fatal("mesh connections missing", stats)
 		}

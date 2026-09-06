@@ -159,6 +159,7 @@ require (
 	github.com/google/go-github/v82 v82.0.0 // indirect
 	github.com/palantir/policy-bot v1.41.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/shurcooL/githubv4 v0.0.0-20260209031235-2402fdf4a9ed // indirect
 	github.com/shurcooL/graphql v0.0.0-20240915155400-7ee5256398cf // indirect
@@ -532,6 +533,6 @@ require (
 
 // Published fork: preserve upstream import paths, but never depend on a local
 // directory or a build-time overlay for the prerelease's QUIC fixes.
-replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.62.0-tailscale.1
+replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.62.0-tailscale.2
 
 tool github.com/stacklok/frizbee

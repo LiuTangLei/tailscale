@@ -5,7 +5,10 @@ package quicbind
 
 import (
 	"errors"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync/atomic"
 )
 
@@ -71,12 +74,31 @@ func (b *Backend) forgetServerHint(k [32]byte) {
 	}
 }
 
-// This selector is deliberately independent of this node's Server bit. Only
-// the OUTGOING end connecting to an authenticated declared server is eligible
-// for a future browser ClientHello. Incoming endpoints are never "browsers".
-// Eligibility does not claim that a browser TLS implementation is installed.
+// Browser profile selection is gated by the local node declaration as well as
+// the authenticated remote declaration. A declared local server does not emit a
+// browser-style ClientHello, and incoming connections are never treated as
+// browser clients. Eligibility is only a future-dial condition, not proof that a
+// browser TLS stack is actually in use.
 func (b *Backend) browserProfileEligible(k [32]byte, outgoing bool) bool {
-	return b.factory.cfg.HTTP3 && outgoing && b.peerServerHint(k) == serverYes
+	return b.factory.cfg.HTTP3 && !b.factory.cfg.Server && outgoing && b.peerServerHint(k) == serverYes
+}
+
+func (b *Backend) browserProfileForPeer(k [32]byte, outgoing bool) string {
+	if !b.browserProfileEligible(k, outgoing) {
+		return ""
+	}
+	return "chromium-h3"
+}
+
+func http3ClientHelloServerName(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.TrimSpace(u.Hostname()), ".")
+	if host == "" || net.ParseIP(host) != nil || strings.HasSuffix(strings.ToLower(host), ".invalid") {
+		return ""
+	}
+	return host
 }
 
 // Remember an authenticated CONNECT's declaration only if it still belongs to

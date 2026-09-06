@@ -147,7 +147,7 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusNotFound)
 		return
 	}
-	k, err := g.b.factory.verifyHTTP3Authorization(r.TLS, r)
+	k, err := g.b.factory.verifyHTTP3Authorization(r.TLS, r, q.ExportKeyingMaterial)
 	if err != nil || !g.b.peerAllowed(k) {
 		deny(http.StatusNotFound)
 		return
@@ -255,7 +255,7 @@ func (p *peer) openHTTP3(q *quic.Conn) (_ *session, reterr error) {
 	u := p.cfg.http3URL
 	req := &http.Request{Method: http.MethodConnect, Proto: "connect-ip", Host: u.Host, URL: u, Header: http.Header{http3.CapsuleProtocolHeader: []string{"?1"}, fragmentHeaderName: []string{fragmentHeaderValue}}}
 	tlsState := q.ConnectionState().TLS
-	proof, err := p.g.b.factory.http3Authorization(&tlsState, req)
+	proof, err := p.g.b.factory.http3Authorization(&tlsState, req, q.ExportKeyingMaterial)
 	if err != nil {
 		return nil, err
 	}

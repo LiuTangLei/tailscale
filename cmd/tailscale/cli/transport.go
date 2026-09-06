@@ -45,14 +45,13 @@ func runAWGRootMenu(ctx context.Context, in io.Reader, out io.Writer, tty bool, 
 		fmt.Fprintln(out, "  1) Status")
 		fmt.Fprintln(out, "  2) Native WG / preserve AWG profile")
 		fmt.Fprintln(out, "  3) AWG profile actions")
-		fmt.Fprintln(out, "  4) QUIC-IP")
-		fmt.Fprintln(out, "  5) HTTP/3 experimental")
+		fmt.Fprintln(out, "  4) HTTP/3 transport (experimental)")
+		fmt.Fprintln(out, "  5) Declare this node an H3 server (on/off)")
 		fmt.Fprintln(out, "  6) Public identity init/export")
 		fmt.Fprintln(out, "  7) Trust peer import/remove")
 		fmt.Fprintln(out, "  8) Validate / doctor")
 		fmt.Fprintln(out, "  9) Exit")
-		fmt.Fprintln(out, "  10) Declare this node an H3 server (on/off)")
-		fmt.Fprint(out, "Choice [1-10]: ")
+		fmt.Fprint(out, "Choice [1-9]: ")
 		line, err := readLine(reader)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -76,11 +75,12 @@ func runAWGRootMenu(ctx context.Context, in io.Reader, out io.Writer, tty bool, 
 			// its read-ahead cannot consume a subsequent root-menu command.
 			fmt.Fprintln(out, "Generate an AWG profile here; use 'awg sync', 'get', or 'reset' for existing profile operations.")
 			return runInteractiveAWGProfile(ctx, reader, stdOut)
-		case "4", "quic-ip", "quic":
+		case "quic-ip", "quic":
+			fmt.Fprintln(out, "Advanced compatibility mode: raw quic-ip. New deployments should select HTTP/3.")
 			if err := runAWGTransportMode(ctx, "quic-ip", false, reader, stdOut); err != nil {
 				fmt.Fprintf(out, "quic-ip: %v\n", err)
 			}
-		case "5", "http3-ip", "http3":
+		case "4", "http3-ip", "http3":
 			if err := runAWGTransportMode(ctx, "http3-ip", false, reader, stdOut); err != nil {
 				fmt.Fprintf(out, "http3-ip: %v\n", err)
 			}
@@ -96,7 +96,7 @@ func runAWGRootMenu(ctx context.Context, in io.Reader, out io.Writer, tty bool, 
 			if err := runAWGDoctor(ctx, stdOut); err != nil {
 				fmt.Fprintf(out, "doctor: %v\n", err)
 			}
-		case "10", "server":
+		case "5", "10", "server":
 			fmt.Fprint(out, "Server declaration [on/off, empty cancels]: ")
 			value, err := readLine(reader)
 			if errors.Is(err, io.EOF) {
@@ -653,7 +653,7 @@ func transportCommand() *ffcli.Command {
 		Name:       "transport",
 		ShortUsage: "tailscale amnezia-wg transport [native|quic-ip|http3-ip]",
 		ShortHelp:  "Stage a transport mode change",
-		LongHelp:   "Switch between native WG/AWG, quic-ip, and http3-ip. Changes are staged and require a later daemon restart.",
+		LongHelp:   "Choose native WG/AWG or http3-ip. Raw quic-ip remains accepted for old prerelease configurations and explicit performance comparison; it is never silently converted. Changes are staged and require a later daemon restart.",
 	}
 	cmd.FlagSet = flag.NewFlagSet("transport", flag.ContinueOnError)
 	cmd.FlagSet.BoolVar(&yes, "yes", false, "skip confirmation and stage the next-start mode (does not restart)")

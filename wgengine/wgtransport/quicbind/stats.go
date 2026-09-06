@@ -21,7 +21,7 @@ func (b *Backend) Snapshot() map[string]any {
 }
 
 func (f *Factory) snapshotBackend(b *Backend) map[string]any {
-	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "wireguard_encryption": f.cfg.Payload != "ip", "server": f.cfg.Server, "browser_fingerprint": "none", "browser_fingerprint_supported": false}
+	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "wireguard_encryption": f.cfg.Payload != "ip", "server": f.cfg.Server, "browser_fingerprint": "none", "browser_fingerprint_supported": true}
 	if b == nil {
 		return out
 	}
@@ -64,6 +64,7 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 		g.peersMu.Unlock()
 		slices.SortFunc(ps, func(a, b *peer) int { return bytes.Compare(a.cfg.key[:], b.cfg.key[:]) })
 		active := 0
+		profiles := map[string]bool{}
 		var details []map[string]any
 		queuedTotal, queuedBytesTotal := 0, 0
 		var dropsTotal uint64
@@ -94,11 +95,25 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 					dropsTotal += drops
 				}
 				state := s.q.ConnectionState()
+				profile := "none"
+				if state.ClientHelloProfile != "" {
+					profile = state.ClientHelloProfile
+				}
+				detail["browser_fingerprint"] = profile
+				profiles[profile] = true
 				detail["tls_version"], detail["tls_cipher_suite"] = state.TLS.Version, state.TLS.CipherSuite
 				detail["datagrams"] = state.SupportsDatagrams.Local && state.SupportsDatagrams.Remote
 				if active == 1 {
+					out["browser_fingerprint"] = profile
 					out["tls_version"], out["tls_cipher_suite"], out["datagrams"] = detail["tls_version"], detail["tls_cipher_suite"], detail["datagrams"]
 				}
+			}
+		}
+		if len(profiles) > 1 {
+			out["browser_fingerprint"] = "mixed"
+		} else {
+			for profile := range profiles {
+				out["browser_fingerprint"] = profile
 			}
 		}
 		out["active_connections"] = active

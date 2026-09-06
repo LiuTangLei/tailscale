@@ -106,6 +106,8 @@ def main():
     p.add_argument("--dev-wg-over-quic", action="store_true", help="requires a ts_dev_wg_over_quic binary")
     p.add_argument("--browser-smoke", action="store_true", help="isolated headless Chrome visit to the HTTP/3 public site (UDP mode)")
     p.add_argument("--profile", choices=["standard", "awg2", "awg3", "awg31"], default="standard")
+    p.add_argument("--declared-servers", default="", help="comma-separated test node labels declaring server; empty keeps both ordinary mesh")
+    p.add_argument("--private-origins", action="store_true", help="use private .invalid origins and verify they are not sent as TLS SNI")
     p.add_argument("--mib", type=int, default=8)
     p.add_argument("--parallel", type=int, default=1)
     p.add_argument("--rounds", type=int, default=1)
@@ -127,6 +129,11 @@ def main():
         p.error("kernel-omit must be 0..5 and kernel-idle 0..20")
     if args.a_name == args.b_name or any(not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,30}", x) for x in (args.a_name, args.b_name)):
         p.error("node labels must be distinct lowercase DNS labels")
+    declared_servers = set(filter(None, args.declared_servers.split(',')))
+    if not declared_servers.issubset({args.a_name, args.b_name}):
+        p.error("declared-servers contains an unknown test node")
+    if declared_servers and args.managed_cli:
+        p.error("declaration matrix currently uses isolated environment profiles, not managed CLI setup")
     if not 0 <= args.latency_samples <= 30:
         p.error("latency-samples must be 0..30")
     # All invocations use the same isolated ports. Never overlap two runs and
@@ -164,6 +171,7 @@ def main():
     ident = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
     result = {"run": ident, "linux_sha256": hashlib.sha256(args.linux_binary.read_bytes()).hexdigest(),
               "profile": args.profile, "force_derp": args.force_derp,
+              "declared_servers": sorted(declared_servers), "private_origins": args.private_origins,
               "nodes": [{"name": args.a_name, "address": args.sg_address}, {"name": args.b_name, "address": args.zjg_address}],
               "source_commit": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
               "source_dirty": bool(run(["git", "status", "--porcelain"]).stdout.strip()),
@@ -279,8 +287,11 @@ def main():
                         if h3:
                             origin_port = 42642 if io_mode == "udp" else 42641
                             config["http3"] = True
-                            config["http3_url"] = f"https://{node['name']}.yesican.top:{origin_port}/.well-known/masque/ip/*/*/"
-                            peer_cfg["http3_url"] = f"https://{peer['name']}.yesican.top:{origin_port}/.well-known/masque/ip/*/*/"
+                            config["server"] = node['name'] in declared_servers
+                            peer_cfg["server"] = peer['name'] in declared_servers
+                            suffix = 'invalid' if args.private_origins else 'test'
+                            config["http3_url"] = f"https://{node['name']}.{suffix}:{origin_port}/.well-known/masque/ip/*/*/"
+                            peer_cfg["http3_url"] = f"https://{peer['name']}.{suffix}:{origin_port}/.well-known/masque/ip/*/*/"
                             node["h3url"] = config["http3_url"]
                             if args.browser_smoke and io_mode == "udp": config["http3_tcp_listen"] = "0.0.0.0:42642"
                         local_config = temp / f"{node['name']}-config.json"
@@ -354,7 +365,13 @@ def main():
                         if value["active_mode"] != expected or value["pending_restart"] or value["source"] != "managed":
                             raise RuntimeError("managed profile did not activate on actual restart: " + json.dumps(value))
                     print("CLI mode applied after restart:", variant, flush=True)
-                for i, node in enumerate(nodes):
+                # A declared server can send application data first over an
+                # existing connection, but only the nonserver TLS initiator
+                # exercises the browser handshake. Establish that connection
+                # first, then test both inner data directions independently.
+                proof_order = sorted(range(len(nodes)), key=lambda i: nodes[i]['name'] in declared_servers)
+                for i in proof_order:
+                    node = nodes[i]
                     if statuses[i]["public_key"] != node["public_key"]:
                         raise RuntimeError("persisted test node identity changed")
                     target = nodes[i ^ 1]["test_ip"]
@@ -382,6 +399,11 @@ def main():
                         stats = phase["transport"][node["name"]]
                         if not stats.get("identity_ok") or not stats.get("datagrams") or stats.get("tls_version") != 772 or not stats.get("sent_packets") or not stats.get("received_packets"):
                             raise RuntimeError("QUIC/TLS/data counters did not prove real QUIC transit")
+                        if variant.startswith("http3-ip-"):
+                            expected_profile = "chromium-h3" if len(declared_servers) == 1 and node['name'] not in declared_servers else "none"
+                            if stats.get('browser_fingerprint') != expected_profile:
+                                raise RuntimeError(f"{node['name']} profile mismatch: expected {expected_profile}, got {stats.get('browser_fingerprint')}")
+                            phase.setdefault('verified_profiles', {})[node['name']] = expected_profile
                         if variant.startswith(("quic-ip-", "http3-ip-")):
                             expected_alpn = "h3" if variant.startswith("http3-ip-") else "quic-ip/1"
                             if stats.get("payload") != "ip" or stats.get("alpn") != expected_alpn or stats.get("wireguard_encryption") is not False:
@@ -420,6 +442,11 @@ def main():
                         print('BROWSER', n['name'], 'PASS' if evidence['passed'] else 'FAIL', flush=True)
                         checkpoint()
                 phase["final_transport"] = {n["name"]: api(n, "/quic") for n in nodes}
+                if variant.startswith('http3-ip-'):
+                    for node in nodes:
+                        actual = phase['final_transport'][node['name']].get('browser_fingerprint')
+                        if actual != phase['verified_profiles'][node['name']]:
+                            raise RuntimeError('actual client handshake profile changed during benchmark')
                 phase["data_plane_passed"] = True
                 phase["passed"] = all(e["passed"] for e in phase.get("browser", []))
                 if args.managed_cli:

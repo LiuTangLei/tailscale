@@ -81,6 +81,8 @@ github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9 h1:1ltq
 github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9/go.mod h1:7uhhqiBaR4CpN0k9rMjOtjpcfGd6DG2m04zQxKnWQ0I=
 github.com/LiuTangLei/quic-go v0.62.0-tailscale.1 h1:sjSTpkVApoGYDyH9teys187gNiOA2TK+1qA6VGj1IYg=
 github.com/LiuTangLei/quic-go v0.62.0-tailscale.1/go.mod h1:RAro2j2yN9a9EiPACLHT9IB2NXCvGQmmo/alT0yYI0w=
+github.com/LiuTangLei/quic-go v0.62.0-tailscale.2 h1:usrvRkOadqzBX1b1RB3PHz4d419xDGcp+jBqKFy2Iz0=
+github.com/LiuTangLei/quic-go v0.62.0-tailscale.2/go.mod h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U=
 github.com/LiuTangLei/wireguard-go v0.0.31 h1:a0N0z9j77M9hvy3AXj8txgT1IbjzZVG2PHS3udh5QrU=
 github.com/LiuTangLei/wireguard-go v0.0.31/go.mod h1:vf4iDX4VWTkjjQRFVAYbAFCDladp+HMfBTkiLBhPm3o=
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=
@@ -1067,6 +1069,8 @@ github.com/redis/go-redis/extra/redisotel/v9 v9.0.5 h1:EfpWLLCyXw8PSM2/XNJLjI3Pb
 github.com/redis/go-redis/extra/redisotel/v9 v9.0.5/go.mod h1:WZjPDy7VNzn77AAfnAfVjZNvfJTYfPetfZk5yoSTLaQ=
 github.com/redis/go-redis/v9 v9.7.3 h1:YpPyAayJV+XErNsatSElgRZZVCwXX9QzkKYNvO7x0wM=
 github.com/redis/go-redis/v9 v9.7.3/go.mod h1:bGUrSggJ9X9GUmZpZNEOQKaANxSGgOEBRltRTZHSvrA=
+github.com/refraction-networking/utls v1.8.2 h1:j4Q1gJj0xngdeH+Ox/qND11aEfhpgoEvV+S9iJ2IdQo=
+github.com/refraction-networking/utls v1.8.2/go.mod h1:jkSOEkLqn+S/jtpEHPOsVv/4V4EVnelwbMQl4vCWXAM=
 github.com/rivo/uniseg v0.2.0/go.mod h1:J6wj4VEh+S6ZtnVlnTBMWIodfgj8LQOQFoIToxlJtxc=
 github.com/rivo/uniseg v0.4.4 h1:8TfxU8dW6PdqD27gjM8MVNuicgxIjxpm4K7x4jp8sis=
 github.com/rivo/uniseg v0.4.4/go.mod h1:FN3SvrM+Zdj16jyLfmOkMNblXMcoc8DfTHruCPUcx88=

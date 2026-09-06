@@ -26,16 +26,24 @@ const http3AuthLabel = "EXPORTER-HTTP3-CONNECT-IP-Peer-Auth-v1"
 // the exact request target; a proof captured on one connection is unusable on
 // any other. This is a private authorization scheme, not an RFC 9421 signature.
 // It is deliberately NOT a replacement for the live Tailnet/source-IP policy.
-func requestBinding(cs *tls.ConnectionState, r *http.Request) ([]byte, error) {
+type tlsExporter func(string, []byte, int) ([]byte, error)
+
+func requestBinding(cs *tls.ConnectionState, r *http.Request, exporter ...tlsExporter) ([]byte, error) {
 	if cs == nil || cs.Version != tls.VersionTLS13 || cs.NegotiatedProtocol != "h3" || r.URL == nil {
 		return nil, errors.New("HTTP/3 TLS 1.3 required for peer authentication")
 	}
 	context := sha256.Sum256([]byte(r.Method + "\n" + r.Proto + "\n" + r.Host + "\n" + r.URL.EscapedPath() + "?" + r.URL.RawQuery))
+	if len(exporter) > 1 || (len(exporter) == 1 && exporter[0] == nil) {
+		return nil, errors.New("invalid TLS exporter")
+	}
+	if len(exporter) == 1 {
+		return exporter[0](http3AuthLabel, context[:], 32)
+	}
 	return cs.ExportKeyingMaterial(http3AuthLabel, context[:], 32)
 }
 
-func (f *Factory) http3Authorization(cs *tls.ConnectionState, r *http.Request) (string, error) {
-	binding, err := requestBinding(cs, r)
+func (f *Factory) http3Authorization(cs *tls.ConnectionState, r *http.Request, exporter ...tlsExporter) (string, error) {
+	binding, err := requestBinding(cs, r, exporter...)
 	if err != nil {
 		return "", err
 	}
@@ -60,7 +68,7 @@ func (f *Factory) http3Authorization(cs *tls.ConnectionState, r *http.Request) (
 	return http3AuthScheme + encoded, nil
 }
 
-func (f *Factory) verifyHTTP3Authorization(cs *tls.ConnectionState, r *http.Request) ([32]byte, error) {
+func (f *Factory) verifyHTTP3Authorization(cs *tls.ConnectionState, r *http.Request, exporter ...tlsExporter) ([32]byte, error) {
 	var zero [32]byte
 	values := r.Header.Values("Authorization")
 	if len(values) != 1 || len(values[0]) > 12<<10 || !strings.HasPrefix(values[0], http3AuthScheme) {
@@ -90,7 +98,7 @@ func (f *Factory) verifyHTTP3Authorization(cs *tls.ConnectionState, r *http.Requ
 	if err != nil {
 		return zero, err
 	}
-	binding, err := requestBinding(cs, r)
+	binding, err := requestBinding(cs, r, exporter...)
 	if err != nil {
 		return zero, err
 	}

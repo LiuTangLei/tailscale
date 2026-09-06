@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,14 +41,84 @@ func TestServerHintParsingAndClientOnlySelection(t *testing.T) {
 			if b.browserProfileEligible(k, false) {
 				t.Fatal("inbound TLS server selected a browser profile")
 			}
-			if b.browserProfileEligible(k, true) != (hint == serverYes) {
-				t.Fatal("selector used local role instead of authenticated remote flag")
+			want := !localServer && hint == serverYes
+			if b.browserProfileEligible(k, true) != want {
+				t.Fatalf("local=%t hint=%d: got %t want %t", localServer, hint, b.browserProfileEligible(k, true), want)
 			}
 		}
 	}
 	b.forgetServerHint(k)
 	if b.browserProfileEligible(k, true) {
 		t.Fatal("revoked hint survived")
+	}
+}
+
+func TestBrowserProfileSelectionTruthTableAndSNI(t *testing.T) {
+	fb := &Backend{factory: &Factory{cfg: Config{HTTP3: true}}, serverHints: map[[32]byte]*atomic.Uint32{}}
+	for _, tc := range []struct {
+		name        string
+		localServer bool
+		remoteHint  uint32
+		outgoing    bool
+		want        bool
+	}{
+		{"unknown-incoming", false, serverUnknown, false, false},
+		{"unknown-outgoing", false, serverUnknown, true, false},
+		{"ordinary-ordinary", false, serverNo, true, false},
+		{"local-server-remote-server", true, serverYes, true, false},
+		{"server-server", false, serverYes, true, true},
+		{"incoming-to-server", false, serverYes, false, false},
+	} {
+		k := [32]byte{byte(len(tc.name))}
+		fb.serverHints[k] = new(atomic.Uint32)
+		fb.serverHints[k].Store(tc.remoteHint)
+		fb.factory.cfg.Server = tc.localServer
+		if got := fb.browserProfileEligible(k, tc.outgoing); got != tc.want {
+			t.Fatalf("%s: got %t want %t", tc.name, got, tc.want)
+		}
+		if got := fb.browserProfileForPeer(k, tc.outgoing); got != "" && tc.want {
+			if got != "chromium-h3" {
+				t.Fatalf("%s: got %q want chromium-h3", tc.name, got)
+			}
+		} else if got != "" {
+			t.Fatalf("%s: got %q want empty", tc.name, got)
+		}
+	}
+	for _, tc := range []struct {
+		url  string
+		want string
+	}{
+		{"https://example.com/.well-known/masque/ip/", "example.com"},
+		{"https://127.0.0.1/.well-known/masque/ip/", ""},
+		{"https://node-123.invalid/.well-known/masque/ip/", ""},
+	} {
+		u, err := url.Parse(tc.url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := http3ClientHelloServerName(u); got != tc.want {
+			t.Fatalf("%s: got %q want %q", tc.url, got, tc.want)
+		}
+	}
+	kYes, kNo := [32]byte{1}, [32]byte{2}
+	b := &Backend{factory: &Factory{cfg: Config{HTTP3: true}}, serverHints: map[[32]byte]*atomic.Uint32{kYes: new(atomic.Uint32), kNo: new(atomic.Uint32)}}
+	b.serverHints[kYes].Store(serverYes)
+	b.serverHints[kNo].Store(serverNo)
+	cfgYes := b.quicConfig()
+	cfgYes.ClientHelloProfile = b.browserProfileForPeer(kYes, true)
+	cfgNo := b.quicConfig()
+	cfgNo.ClientHelloProfile = b.browserProfileForPeer(kNo, true)
+	if cfgYes == cfgNo {
+		t.Fatal("per-dial QUIC config not unique")
+	}
+	if cfgYes.ClientHelloProfile != "chromium-h3" {
+		t.Fatal("eligible peer did not carry per-dial browser profile")
+	}
+	if cfgNo.ClientHelloProfile != "" {
+		t.Fatal("ineligible peer unexpectedly carries a browser profile")
+	}
+	if b.factory.cfg.Server {
+		t.Fatal("factory config mutated by a per-dial browser selection")
 	}
 }
 
@@ -93,11 +164,27 @@ func TestH3SingleServerFlagLearnsAutomatically(t *testing.T) {
 						if b.peerServerHint(remote) != want {
 							t.Fatalf("node%d failed to learn flag", n)
 						}
-						if b.browserProfileEligible(remote, true) != flags[n^1] {
+						eligible := !flags[n] && flags[n^1]
+						if b.browserProfileEligible(remote, true) != eligible {
 							t.Fatal("wrong next outbound selection")
 						}
-						if b.Snapshot()["browser_fingerprint"] != "none" {
-							t.Fatal("claimed an unimplemented browser fingerprint")
+						p, err := b.active.Load().peer(remote, nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						p.closeSession("baseline for the next outbound after learning the authenticated server hint")
+						if got := b.Snapshot()["browser_fingerprint"]; got != "none" {
+							t.Fatalf("closed session leaked a browser profile: got %v", got)
+						}
+						if _, err := p.getSession(); err != nil {
+							t.Fatal(err)
+						}
+						profile := "none"
+						if eligible {
+							profile = "chromium-h3"
+						}
+						if got := b.Snapshot()["browser_fingerprint"]; got != profile {
+							t.Fatalf("actual browser fingerprint mismatch: got %v want %q", got, profile)
 						}
 					}
 					for _, b := range pair.backends {

@@ -641,9 +641,13 @@ func (p *peer) getSession() (*session, error) {
 	defer cancel()
 	tlsConfig := p.g.b.factory.tlsConfig(&p.cfg.key)
 	if p.cfg.http3URL != nil {
-		tlsConfig.ServerName = p.cfg.http3URL.Hostname()
+		tlsConfig.ServerName = http3ClientHelloServerName(p.cfg.http3URL)
 	}
-	q, err := p.g.transport.Dial(ctx, remote, tlsConfig, p.g.b.quicConfig())
+	cfg := p.g.b.quicConfig()
+	if profile := p.g.b.browserProfileForPeer(p.cfg.key, true); profile != "" {
+		cfg.ClientHelloProfile = profile
+	}
+	q, err := p.g.transport.Dial(ctx, remote, tlsConfig, cfg)
 	if err != nil {
 		p.g.b.counters.HandshakeErrors.Add(1)
 		p.publishState(wgtransport.SessionExpired)
