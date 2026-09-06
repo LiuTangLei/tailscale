@@ -167,11 +167,12 @@ func run() error {
 			http.Error(w, "GET required", 405)
 			return
 		}
-		if quicFactory == nil {
-			writeJSON(w, map[string]any{"quic": false})
+		stats, err := s.PacketTransportDiagnostics()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		writeJSON(w, quicFactory.Snapshot())
+		writeJSON(w, stats)
 	})
 	return serve(ctx, *listen, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// No browser-origin requests or CORS. Mutations need a custom header.

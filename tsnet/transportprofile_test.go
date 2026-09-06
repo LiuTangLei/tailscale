@@ -182,6 +182,30 @@ func TestManagedTransportLifecycle(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
+		for _, node := range nodes {
+			stats, err := node.PacketTransportDiagnostics()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stats["mode"] != mode || stats["quic"] != (mode != "native") {
+				t.Fatalf("managed runtime diagnostics reported a different carrier: %+v", stats)
+			}
+			if mode != "native" {
+				if stats["identity_ok"] != true || stats["tls_version"] != uint16(0x0304) || stats["datagrams"] != true || stats["wireguard_encryption"] != false {
+					t.Fatalf("managed carrier missing authenticated native-IP evidence: %+v", stats)
+				}
+				if n, ok := stats["sent_packets"].(uint64); !ok || n == 0 {
+					t.Fatal("managed sender stats absent", stats)
+				}
+				if n, ok := stats["received_packets"].(uint64); !ok || n == 0 {
+					t.Fatal("managed receiver stats absent", stats)
+				}
+			}
+			encoded, _ := json.Marshal(stats)
+			if bytes.Contains(encoded, []byte("PRIVATE KEY")) || bytes.Contains(encoded, []byte("private_key")) {
+				t.Fatal("diagnostics exposed private identity material")
+			}
+		}
 		previous = mode
 	}
 }
