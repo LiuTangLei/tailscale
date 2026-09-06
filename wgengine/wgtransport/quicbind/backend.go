@@ -567,17 +567,33 @@ func (g *generation) accept() {
 	}
 }
 
+// On simultaneous H3 dials, prefer the ordinary node as TLS client when the
+// authenticated declarations differ. Symmetric/unknown pairs keep the stable
+// key-based rule. This arbitrates already-established candidates; it never
+// starts or resets a healthy connection merely to change its fingerprint.
+func (p *peer) preferredOutgoing(hint uint32) bool {
+	if p.g.b.factory.cfg.HTTP3 && hint != serverUnknown && hint <= serverYes && p.g.b.factory.cfg.Server != (hint == serverYes) {
+		return !p.g.b.factory.cfg.Server
+	}
+	return bytes.Compare(p.g.b.factory.local[:], p.cfg.key[:]) < 0
+}
+
 func (p *peer) install(q *quic.Conn, outgoing bool) *session {
 	return p.installChannel(q, outgoing, q)
 }
 
-func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChannel) *session {
+func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChannel, authenticatedServerHint ...uint32) *session {
 	state := q.ConnectionState()
 	if !state.SupportsDatagrams.Local || !state.SupportsDatagrams.Remote {
 		q.CloseWithError(1, "QUIC DATAGRAM required")
 		return nil
 	}
-	preferred := (bytes.Compare(p.g.b.factory.local[:], p.cfg.key[:]) < 0) == outgoing
+	hint := p.g.b.peerServerHint(p.cfg.key)
+	if len(authenticatedServerHint) == 1 {
+		hint = authenticatedServerHint[0]
+	}
+	preferredOutgoing := p.preferredOutgoing(hint)
+	preferred := preferredOutgoing == outgoing
 	ns := &session{q: q, dgram: channel, preferred: preferred, outgoing: outgoing, stamp: p.lifecycleStamp()}
 	p.mu.Lock()
 	old := p.session
@@ -589,7 +605,7 @@ func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChann
 	// A fresh connection in the same deterministic direction must supersede
 	// the old one (remote restart/rebind). Rejecting it until idle timeout can
 	// produce an endless successful-TLS-but-no-data reconnect loop.
-	if old != nil && old.q.Context().Err() == nil && old.preferred && !preferred {
+	if old != nil && old.q.Context().Err() == nil && old.outgoing == preferredOutgoing && !preferred {
 		p.mu.Unlock()
 		q.CloseWithError(0, "duplicate connection")
 		return old

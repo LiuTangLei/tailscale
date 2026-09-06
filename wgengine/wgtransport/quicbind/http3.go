@@ -210,7 +210,7 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	}
 	stream := w.(http3.HTTPStreamer).HTTPStream()
 	channel := newHTTP3Channel(g, q, stream, stream, fragments)
-	session := p.installChannel(q, false, channel)
+	session := p.installChannel(q, false, channel, peerServerHint)
 	if session == nil || session.q != q {
 		return
 	}
@@ -278,7 +278,7 @@ func (p *peer) openHTTP3(q *quic.Conn) (_ *session, reterr error) {
 	_ = stream.SetDeadline(time.Time{})
 	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1
 	channel := newHTTP3Channel(p.g, q, stream, stream, fragments)
-	session := p.installChannel(q, true, channel)
+	session := p.installChannel(q, true, channel, peerServerHint)
 	if session == nil {
 		return nil, net.ErrClosed
 	}
