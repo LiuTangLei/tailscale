@@ -45,6 +45,7 @@ var ErrConflict = errors.New("transport profile changed; refresh status before c
 type Profile struct {
 	Version     int                 `json:"version"`
 	Mode        string              `json:"mode"`
+	Server      bool                `json:"server,omitempty"`
 	LocalKey    string              `json:"local_public_key,omitempty"`
 	Certificate string              `json:"certificate_pem,omitempty"`
 	PrivateKey  string              `json:"private_key_pem,omitempty"`
@@ -171,7 +172,13 @@ func (p Profile) certificate() (tls.Certificate, error) {
 	return cert, nil
 }
 func (p Profile) Public(revision string) ipn.TransportControlStatus {
-	return ipn.TransportControlStatus{DesiredMode: p.Mode, Revision: revision, Identity: p.Identity, Peers: slices.Clone(p.Peers), Available: true}
+	var identity *ipn.TransportPeer
+	if p.Identity != nil {
+		card := *p.Identity
+		card.Server = p.Server
+		identity = &card
+	}
+	return ipn.TransportControlStatus{DesiredMode: p.Mode, Server: p.Server, Revision: revision, Identity: identity, Peers: slices.Clone(p.Peers), Available: true}
 }
 func (p Profile) Factory() (*quicbind.Factory, error) {
 	if p.Mode == "native" {
@@ -187,12 +194,14 @@ func (p Profile) Factory() (*quicbind.Factory, error) {
 	c := quicbind.Config{Version: 2, Payload: "ip", IO: "magicsock", LocalPublicKey: p.LocalKey, InitialPacketSize: 1400, QueuePackets: 256}
 	if p.Mode == "http3-ip" {
 		c.HTTP3 = true
+		c.Server = p.Server
 		c.HTTP3URL = p.Identity.HTTP3URL
 	}
 	for _, peer := range p.Peers {
 		q := quicbind.PeerConfig{PublicKey: peer.PublicKey, SPKISHA256: peer.SPKISHA256}
 		if c.HTTP3 {
 			q.HTTP3URL = peer.HTTP3URL
+			q.Server = peer.Server
 		}
 		c.Peers = append(c.Peers, q)
 	}
@@ -244,6 +253,18 @@ func Apply(p Profile, req ipn.TransportControlRequest, localKey string) (Profile
 				if old == peer {
 					return p, nil
 				}
+				// Updating a public server hint is not TLS key rotation. Keep
+				// key, pin, name and origin identity checks otherwise unchanged.
+				old.Server = peer.Server
+				if old == peer {
+					p.Peers = slices.Clone(p.Peers)
+					for i := range p.Peers {
+						if p.Peers[i].PublicKey == peer.PublicKey {
+							p.Peers[i].Server = peer.Server
+						}
+					}
+					return p, p.Validate(localKey)
+				}
 				return p, errors.New("peer already exists with a different identity; explicitly remove it before trusting a replacement")
 			}
 			if old.SPKISHA256 == peer.SPKISHA256 {
@@ -283,6 +304,11 @@ func Apply(p Profile, req ipn.TransportControlRequest, localKey string) (Profile
 		if p.Mode != "native" && len(p.Peers) == 0 {
 			return p, errors.New("cannot remove last peer from an enabled profile; stage native first")
 		}
+	case "server":
+		if req.Server == nil {
+			return p, errors.New("server update requires an explicit true or false")
+		}
+		p.Server = *req.Server
 	case "mode":
 		if !ValidMode(req.Mode) {
 			return p, errors.New("choose native, quic-ip or http3-ip; WG-over-QUIC is not a production mode")

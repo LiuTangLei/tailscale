@@ -51,7 +51,8 @@ func runAWGRootMenu(ctx context.Context, in io.Reader, out io.Writer, tty bool, 
 		fmt.Fprintln(out, "  7) Trust peer import/remove")
 		fmt.Fprintln(out, "  8) Validate / doctor")
 		fmt.Fprintln(out, "  9) Exit")
-		fmt.Fprint(out, "Choice [1-9]: ")
+		fmt.Fprintln(out, "  10) Declare this node an H3 server (on/off)")
+		fmt.Fprint(out, "Choice [1-10]: ")
 		line, err := readLine(reader)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -95,6 +96,20 @@ func runAWGRootMenu(ctx context.Context, in io.Reader, out io.Writer, tty bool, 
 			if err := runAWGDoctor(ctx, stdOut); err != nil {
 				fmt.Fprintf(out, "doctor: %v\n", err)
 			}
+		case "10", "server":
+			fmt.Fprint(out, "Server declaration [on/off, empty cancels]: ")
+			value, err := readLine(reader)
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(value) != "" {
+				if err := stageServerDeclaration(ctx, &localClient, value, false, reader, stdOut); err != nil {
+					fmt.Fprintf(out, "server: %v\n", err)
+				}
+			}
 		case "", "9", "exit", "q", "quit":
 			return nil
 		default:
@@ -104,7 +119,7 @@ func runAWGRootMenu(ctx context.Context, in io.Reader, out io.Writer, tty bool, 
 }
 
 func printAWGHelp(out io.Writer) error {
-	_, err := fmt.Fprintln(out, "Usage: tailscale awg [status|transport|identity|peer|doctor|set|get|sync|reset|validate]")
+	_, err := fmt.Fprintln(out, "Usage: tailscale awg [status|transport|server|identity|peer|doctor|set|get|sync|reset|validate]")
 	return err
 }
 
@@ -214,6 +229,7 @@ func renderTransportStatus(status ipn.TransportControlStatus, out io.Writer, jso
 	fmt.Fprintf(out, "Transport status\n")
 	fmt.Fprintf(out, "  Active mode: %s\n", status.ActiveMode)
 	fmt.Fprintf(out, "  Desired mode: %s\n", status.DesiredMode)
+	fmt.Fprintf(out, "  H3 server declaration (next start): %t\n", status.Server)
 	if status.PendingRestart {
 		fmt.Fprintln(out, "  Pending restart: yes")
 		if status.ActiveMode != status.DesiredMode {
@@ -506,6 +522,10 @@ func parseTransportPeerJSON(input string) (ipn.TransportPeer, error) {
 			}
 		case "http3_url":
 			if err := dec.Decode(&peer.HTTP3URL); err != nil {
+				return ipn.TransportPeer{}, err
+			}
+		case "server":
+			if err := dec.Decode(&peer.Server); err != nil {
 				return ipn.TransportPeer{}, err
 			}
 		default:

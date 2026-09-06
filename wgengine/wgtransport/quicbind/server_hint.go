@@ -1,0 +1,97 @@
+// Copyright (c) Tailscale Inc & contributors
+// SPDX-License-Identifier: BSD-3-Clause
+
+package quicbind
+
+import (
+	"errors"
+	"net/http"
+	"sync/atomic"
+)
+
+// This is encrypted HTTP/3 connection metadata, not a TLS extension or public
+// discovery protocol. Learn it only AFTER authenticating the exact Tailnet peer.
+// Old peers omit it and continue using the unmodified H3 mesh handshake.
+const serverHintHeader = "X-Transport-Server"
+
+const (
+	serverUnknown uint32 = iota
+	serverNo
+	serverYes
+)
+
+func serverHintValue(server bool) string {
+	if server {
+		return "?1"
+	}
+	return "?0"
+}
+
+func parseServerHint(h http.Header) (uint32, error) {
+	values := h.Values(serverHintHeader)
+	if len(values) == 0 {
+		return serverUnknown, nil
+	}
+	if len(values) != 1 {
+		return serverUnknown, errors.New("duplicate HTTP/3 server declaration")
+	}
+	switch values[0] {
+	case "?0":
+		return serverNo, nil
+	case "?1":
+		return serverYes, nil
+	default:
+		return serverUnknown, errors.New("invalid HTTP/3 server declaration")
+	}
+}
+
+// serverHints is per-backend, not shared mutable Factory state. Only configured
+// peers get a slot. The map is immutable after construction; slots are atomic.
+func (b *Backend) initServerHints() {
+	b.serverHints = make(map[[32]byte]*atomic.Uint32, len(b.factory.peers))
+	for k, p := range b.factory.peers {
+		h := new(atomic.Uint32)
+		if p.server {
+			h.Store(serverYes)
+		}
+		b.serverHints[k] = h
+	}
+}
+
+func (b *Backend) peerServerHint(k [32]byte) uint32 {
+	if h := b.serverHints[k]; h != nil {
+		return h.Load()
+	}
+	return serverUnknown
+}
+
+func (b *Backend) forgetServerHint(k [32]byte) {
+	if h := b.serverHints[k]; h != nil {
+		h.Store(serverUnknown)
+	}
+}
+
+// This selector is deliberately independent of this node's Server bit. Only
+// the OUTGOING end connecting to an authenticated declared server is eligible
+// for a future browser ClientHello. Incoming endpoints are never "browsers".
+// Eligibility does not claim that a browser TLS implementation is installed.
+func (b *Backend) browserProfileEligible(k [32]byte, outgoing bool) bool {
+	return b.factory.cfg.HTTP3 && outgoing && b.peerServerHint(k) == serverYes
+}
+
+// Remember an authenticated CONNECT's declaration only if it still belongs to
+// the current peer session and identity generation. Late/superseded responses
+// cannot overwrite a fresh connection's metadata. Removal clears the hint.
+func (p *peer) rememberServerHint(s *session, hint uint32) {
+	if hint > serverYes || p.g.ctx.Err() != nil || p.g.b.active.Load() != p.g {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.session != s || !p.stampValid(s.stamp) || s.q.Context().Err() != nil {
+		return
+	}
+	if h := p.g.b.serverHints[p.cfg.key]; h != nil {
+		h.Store(hint)
+	}
+}

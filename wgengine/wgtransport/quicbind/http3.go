@@ -152,6 +152,11 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusNotFound)
 		return
 	}
+	peerServerHint, err := parseServerHint(r.Header)
+	if err != nil {
+		deny(http.StatusBadRequest)
+		return
+	}
 	if r.Header.Get(http3.CapsuleProtocolHeader) != "?1" || len(r.Header.Values(http3.CapsuleProtocolHeader)) != 1 {
 		deny(http.StatusBadRequest)
 		return
@@ -193,6 +198,9 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	defer func() { g.h3.mu.Lock(); delete(g.h3.tunnels, q); g.h3.mu.Unlock() }()
 	fragments := r.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(r.Header.Values(fragmentHeaderName)) == 1
 	w.Header().Set(http3.CapsuleProtocolHeader, "?1")
+	// Only authenticated CONNECT replies advertise this metadata, never
+	// public pages or unauthenticated discovery responses.
+	w.Header().Set(serverHintHeader, serverHintValue(g.b.factory.cfg.Server))
 	if fragments {
 		w.Header().Set(fragmentHeaderName, fragmentHeaderValue)
 	}
@@ -206,6 +214,7 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	if session == nil || session.q != q {
 		return
 	}
+	p.rememberServerHint(session, peerServerHint)
 	g.b.counters.HTTP3Tunnels.Add(1)
 	// The request stream, not an unrelated raw QUIC receive loop, owns the tunnel.
 	select {
@@ -251,6 +260,7 @@ func (p *peer) openHTTP3(q *quic.Conn) (_ *session, reterr error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", proof)
+	req.Header.Set(serverHintHeader, serverHintValue(p.g.b.factory.cfg.Server))
 	if err := stream.SendRequestHeader(req); err != nil {
 		return nil, err
 	}
@@ -261,12 +271,19 @@ func (p *peer) openHTTP3(q *quic.Conn) (_ *session, reterr error) {
 	if response.StatusCode != http.StatusOK || response.Header.Get(http3.CapsuleProtocolHeader) != "?1" {
 		return nil, fmt.Errorf("CONNECT-IP rejected with HTTP %d or missing Capsule-Protocol", response.StatusCode)
 	}
+	peerServerHint, err := parseServerHint(response.Header)
+	if err != nil {
+		return nil, err
+	}
 	_ = stream.SetDeadline(time.Time{})
 	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1
 	channel := newHTTP3Channel(p.g, q, stream, stream, fragments)
 	session := p.installChannel(q, true, channel)
 	if session == nil {
 		return nil, net.ErrClosed
+	}
+	if session.q == q {
+		p.rememberServerHint(session, peerServerHint)
 	}
 	p.g.b.counters.HTTP3Tunnels.Add(1)
 	return session, nil

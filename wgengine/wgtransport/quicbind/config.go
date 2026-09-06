@@ -52,7 +52,10 @@ type Config struct {
 	QueuePackets      int          `json:"queue_packets,omitempty"`
 	Peers             []PeerConfig `json:"peers"`
 	// HTTP3 selects a real CONNECT-IP request, not raw DATAGRAMs with h3 ALPN.
-	HTTP3    bool   `json:"http3,omitempty"`
+	HTTP3 bool `json:"http3,omitempty"`
+	// Server advertises this node as a browser-profile target. It does not
+	// force a TLS role, open ports, grant access or disable mesh dialing.
+	Server   bool   `json:"server,omitempty"`
 	HTTP3URL string `json:"http3_url,omitempty"`
 	// Optional HTTPS listener advertises the same HTTP/3 origin via Alt-Svc.
 	HTTP3TCPListen string `json:"http3_tcp_listen,omitempty"`
@@ -63,6 +66,7 @@ type PeerConfig struct {
 	SPKISHA256 string `json:"spki_sha256"`
 	Endpoint   string `json:"endpoint,omitempty"`  // UDP mode only; literal IP:port
 	HTTP3URL   string `json:"http3_url,omitempty"` // trusted https origin and CONNECT-IP path
+	Server     bool   `json:"server,omitempty"`    // optional trusted public-card hint
 }
 
 type Factory struct {
@@ -81,6 +85,7 @@ type peerConfig struct {
 	pin      [32]byte
 	address  *net.UDPAddr
 	http3URL *url.URL
+	server   bool
 }
 
 func (f *Factory) Mode() wgtransport.Mode {
@@ -190,7 +195,7 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 				return nil, errors.New("invalid HTTP/3 TCP listen address")
 			}
 		}
-	} else if c.HTTP3URL != "" || c.HTTP3TCPListen != "" {
+	} else if c.HTTP3URL != "" || c.HTTP3TCPListen != "" || c.Server {
 		return nil, errors.New("HTTP/3 options require http3=true")
 	}
 	if c.IO == "" {
@@ -282,7 +287,7 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 		if _, ok := f.byPin[pin]; ok {
 			return nil, errors.New("TLS pin must map to exactly one WG peer")
 		}
-		pc := peerConfig{key: key, pin: pin}
+		pc := peerConfig{key: key, pin: pin, server: p.Server}
 		if c.HTTP3 {
 			pc.http3URL, err = parseHTTP3URL(p.HTTP3URL)
 			if err != nil {

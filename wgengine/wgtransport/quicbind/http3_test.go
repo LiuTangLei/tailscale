@@ -29,7 +29,7 @@ func TestProductionRejectsLegacyConfig(t *testing.T) {
 }
 
 func TestHTTP3PublicPageDoesNotAuthorizeTunnel(t *testing.T) {
-	p := newTestPair(t, "http3-udp")
+	p := newTestPair(t, "http3-udp", func(c *Config) { c.Server = true })
 	p.open(t)
 	a, b := p.backends[0], p.backends[1]
 	cfg := a.factory.tlsConfig(&b.factory.local)
@@ -56,6 +56,9 @@ func TestHTTP3PublicPageDoesNotAuthorizeTunnel(t *testing.T) {
 	if err != nil || res.StatusCode != 200 || res.ProtoMajor != 3 || !strings.Contains(string(body), "Welcome") || !strings.Contains(res.Header.Get("Alt-Svc"), "h3=") {
 		t.Fatalf("public site: %v status=%d proto=%s body=%s", err, res.StatusCode, res.Proto, body)
 	}
+	if res.Header.Get(serverHintHeader) != "" {
+		t.Fatal("public site leaked private node declaration")
+	}
 	select {
 	case <-client.ReceivedSettings():
 	case <-ctx.Done():
@@ -70,7 +73,7 @@ func TestHTTP3PublicPageDoesNotAuthorizeTunnel(t *testing.T) {
 	}
 	_ = str.SetDeadline(time.Now().Add(5 * time.Second))
 	u := b.factory.http3URL
-	if err := str.SendRequestHeader(&http.Request{Method: "CONNECT", Proto: "connect-ip", Host: u.Host, URL: u, Header: http.Header{http3.CapsuleProtocolHeader: []string{"?1"}}}); err != nil {
+	if err := str.SendRequestHeader(&http.Request{Method: "CONNECT", Proto: "connect-ip", Host: u.Host, URL: u, Header: http.Header{http3.CapsuleProtocolHeader: []string{"?1"}, serverHintHeader: []string{"?1"}}}); err != nil {
 		t.Fatal(err)
 	}
 	reply, err := str.ReadResponse()
@@ -82,6 +85,12 @@ func TestHTTP3PublicPageDoesNotAuthorizeTunnel(t *testing.T) {
 	}
 	str.CancelRead(0)
 	str.CancelWrite(0)
+	if b.peerServerHint(a.factory.local) != serverUnknown {
+		t.Fatal("unauthenticated request poisoned server metadata")
+	}
+	if reply.Header.Get(serverHintHeader) != "" {
+		t.Fatal("unauthenticated response leaked server metadata")
+	}
 	if b.counters.HTTP3Tunnels.Load() != 0 || b.counters.ReceivedPackets.Load() != 0 {
 		t.Fatal("public request created a tunnel")
 	}

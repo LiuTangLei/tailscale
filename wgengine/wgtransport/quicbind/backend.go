@@ -62,6 +62,7 @@ type Backend struct {
 	identityEpoch atomic.Uint64 // invalidates queued work across local identity changes
 	networkUp     atomic.Bool
 	counters      Counters
+	serverHints   map[[32]byte]*atomic.Uint32
 }
 type carrierBind struct{ b *Backend }
 
@@ -139,6 +140,7 @@ type session struct {
 	fragmentMu sync.Mutex
 	frames     reassembler
 	preferred  bool
+	outgoing   bool
 	stamp      lifecycleStamp
 }
 
@@ -156,6 +158,7 @@ func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 		return nil, errors.New("independent QUIC UDP requires a host-protected ListenPacket hook")
 	}
 	b := &Backend{factory: f, host: h}
+	b.initServerHints()
 	b.bind.b = b
 	b.networkUp.Store(true)
 	f.last.Store(b)
@@ -189,6 +192,7 @@ func (b *Backend) LocalIdentityChanged(k [32]byte) {
 func (b *Backend) PeerRemoved(k [32]byte) {
 	g := b.active.Load()
 	if g == nil {
+		b.forgetServerHint(k)
 		return
 	}
 	g.peersMu.Lock()
@@ -198,6 +202,7 @@ func (b *Backend) PeerRemoved(k [32]byte) {
 		p.disabled.Store(true)
 		p.closeSession("peer removed or reset")
 	}
+	b.forgetServerHint(k)
 }
 func (b *Backend) NetworkChanged(up, rebind bool) {
 	b.networkUp.Store(up)
@@ -573,7 +578,7 @@ func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChann
 		return nil
 	}
 	preferred := (bytes.Compare(p.g.b.factory.local[:], p.cfg.key[:]) < 0) == outgoing
-	ns := &session{q: q, dgram: channel, preferred: preferred, stamp: p.lifecycleStamp()}
+	ns := &session{q: q, dgram: channel, preferred: preferred, outgoing: outgoing, stamp: p.lifecycleStamp()}
 	p.mu.Lock()
 	old := p.session
 	if p.g.ctx.Err() != nil || !p.stampValid(ns.stamp) {

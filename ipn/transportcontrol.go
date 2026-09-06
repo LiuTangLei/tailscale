@@ -11,6 +11,8 @@ type TransportPeer struct {
 	PublicKey  string `json:"public_key"`
 	SPKISHA256 string `json:"spki_sha256"`
 	HTTP3URL   string `json:"http3_url,omitempty"`
+	// Server is a public declaration, not a per-peer role or permission.
+	Server bool `json:"server,omitempty"`
 }
 
 // TransportUnconfiguredPeer identifies a routable Tailnet peer for which the
@@ -24,12 +26,15 @@ type TransportUnconfiguredPeer struct {
 // TransportControlStatus separates the running engine from the next-start
 // profile. A successful mutation never implies a running mode switch.
 type TransportControlStatus struct {
-	ActiveMode        string                      `json:"active_mode"`
-	DesiredMode       string                      `json:"desired_mode"`
-	PendingRestart    bool                        `json:"pending_restart"`
-	Available         bool                        `json:"available"`
-	Source            string                      `json:"source"`
-	Revision          string                      `json:"revision"`
+	ActiveMode     string `json:"active_mode"`
+	DesiredMode    string `json:"desired_mode"`
+	PendingRestart bool   `json:"pending_restart"`
+	Available      bool   `json:"available"`
+	Source         string `json:"source"`
+	Revision       string `json:"revision"`
+	// Server is the configured next-start declaration. PendingRestart must
+	// be checked before treating it as the running HTTP/3 setting.
+	Server            bool                        `json:"server"`
 	LocalPublicKey    string                      `json:"local_public_key,omitempty"`
 	Identity          *TransportPeer              `json:"identity,omitempty"`
 	Peers             []TransportPeer             `json:"peers"`
@@ -42,11 +47,13 @@ type TransportControlStatus struct {
 // TransportControlRequest is an explicit local mutation. ExpectedRevision is
 // required for every action and prevents stale interactive prompts overwriting
 // a concurrent administrator's changes. Actions: prepare, add-peer, remove-peer,
-// mode, validate. validate is read-only and needs no revision.
+// mode, server, validate. validate is read-only and needs no revision.
 type TransportControlRequest struct {
-	Action           string         `json:"action"`
-	ExpectedRevision string         `json:"expected_revision,omitempty"`
-	Mode             string         `json:"mode,omitempty"`
-	Peer             *TransportPeer `json:"peer,omitempty"`
-	PublicKey        string         `json:"public_key,omitempty"`
+	Action           string `json:"action"`
+	ExpectedRevision string `json:"expected_revision,omitempty"`
+	Mode             string `json:"mode,omitempty"`
+	// Pointer distinguishes an explicit false from a missing update.
+	Server    *bool          `json:"server,omitempty"`
+	Peer      *TransportPeer `json:"peer,omitempty"`
+	PublicKey string         `json:"public_key,omitempty"`
 }

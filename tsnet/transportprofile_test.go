@@ -109,10 +109,14 @@ func TestManagedTransportLifecycle(t *testing.T) {
 		t.Fatal("stale prompt overwrote profile")
 	}
 	previous := "native"
-	for _, mode := range []string{"quic-ip", "http3-ip", "native"} {
+	// No card re-import: online peers learn the new node declaration during
+	// their authenticated CONNECT after each restart. Also clear a cached true.
+	for phase, mode := range []string{"quic-ip", "http3-ip", "http3-ip", "http3-ip", "native"} {
+		server := phase == 1
+		change(1, ipn.TransportControlRequest{Action: "server", Server: &server})
 		for i := range nodes {
 			st := change(i, ipn.TransportControlRequest{Action: "mode", Mode: mode})
-			if st.ActiveMode != previous || st.DesiredMode != mode || !st.PendingRestart {
+			if st.ActiveMode != previous || st.DesiredMode != mode || ((mode != previous || i == 1 && mode == "http3-ip" && phase < 3) && !st.PendingRestart) {
 				t.Fatalf("staging changed running mode: %+v", st)
 			}
 		}
@@ -122,6 +126,9 @@ func TestManagedTransportLifecycle(t *testing.T) {
 			st := get(i)
 			if st.ActiveMode != mode || st.PendingRestart || st.Identity.PublicKey != cards[i].PublicKey {
 				t.Fatalf("restart did not apply: %+v", st)
+			}
+			if st.Server != (i == 1 && server) {
+				t.Fatal("persisted single server flag mismatch")
 			}
 			if mode != "native" {
 				_, err := clients[i].EditPrefs(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{AmneziaWG: ipn.AmneziaWGPrefs{JC: 1, JMin: 50, JMax: 100}}, AmneziaWGSet: true})
@@ -182,10 +189,19 @@ func TestManagedTransportLifecycle(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		for _, node := range nodes {
+		for index, node := range nodes {
 			stats, err := node.PacketTransportDiagnostics()
 			if err != nil {
 				t.Fatal(err)
+			}
+			if mode == "http3-ip" {
+				peers, ok := stats["peers"].([]map[string]any)
+				if !ok || len(peers) != 1 || peers[0]["remote_server"] != (index == 0 && server) || peers[0]["remote_server_known"] != true {
+					t.Fatalf("authenticated server declaration not synchronized: %+v", stats)
+				}
+				if stats["browser_fingerprint"] != "none" {
+					t.Fatal("unimplemented browser fingerprint advertised")
+				}
 			}
 			if stats["mode"] != mode || stats["quic"] != (mode != "native") {
 				t.Fatalf("managed runtime diagnostics reported a different carrier: %+v", stats)
