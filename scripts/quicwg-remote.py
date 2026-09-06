@@ -393,6 +393,20 @@ def main():
                         phase["probes"].append(proof6)
                         checkpoint()
                         print(f"PASS {variant} {node['name']} inner IPv6 TSMP + verified 1MiB each way", flush=True)
+                if variant.startswith('http3-ip-') and not args.managed_cli:
+                    # A cold engine can discard stale startup hints while the
+                    # control map is installed. First establish authenticated
+                    # metadata, then explicitly test a host-rebind lifecycle.
+                    # Production never reconnects solely to change appearance.
+                    phase['initial_transport'] = {n['name']:api(n,'/quic') for n in nodes}
+                    initiator = nodes[proof_order[0]]
+                    other = nodes[1-proof_order[0]]
+                    phase['rebind'] = api(initiator,'/reconnect',method='POST',timeout=15)
+                    recovered = api(initiator,f"/probe?target={other['test_ip']}&size=1048576",method='POST',timeout=65)
+                    if recovered.get('download',{}).get('bytes')!=1048576 or recovered.get('upload',{}).get('bytes')!=1048576:
+                        raise RuntimeError('rebind did not recover verified bidirectional traffic')
+                    phase['rebind_proof'] = recovered
+                    print('REBIND',variant,initiator['name'],'verified bidirectional data',flush=True)
                 for node in nodes:
                     phase.setdefault("transport", {})[node["name"]] = api(node, "/quic")
                     if variant != "native":

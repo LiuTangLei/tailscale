@@ -115,12 +115,14 @@ func run() error {
 	}
 	s := &tsnet.Server{Dir: *dir, Hostname: *hostname, ControlURL: *control, Port: uint16(*port), Logf: log.Printf, UserLogf: log.Printf}
 	var quicFactory *quicbind.Factory
+	var reconnectFactory *labReconnectFactory
 	if mode := os.Getenv("TS_EXPERIMENTAL_WG_TRANSPORT"); mode == "quic" || mode == "quic-ip" || mode == "http3-ip" {
 		quicFactory, err = quicbind.Load(os.Getenv("TS_EXPERIMENTAL_QUIC_CONFIG"))
 		if err != nil {
 			return err
 		}
-		s.Transport = wgtransport.Config{Mode: wgtransport.Mode(mode), Factory: quicFactory}
+		reconnectFactory = &labReconnectFactory{factory: quicFactory}
+		s.Transport = wgtransport.Config{Mode: wgtransport.Mode(mode), Factory: reconnectFactory}
 	}
 	if *kernelNamespace != "" {
 		s.Tun, err = openKernelBenchTUN(*kernelNamespace)
@@ -168,6 +170,7 @@ func run() error {
 	mux.HandleFunc("/status", n.status)
 	mux.HandleFunc("/profile", n.setProfile)
 	mux.HandleFunc("/probe", n.probe)
+	mux.HandleFunc("/reconnect", reconnectFactory.serve)
 	registerAdminHandlers(mux, n)
 	mux.HandleFunc("/quic", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
