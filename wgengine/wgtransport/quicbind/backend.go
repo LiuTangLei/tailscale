@@ -49,6 +49,8 @@ type Counters struct {
 	HTTP3Tunnels        atomic.Uint64
 	HTTP3Rejected       atomic.Uint64
 	HTTP3Datagrams      atomic.Uint64
+	DialAttempts        atomic.Uint64
+	RoleRejections      atomic.Uint64
 }
 
 type Backend struct {
@@ -81,6 +83,7 @@ type generation struct {
 	txBytes   atomic.Int64
 	rxBytes   atomic.Int64
 	port      uint16
+	dialSlots chan struct{}
 }
 
 type received struct {
@@ -125,6 +128,10 @@ type peer struct {
 	disabled         atomic.Bool
 	epoch            atomic.Uint64 // changes on explicit reset/revocation, not ordinary reconnect
 	nextID           atomic.Uint32
+	sessionChanged   chan struct{} // protected by mu
+	maintain         chan struct{}
+	nextMaintain     time.Time // protected by mu
+	maintainFailures uint
 }
 type datagramChannel interface {
 	SendDatagram([]byte) error
@@ -139,6 +146,7 @@ type session struct {
 	fragmentMu sync.Mutex
 	frames     reassembler
 	preferred  bool
+	outgoing   bool // this connection's TLS role; not IP traffic direction
 	stamp      lifecycleStamp
 }
 
@@ -239,6 +247,7 @@ func (p *peer) closeSession(reason string) {
 	p.epoch.Add(1) // queued packets belong to the pre-reset peer, even if re-added
 	s := p.session
 	p.session = nil
+	p.signalSessionLocked()
 	p.mu.Unlock()
 	if s != nil {
 		s.q.CloseWithError(0, reason)
@@ -270,7 +279,7 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		return nil, 0, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &generation{b: b, ctx: ctx, cancel: cancel, peers: make(map[[32]byte]*peer), rx: make(chan received, 1024), port: actual}
+	g := &generation{b: b, ctx: ctx, cancel: cancel, peers: make(map[[32]byte]*peer), rx: make(chan received, 1024), port: actual, dialSlots: make(chan struct{}, 4)}
 	rollback := func() {
 		cancel()
 		g.closeHTTP3()
@@ -320,13 +329,17 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 			return ctx, nil
 		},
 	}
-	qc := b.quicConfig()
-	listener, err := g.transport.Listen(b.factory.tlsConfig(nil), qc)
-	if err != nil {
-		rollback()
-		return nil, 0, err
+	// An outbound-only node needs a receiving UDP socket for replies, but
+	// must not also expose an unsolicited QUIC/TLS server. Mixed-role nodes
+	// retain the shared non-zero-CID listener required by their mesh peers.
+	if b.factory.needsListener() {
+		listener, err := g.transport.Listen(b.factory.tlsConfig(nil), b.quicConfig())
+		if err != nil {
+			rollback()
+			return nil, 0, err
+		}
+		g.listener = listener
 	}
-	g.listener = listener
 	if b.factory.cfg.HTTP3 {
 		if err := g.initHTTP3(); err != nil {
 			rollback()
@@ -338,9 +351,18 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		g.workers.Add(1)
 		go g.readHost(fn)
 	}
-	g.workers.Add(1)
-	go g.accept()
+	if g.listener != nil {
+		g.workers.Add(1)
+		go g.accept()
+	}
 	b.active.Store(g)
+	for _, cfg := range b.factory.peers {
+		if cfg.role == RoleClient {
+			g.workers.Add(1)
+			go g.maintainClients()
+			break
+		}
+	}
 	return []conn.ReceiveFunc{g.receive}, actual, nil
 }
 
@@ -523,7 +545,7 @@ func (g *generation) peer(k [32]byte, base conn.Endpoint) (*peer, error) {
 		return p, nil
 	}
 	defer g.peersMu.Unlock()
-	p := &peer{g: g, cfg: cfg, tx: make(chan *packetBuffer, g.b.factory.cfg.QueuePackets)}
+	p := &peer{g: g, cfg: cfg, tx: make(chan *packetBuffer, g.b.factory.cfg.QueuePackets), sessionChanged: make(chan struct{}), maintain: make(chan struct{}, 1)}
 	p.ep.Store(&endpoint{Endpoint: base, b: g.b, key: k})
 	g.peers[k] = p
 	g.workers.Add(1)
@@ -572,8 +594,16 @@ func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChann
 		q.CloseWithError(1, "QUIC DATAGRAM required")
 		return nil
 	}
+	if !p.cfg.role.permits(outgoing) {
+		p.g.b.counters.RoleRejections.Add(1)
+		q.CloseWithError(1, "handshake role conflicts with peer policy")
+		return nil
+	}
 	preferred := (bytes.Compare(p.g.b.factory.local[:], p.cfg.key[:]) < 0) == outgoing
-	ns := &session{q: q, dgram: channel, preferred: preferred, stamp: p.lifecycleStamp()}
+	if p.cfg.role != "" && p.cfg.role != RoleMesh {
+		preferred = true
+	}
+	ns := &session{q: q, dgram: channel, preferred: preferred, outgoing: outgoing, stamp: p.lifecycleStamp()}
 	p.mu.Lock()
 	old := p.session
 	if p.g.ctx.Err() != nil || !p.stampValid(ns.stamp) {
@@ -590,6 +620,9 @@ func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChann
 		return old
 	}
 	p.session = ns
+	p.signalSessionLocked()
+	p.maintainFailures = 0
+	p.nextMaintain = time.Time{}
 	p.g.workers.Add(1)
 	p.mu.Unlock()
 	if old != nil {
@@ -602,6 +635,9 @@ func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChann
 }
 
 func (p *peer) getSession() (*session, error) {
+	if p.cfg.role == RoleServer {
+		return p.waitForIncoming()
+	}
 	p.mu.Lock()
 	if s := p.session; s != nil && s.q.Context().Err() == nil {
 		p.mu.Unlock()
@@ -630,10 +666,33 @@ func (p *peer) getSession() (*session, error) {
 	p.publishState(wgtransport.SessionHandshake)
 	var remote net.Addr = p.cfg.address
 	if p.g.bridge != nil {
-		remote = &bindAddr{ep: p.ep.Load().Endpoint}
+		// Resolve the current host endpoint at connection time, rather than
+		// freezing a provisional discovery address during client warmup.
+		base, err := p.g.b.host.Bind.ParseEndpoint(hex.EncodeToString(p.cfg.key[:]))
+		if err != nil {
+			return nil, err
+		}
+		p.ep.Store(&endpoint{Endpoint: base, b: p.g.b, key: p.cfg.key})
+		remote = &bindAddr{ep: base}
 	}
 	ctx, cancel := context.WithTimeout(p.g.ctx, 10*time.Second)
 	defer cancel()
+	if p.g.dialSlots != nil {
+		select {
+		case p.g.dialSlots <- struct{}{}:
+			defer func() { <-p.g.dialSlots }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	// The authorization may have changed while waiting for a TLS work slot.
+	if !p.g.b.identityOK.Load() {
+		return nil, ErrIdentity
+	}
+	if p.disabled.Load() || !p.g.b.peerAllowed(p.cfg.key) {
+		return nil, ErrUnknownPeer
+	}
+	p.g.b.counters.DialAttempts.Add(1)
 	tlsConfig := p.g.b.factory.tlsConfig(&p.cfg.key)
 	if p.cfg.http3URL != nil {
 		tlsConfig.ServerName = p.cfg.http3URL.Hostname()
@@ -671,6 +730,8 @@ func (p *peer) run() {
 		select {
 		case <-p.g.ctx.Done():
 			return
+		case <-p.maintain:
+			p.maintainClient()
 		case packet := <-p.tx:
 			p.connectingPacket.Store(true)
 			if p.stampValid(packet.stamp) {
@@ -755,6 +816,7 @@ func (p *peer) receiveSession(s *session) {
 		current := p.session == s
 		if current {
 			p.session = nil
+			p.signalSessionLocked()
 		}
 		p.mu.Unlock()
 		if current {

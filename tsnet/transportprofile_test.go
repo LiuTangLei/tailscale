@@ -21,6 +21,14 @@ import (
 // from the persisted files. No environment flags or Factory injection may hide
 // a missing next-start hookup in this test.
 func TestManagedTransportLifecycle(t *testing.T) {
+	testManagedTransportLifecycle(t, false)
+}
+
+func TestManagedHTTP3PerPeerRoles(t *testing.T) {
+	testManagedTransportLifecycle(t, true)
+}
+
+func testManagedTransportLifecycle(t *testing.T, withRoles bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	controlURL, control := startControl(t)
@@ -104,6 +112,13 @@ func TestManagedTransportLifecycle(t *testing.T) {
 	}
 	for i := range nodes {
 		change(i, ipn.TransportControlRequest{Action: "add-peer", Peer: cards[i^1]})
+		if withRoles {
+			role := []string{"client", "server"}[i]
+			st := change(i, ipn.TransportControlRequest{Action: "peer-role", PublicKey: cards[i^1].PublicKey, ConnectionRole: role})
+			if st.HTTP3PeerRoles[cards[i^1].PublicKey] != role || st.ActiveMode != "native" {
+				t.Fatal("role did not stage locally")
+			}
+		}
 	}
 	if _, err := clients[0].ConfigureTransport(ctx, ipn.TransportControlRequest{Action: "mode", Mode: "quic-ip", ExpectedRevision: "0"}); err == nil {
 		t.Fatal("stale prompt overwrote profile")
@@ -118,7 +133,9 @@ func TestManagedTransportLifecycle(t *testing.T) {
 		}
 		stop()
 		start()
-		for i := range nodes {
+		// The nominal H3 server asks to send first. Its transport must wait
+		// for the proactively established client tunnel, not reverse-dial.
+		for _, i := range []int{1, 0} {
 			st := get(i)
 			if st.ActiveMode != mode || st.PendingRestart || st.Identity.PublicKey != cards[i].PublicKey {
 				t.Fatalf("restart did not apply: %+v", st)
@@ -182,10 +199,18 @@ func TestManagedTransportLifecycle(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		for _, node := range nodes {
+		for i, node := range nodes {
 			stats, err := node.PacketTransportDiagnostics()
 			if err != nil {
 				t.Fatal(err)
+			}
+			if withRoles && mode == "http3-ip" {
+				if i == 0 && (stats["client_connections"] != 1 || stats["listener_enabled"] != false) {
+					t.Fatal("client role not applied at actual restart", stats)
+				}
+				if i == 1 && (stats["server_connections"] != 1 || stats["dial_attempts"] != uint64(0)) {
+					t.Fatal("server role reversed", stats)
+				}
 			}
 			if stats["mode"] != mode || stats["quic"] != (mode != "native") {
 				t.Fatalf("managed runtime diagnostics reported a different carrier: %+v", stats)

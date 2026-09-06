@@ -152,6 +152,11 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusNotFound)
 		return
 	}
+	if !g.b.factory.peers[k].role.permits(false) {
+		g.b.counters.RoleRejections.Add(1)
+		deny(http.StatusNotFound)
+		return
+	}
 	if r.Header.Get(http3.CapsuleProtocolHeader) != "?1" || len(r.Header.Values(http3.CapsuleProtocolHeader)) != 1 {
 		deny(http.StatusBadRequest)
 		return

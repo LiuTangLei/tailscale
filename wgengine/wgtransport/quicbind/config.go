@@ -63,6 +63,8 @@ type PeerConfig struct {
 	SPKISHA256 string `json:"spki_sha256"`
 	Endpoint   string `json:"endpoint,omitempty"`  // UDP mode only; literal IP:port
 	HTTP3URL   string `json:"http3_url,omitempty"` // trusted https origin and CONNECT-IP path
+	// Local handshake role for this peer only; does not change IP direction.
+	ConnectionRole ConnectionRole `json:"connection_role,omitempty"`
 }
 
 type Factory struct {
@@ -81,6 +83,7 @@ type peerConfig struct {
 	pin      [32]byte
 	address  *net.UDPAddr
 	http3URL *url.URL
+	role     ConnectionRole
 }
 
 func (f *Factory) Mode() wgtransport.Mode {
@@ -282,7 +285,14 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 		if _, ok := f.byPin[pin]; ok {
 			return nil, errors.New("TLS pin must map to exactly one WG peer")
 		}
-		pc := peerConfig{key: key, pin: pin}
+		role, err := normalizeRole(p.ConnectionRole)
+		if err != nil {
+			return nil, err
+		}
+		if role != RoleMesh && !c.HTTP3 {
+			return nil, errors.New("explicit connection_role requires HTTP/3; legacy QUIC modes retain mesh behavior")
+		}
+		pc := peerConfig{key: key, pin: pin, role: role}
 		if c.HTTP3 {
 			pc.http3URL, err = parseHTTP3URL(p.HTTP3URL)
 			if err != nil {
@@ -291,7 +301,7 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 		} else if p.HTTP3URL != "" {
 			return nil, errors.New("peer http3_url requires http3=true")
 		}
-		if c.IO == "udp" {
+		if c.IO == "udp" && !(role == RoleServer && p.Endpoint == "") {
 			ap, err := net.ResolveUDPAddr("udp", p.Endpoint)
 			if err != nil || ap == nil || ap.IP == nil || ap.Port <= 0 {
 				return nil, errors.New("UDP peers require a valid endpoint")
@@ -321,6 +331,9 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 		}
 	} else if c.Listen != "" {
 		return nil, errors.New("listen is only used by UDP mode")
+	}
+	if !f.needsListener() && c.HTTP3TCPListen != "" {
+		return nil, errors.New("client-only HTTP/3 peers cannot enable a public HTTPS listener")
 	}
 	return f, nil
 }

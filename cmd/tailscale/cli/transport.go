@@ -232,6 +232,11 @@ func renderTransportStatus(status ipn.TransportControlStatus, out io.Writer, jso
 		fmt.Fprintf(out, "  Identity: %s (%s)\n", status.Identity.Name, status.Identity.PublicKey)
 	}
 	fmt.Fprintf(out, "  Trusted peers: %d\n", len(status.Peers))
+	for _, peer := range status.Peers {
+		if role := status.HTTP3PeerRoles[peer.PublicKey]; role != "" {
+			fmt.Fprintf(out, "  Next-start H3 role for %s: %s (local perspective)\n", peer.PublicKey, role)
+		}
+	}
 	if !status.MixedPeerSupport {
 		fmt.Fprintln(out, "  Concurrent native/QUIC peers: not supported by this build")
 	}
@@ -405,7 +410,11 @@ func runAWGPeerList(ctx context.Context, out io.Writer) error {
 		return nil
 	}
 	for i, peer := range status.Peers {
-		fmt.Fprintf(out, "[%d] %s (%s)\n", i+1, peer.Name, peer.PublicKey)
+		role := status.HTTP3PeerRoles[peer.PublicKey]
+		if role == "" {
+			role = "mesh"
+		}
+		fmt.Fprintf(out, "[%d] %s (%s); next-start local H3 role: %s\n", i+1, peer.Name, peer.PublicKey, role)
 	}
 	return nil
 }
@@ -676,12 +685,13 @@ func identityCommand() *ffcli.Command {
 func peerCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "peer",
-		ShortUsage: "tailscale amnezia-wg peer [add|remove|list]",
+		ShortUsage: "tailscale amnezia-wg peer [add|remove|list|role]",
 		ShortHelp:  "Manage trusted transport peers",
 		Subcommands: []*ffcli.Command{
 			peerAddCommand(),
 			peerRemoveCommand(),
 			peerListCommand(),
+			peerRoleCommand(),
 		},
 	}
 }

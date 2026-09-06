@@ -55,6 +55,7 @@ func (b *LocalBackend) transportStatusLocked() (ipn.TransportControlStatus, erro
 	s.Revision = rev
 	s.Identity = p.Identity
 	s.Peers = p.Public(rev).Peers
+	s.HTTP3PeerRoles = p.Public(rev).HTTP3PeerRoles
 	s.MixedPeerSupport = false
 	s.UnconfiguredPeers = b.transportPeerCoverage(p)
 	if s.Source == "environment" || s.Source == "embedded" {

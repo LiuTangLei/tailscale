@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -50,6 +51,9 @@ type Profile struct {
 	PrivateKey  string              `json:"private_key_pem,omitempty"`
 	Identity    *ipn.TransportPeer  `json:"identity,omitempty"`
 	Peers       []ipn.TransportPeer `json:"peers"`
+	// Local per-peer handshake policies. Identity cards must not carry these:
+	// "client" on one endpoint means "server" from the other endpoint's view.
+	HTTP3PeerRoles map[string]string `json:"http3_peer_roles,omitempty"`
 }
 
 func Read(root string) (Profile, string, error) {
@@ -93,6 +97,9 @@ func Read(root string) (Profile, string, error) {
 	}
 	if p.Version != 1 || !ValidMode(p.Mode) {
 		return p, "0", errors.New("unsupported transport profile version or mode; refusing fallback")
+	}
+	if err := p.validateRoles(); err != nil {
+		return p, "0", err
 	}
 	sum := sha256.Sum256(data)
 	return p, hex.EncodeToString(sum[:]), nil
@@ -171,7 +178,7 @@ func (p Profile) certificate() (tls.Certificate, error) {
 	return cert, nil
 }
 func (p Profile) Public(revision string) ipn.TransportControlStatus {
-	return ipn.TransportControlStatus{DesiredMode: p.Mode, Revision: revision, Identity: p.Identity, Peers: slices.Clone(p.Peers), Available: true}
+	return ipn.TransportControlStatus{DesiredMode: p.Mode, Revision: revision, Identity: p.Identity, Peers: slices.Clone(p.Peers), HTTP3PeerRoles: maps.Clone(p.HTTP3PeerRoles), Available: true}
 }
 func (p Profile) Factory() (*quicbind.Factory, error) {
 	if p.Mode == "native" {
@@ -193,12 +200,16 @@ func (p Profile) Factory() (*quicbind.Factory, error) {
 		q := quicbind.PeerConfig{PublicKey: peer.PublicKey, SPKISHA256: peer.SPKISHA256}
 		if c.HTTP3 {
 			q.HTTP3URL = peer.HTTP3URL
+			q.ConnectionRole = quicbind.ConnectionRole(p.HTTP3PeerRoles[peer.PublicKey])
 		}
 		c.Peers = append(c.Peers, q)
 	}
 	return quicbind.NewFactoryWithCertificate(c, cert)
 }
 func (p Profile) Validate(localKey string) error {
+	if err := p.validateRoles(); err != nil {
+		return err
+	}
 	if !ValidMode(p.Mode) || p.Version != 1 {
 		return errors.New("invalid profile mode/version")
 	}
@@ -280,8 +291,32 @@ func Apply(p Profile, req ipn.TransportControlRequest, localKey string) (Profile
 			return p, errors.New("peer not in the trusted profile")
 		}
 		p.Peers = slices.Delete(peers, idx, idx+1)
+		p.HTTP3PeerRoles = maps.Clone(p.HTTP3PeerRoles)
+		delete(p.HTTP3PeerRoles, k)
 		if p.Mode != "native" && len(p.Peers) == 0 {
 			return p, errors.New("cannot remove last peer from an enabled profile; stage native first")
+		}
+	case "peer-role":
+		k, err := canonicalKey(req.PublicKey)
+		if err != nil {
+			return p, err
+		}
+		if !slices.ContainsFunc(p.Peers, func(peer ipn.TransportPeer) bool { return peer.PublicKey == k }) {
+			return p, errors.New("peer role requires an already trusted peer")
+		}
+		switch req.ConnectionRole {
+		case "mesh", "client", "server":
+		default:
+			return p, errors.New("choose mesh, client or server from this node's local perspective")
+		}
+		p.HTTP3PeerRoles = maps.Clone(p.HTTP3PeerRoles)
+		if req.ConnectionRole == "mesh" {
+			delete(p.HTTP3PeerRoles, k)
+		} else {
+			if p.HTTP3PeerRoles == nil {
+				p.HTTP3PeerRoles = make(map[string]string)
+			}
+			p.HTTP3PeerRoles[k] = req.ConnectionRole
 		}
 	case "mode":
 		if !ValidMode(req.Mode) {
