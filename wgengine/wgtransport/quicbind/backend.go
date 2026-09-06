@@ -349,12 +349,19 @@ func (b *Backend) quicConfig() *quic.Config {
 	if b.factory.cfg.HTTP3 {
 		streams, uni = 16, 8
 	}
-	return &quic.Config{
+	cfg := &quic.Config{
 		EnableDatagrams: true, HandshakeIdleTimeout: 8 * time.Second, MaxIdleTimeout: 60 * time.Second,
 		KeepAlivePeriod: 20 * time.Second, InitialPacketSize: b.factory.cfg.InitialPacketSize,
 		MaxIncomingStreams: streams, MaxIncomingUniStreams: uni, Allow0RTT: false,
 		MaxStreamReceiveWindow: 128 << 10, MaxConnectionReceiveWindow: 1 << 20,
 	}
+	// The versioned QUIC fork adds BBR without changing QUIC's wire format.
+	// Stock builds remain a Reno comparison; connection diagnostics identify
+	// the actual controller, so a benchmark cannot silently mislabel it.
+	if c, ok := any(cfg).(interface{ EnableBBRCongestionControl() }); ok {
+		c.EnableBBRCongestionControl()
+	}
+	return cfg
 }
 
 func (b *Backend) stop(final bool) error {

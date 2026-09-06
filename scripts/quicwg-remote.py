@@ -114,12 +114,17 @@ def main():
     p.add_argument("--proof-only", action="store_true", help="run encrypted integrity checks without throughput benchmarks")
     p.add_argument("--kernel-iperf", action="store_true", help="Linux-only isolated network namespace + real TUN + kernel iperf; no production routes/firewall changes")
     p.add_argument("--kernel-seconds", type=int, default=15)
+    p.add_argument("--kernel-omit", type=int, default=0, help="iperf omitted warmup seconds; zero measures the full transfer without catch-up artifacts")
+    p.add_argument("--kernel-idle", type=int, default=0, help="idle the same QUIC session between directions, at most 20 seconds")
+    p.add_argument("--kernel-reverse-first", action="store_true", help="start with server-to-client data to detect direction/order bias")
     p.add_argument("--kernel-flows", default="1,4")
     p.add_argument("--kernel-mbps", type=int, default=500, help="bounded aggregate offered load, at most 500 Mbps")
     p.add_argument("--kernel-udp", action="store_true", help="inner UDP offered-load test instead of kernel TCP")
     p.add_argument("--ipv6-proof", action="store_true", help="also verify inner IPv6 TSMP and file transfer")
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
+    if not 0 <= args.kernel_omit <= 5 or not 0 <= args.kernel_idle <= 20:
+        p.error("kernel-omit must be 0..5 and kernel-idle 0..20")
     if args.a_name == args.b_name or any(not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,30}", x) for x in (args.a_name, args.b_name)):
         p.error("node labels must be distinct lowercase DNS labels")
     if not 0 <= args.latency_samples <= 30:

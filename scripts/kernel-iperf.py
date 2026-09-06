@@ -54,13 +54,16 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
         else: raise RuntimeError('isolated iperf listener did not start')
         phase['kernel_paths'] = {n['name']:n['kernel_path'] for n in nodes}
         phase['kernel_iperf'] = []
+        directions = (True, False) if args.kernel_reverse_first else (False, True)
         for round_no in range(1, args.rounds + 1):
-            for reverse in (False, True):
+            for reverse in directions:
                 direction = f"{server['name']} -> {client['name']}" if reverse else f"{client['name']} -> {server['name']}"
                 for flows in args.kernel_flows:
+                    if args.kernel_idle:
+                        time.sleep(args.kernel_idle)
                     before = state()
                     cmd = ['ip','netns','exec',client['kernel_ns'],'iperf3','-c',server['test_ip'],'-p','18530',
-                           '-P',str(flows),'-t',str(args.kernel_seconds),'-O','2','-J','--get-server-output',
+                           '-P',str(flows),'-t',str(args.kernel_seconds),'-O',str(args.kernel_omit),'-J','--get-server-output',
                            '-b',str(int(args.kernel_mbps*1_000_000/flows))]
                     if reverse: cmd.append('-R')
                     if args.kernel_udp: cmd += ['-u','-l','1100']
@@ -85,7 +88,14 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                     mbps = receiver['bits_per_second']/1_000_000
                     item = {'direction':direction,'round':round_no,'flows':flows,'receiver_mbps':mbps,
                             'offered_total_mbps':args.kernel_mbps,'protocol':'udp' if args.kernel_udp else 'tcp',
+                            'omitted_seconds':args.kernel_omit, 'idle_before_seconds':args.kernel_idle,
+                            'receiver_wall_lower_bound_mbps':receiver['bytes']*8/elapsed/1_000_000,
                             'wall_seconds':elapsed,'before':before,'after':after,'iperf':doc}
+                    if phase['variant'] != 'native':
+                        item['session_reused'] = all(
+                            before[n['name']]['quic'].get('connections') == after[n['name']]['quic'].get('connections')
+                            and before[n['name']]['quic'].get('handshake_errors') == after[n['name']]['quic'].get('handshake_errors')
+                            for n in nodes)
                     phase['kernel_iperf'].append(item)
                     checkpoint()
                     cpu = {n['name']: round(after[n['name']]['process']['cpu_total_seconds'] - before[n['name']]['process']['cpu_total_seconds'],3) for n in nodes}
