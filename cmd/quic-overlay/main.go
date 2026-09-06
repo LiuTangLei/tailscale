@@ -23,6 +23,7 @@ const modulePath = "github.com/quic-go/quic-go"
 const version = "v0.62.0"
 const moduleSum = "h1:ZHDjCk5OacATwGvs8PWE97CTvX7AqZiVoW7++ZOXTf8="
 const upstreamSHA256 = "be09304f3946cb700489d150ffdd3a231ed05e674fa5bef240b54d2e48c014da"
+const upstreamDatagramSHA256 = "0e743063200ab625b03bc416689b9783378656fdab23a913836acaa6eeb86ea0"
 
 type moduleInfo struct {
 	Path, Version, Dir, Sum string
@@ -101,6 +102,23 @@ func run(root, output string) error {
 			return err
 		}
 		files[filepath.Join(m.Dir, "http3", name)] = patched
+	}
+	// Raw QUIC DATAGRAM reception precedes HTTP/3's stream queue and needs
+	// its own version-checked bounded ring. Do not modify the shared module.
+	rawSource, err := os.ReadFile(filepath.Join(m.Dir, "datagram_queue.go"))
+	if err != nil {
+		return err
+	}
+	rawHash := sha256.Sum256(rawSource)
+	if hex.EncodeToString(rawHash[:]) != upstreamDatagramSHA256 {
+		return errors.New("upstream QUIC DATAGRAM source checksum changed; refusing stale overlay")
+	}
+	for _, name := range []string{"datagram_queue.go", "datagram_queue_tunnel_test.go"} {
+		patched := filepath.Join(root, "third_party", "quic-go-overlay", name+".txt")
+		if _, err := os.Stat(patched); err != nil {
+			return err
+		}
+		files[filepath.Join(m.Dir, name)] = patched
 	}
 	var f *os.File
 	if output == "" {

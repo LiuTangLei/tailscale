@@ -25,6 +25,7 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	c := &b.counters
 	out["http3"] = f.cfg.HTTP3
 	out["http3_receive_queue_capacity"] = http3ReceiveQueueCapacity
+	out["quic_receive_queue_capacity"] = quicReceiveQueueCapacity
 	out["http3_requests"] = c.HTTP3Requests.Load()
 	out["http3_public_requests"] = c.HTTP3PublicRequests.Load()
 	out["http3_public_pages"] = c.HTTP3PublicPages.Load()
@@ -63,6 +64,12 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 			if s != nil && s.q.Context().Err() == nil {
 				active++
 				out["connection_stats"] = s.q.ConnectionStats()
+				if stats, ok := any(s.q).(interface{ DatagramReceiveQueueStats() (int, int, uint64) }); ok {
+					queued, queuedBytes, drops := stats.DatagramReceiveQueueStats()
+					out["quic_receive_queue_packets"] = queued
+					out["quic_receive_queue_bytes"] = queuedBytes
+					out["quic_receive_queue_drops"] = drops
+				}
 				state := s.q.ConnectionState()
 				out["tls_version"] = state.TLS.Version
 				out["tls_cipher_suite"] = state.TLS.CipherSuite

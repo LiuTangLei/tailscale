@@ -1,0 +1,57 @@
+// Tests for the bounded receive-only tunnel queue patch; MIT, see LICENSE.
+package quic
+
+import (
+	"context"
+	"encoding/binary"
+	"testing"
+
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/internal/wire"
+)
+
+func TestTunnelDatagramRingBoundsAndRelease(t *testing.T) {
+	q := newDatagramQueue(func() {}, utils.DefaultLogger)
+	c := &Conn{datagramQueue: q}
+	frame := &wire.DatagramFrame{Data: make([]byte, 4)}
+	for cycle := 0; cycle < 3; cycle++ {
+		for i := 0; i < maxDatagramRcvQueueLen; i++ {
+			binary.BigEndian.PutUint32(frame.Data, uint32(cycle*maxDatagramRcvQueueLen+i))
+			q.HandleDatagramFrame(frame)
+		}
+		q.HandleDatagramFrame(frame)
+		n, b, d := c.DatagramReceiveQueueStats()
+		if n != maxDatagramRcvQueueLen || b != 4*n || d != uint64(cycle+1) {
+			t.Fatalf("stats %d %d %d", n, b, d)
+		}
+		for i := 0; i < maxDatagramRcvQueueLen; i++ {
+			data, err := q.Receive(context.Background())
+			if err != nil || binary.BigEndian.Uint32(data) != uint32(cycle*maxDatagramRcvQueueLen+i) {
+				t.Fatalf("FIFO/copy failed %d %v", i, err)
+			}
+		}
+		for _, payload := range q.rcvQueue {
+			if payload != nil {
+				t.Fatal("popped payload retained")
+			}
+		}
+	}
+	if n, b, _ := c.DatagramReceiveQueueStats(); n != 0 || b != 0 {
+		t.Fatal("accounting leak", n, b)
+	}
+}
+
+func TestTunnelDatagramByteBudgetAndFullQueueNoAllocation(t *testing.T) {
+	q := newDatagramQueue(func() {}, utils.DefaultLogger)
+	frame := &wire.DatagramFrame{Data: make([]byte, 65535)}
+	for i := 0; i < maxDatagramRcvQueueBytes/len(frame.Data); i++ {
+		q.HandleDatagramFrame(frame)
+	}
+	before := q.rcvSize
+	if allocs := testing.AllocsPerRun(100, func() { q.HandleDatagramFrame(frame) }); allocs != 0 {
+		t.Fatal("full queue still allocates", allocs)
+	}
+	if q.rcvSize != before || q.rcvBytes > maxDatagramRcvQueueBytes || q.rcvDrops == 0 {
+		t.Fatal("byte budget ignored")
+	}
+}

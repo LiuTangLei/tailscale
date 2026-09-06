@@ -1,0 +1,147 @@
+// Derived from quic-go v0.62.0; see LICENSE in this directory.
+// Receive-only patch: bounded ring + byte budget + observable local drops.
+// Send pacing, ACKs, congestion control and every wire format are unchanged.
+package quic
+
+import (
+	"context"
+	"sync"
+
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/internal/utils/ringbuffer"
+	"github.com/quic-go/quic-go/internal/wire"
+)
+
+const (
+	maxDatagramSendQueueLen  = 32
+	maxDatagramRcvQueueLen   = 1024
+	maxDatagramRcvQueueBytes = 2 << 20
+	// TunnelDatagramReceiveQueueCapacity identifies the compiled patch.
+	TunnelDatagramReceiveQueueCapacity = maxDatagramRcvQueueLen
+)
+
+type datagramQueue struct {
+	sendMx                     sync.Mutex
+	sendQueue                  ringbuffer.RingBuffer[*wire.DatagramFrame]
+	sent                       chan struct{}
+	rcvMx                      sync.Mutex
+	rcvQueue                   [][]byte
+	rcvHead, rcvSize, rcvBytes int
+	rcvDrops                   uint64
+	rcvd                       chan struct{}
+	closeErr                   error
+	closed                     chan struct{}
+	hasData                    func()
+	logger                     utils.Logger
+}
+
+func newDatagramQueue(hasData func(), logger utils.Logger) *datagramQueue {
+	return &datagramQueue{hasData: hasData, rcvd: make(chan struct{}, 1), sent: make(chan struct{}, 1), closed: make(chan struct{}), logger: logger}
+}
+
+// Add queues a new DATAGRAM frame, with the unmodified 32-frame send bound.
+func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
+	h.sendMx.Lock()
+	for {
+		if h.sendQueue.Len() < maxDatagramSendQueueLen {
+			h.sendQueue.PushBack(f)
+			h.sendMx.Unlock()
+			h.hasData()
+			return nil
+		}
+		select {
+		case <-h.sent:
+		default:
+		}
+		h.sendMx.Unlock()
+		select {
+		case <-h.closed:
+			return h.closeErr
+		case <-h.sent:
+		}
+		h.sendMx.Lock()
+	}
+}
+func (h *datagramQueue) Peek() *wire.DatagramFrame {
+	h.sendMx.Lock()
+	defer h.sendMx.Unlock()
+	if h.sendQueue.Empty() {
+		return nil
+	}
+	return h.sendQueue.PeekFront()
+}
+func (h *datagramQueue) Pop() {
+	h.sendMx.Lock()
+	defer h.sendMx.Unlock()
+	_ = h.sendQueue.PopFront()
+	select {
+	case h.sent <- struct{}{}:
+	default:
+	}
+}
+
+// HandleDatagramFrame does not block the connection reader on application I/O.
+// Unlike stock quic-go, it does not allocate payload memory for a full queue.
+// Both count and bytes are bounded; a slow peer cannot create an unbounded queue.
+func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
+	h.rcvMx.Lock()
+	if h.rcvSize >= maxDatagramRcvQueueLen || len(f.Data) > maxDatagramRcvQueueBytes-h.rcvBytes {
+		h.rcvDrops++
+		h.rcvMx.Unlock()
+		if h.logger.Debug() {
+			h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
+		}
+		return
+	}
+	data := make([]byte, len(f.Data))
+	copy(data, f.Data)
+	if h.rcvQueue == nil {
+		h.rcvQueue = make([][]byte, maxDatagramRcvQueueLen)
+	}
+	h.rcvQueue[(h.rcvHead+h.rcvSize)%maxDatagramRcvQueueLen] = data
+	h.rcvSize++
+	h.rcvBytes += len(data)
+	select {
+	case h.rcvd <- struct{}{}:
+	default:
+	}
+	h.rcvMx.Unlock()
+}
+
+func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
+	for {
+		h.rcvMx.Lock()
+		if h.rcvSize > 0 {
+			data := h.rcvQueue[h.rcvHead]
+			h.rcvQueue[h.rcvHead] = nil
+			h.rcvHead = (h.rcvHead + 1) % maxDatagramRcvQueueLen
+			h.rcvSize--
+			h.rcvBytes -= len(data)
+			h.rcvMx.Unlock()
+			return data, nil
+		}
+		h.rcvMx.Unlock()
+		select {
+		case <-h.rcvd:
+			continue
+		case <-h.closed:
+			return nil, h.closeErr
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+func (h *datagramQueue) CloseWithError(e error) { h.closeErr = e; close(h.closed) }
+
+// DatagramReceiveQueueStats exposes only local queue accounting, not packet
+// data. QUIC may ACK a packet even when its unreliable DATAGRAM is dropped by
+// the application queue; loss accounting must not confuse those two events.
+func (c *Conn) DatagramReceiveQueueStats() (queued, queuedBytes int, dropped uint64) {
+	q := c.datagramQueue
+	if q == nil {
+		return 0, 0, 0
+	}
+	q.rcvMx.Lock()
+	defer q.rcvMx.Unlock()
+	return q.rcvSize, q.rcvBytes, q.rcvDrops
+}

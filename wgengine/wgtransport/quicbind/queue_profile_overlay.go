@@ -4,6 +4,10 @@
 
 package quicbind
 
-import "github.com/quic-go/quic-go/http3"
+import (
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+)
 
 const http3ReceiveQueueCapacity = http3.TunnelDatagramQueueCapacity
+const quicReceiveQueueCapacity = quic.TunnelDatagramReceiveQueueCapacity

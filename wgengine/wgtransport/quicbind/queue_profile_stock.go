@@ -6,3 +6,4 @@ package quicbind
 
 // Stock quic-go v0.62.0. Distribution builds use the checked-in Go overlay.
 const http3ReceiveQueueCapacity = 32
+const quicReceiveQueueCapacity = 128

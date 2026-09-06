@@ -1,4 +1,4 @@
-# Pinned HTTP/3 receive-queue build patch
+# Pinned QUIC and HTTP/3 receive-queue build patches
 
 Upstream: `github.com/quic-go/quic-go v0.62.0`, commit
 `793f74d8e03368c5aded128af6f48d21dbb47f73` (MIT; license included).
@@ -15,6 +15,27 @@ The patch keeps the queue bounded at 256 datagrams, allocates its slots lazily,
 uses a fixed ring, and clears each popped reference. It changes no QUIC or HTTP
 wire format, congestion control, cryptography, or request authorization. Tests
 cover capacity, FIFO order, wraparound and releasing popped payload references.
+
+## Raw QUIC DATAGRAM reception
+
+The connection-level DATAGRAM queue is upstream of HTTP/3 and originally holds
+128 frames. During SG/J heavy-load testing, successful QUIC packet reception did
+not imply delivery to the application; the old diagnostics could not report
+this queue's drops. The second patch makes this queue a lazy fixed ring with
+1024 slots AND a 2 MiB payload budget. It does not enlarge the 32-frame send
+queue, disable pacing, retransmit unreliable payloads, or alter TLS/QUIC wire
+behavior. Full-queue drops avoid allocation, and popped references are cleared.
+`DatagramReceiveQueueStats` exposes queued packets/bytes and local drop count,
+separately from QUIC network loss. These counters currently describe the active
+connection, not cumulative losses across all prior connections.
+
+Upstream `datagram_queue.go` SHA-256:
+`0e743063200ab625b03bc416689b9783378656fdab23a913836acaa6eeb86ea0`.
+
+Tests cover original queue behavior, receive capacity and byte limits, FIFO,
+wraparound, non-retention, and zero allocations when dropping a full queue.
+The queue patch is not a claim that sustained QUIC throughput is solved; compare
+its real-host evidence against native and retain failed heavy-load runs.
 
 ## Building
 
@@ -34,8 +55,8 @@ rm -f "$overlay" "$overlay.mod" "$overlay.sum"
 Go rejects overlays under its active GOMODCACHE. The preparer therefore downloads
 the exact checksum-verified public module into a separate build cache and creates
 an invocation-local alternate modfile. It changes neither the project's go.mod
-nor the shared Go module cache. The overlay is a single source-file substitution
-plus an additional upstream-package regression test. Generated absolute paths
+nor the shared Go module cache. The overlay substitutes two source files
+and adds corresponding upstream-package regression tests. Generated absolute paths
 are never committed. Upgrading quic-go or changing its source checksum fails
 closed until the patch is reviewed.
 

@@ -98,6 +98,8 @@ def main():
     p.add_argument("--b-name", default="zjg", help="report label and test-only HTTP authority")
     p.add_argument("--a-hostname", default="sg2222", help="expected SSH hostname; mismatch aborts")
     p.add_argument("--a-via", help="optional SSH jump host for host A management only; data-path addresses stay unchanged")
+    p.add_argument("--a-host-key-alias", help="existing trusted SSH known_hosts name for host A; does not disable host-key checking")
+    p.add_argument("--b-host-key-alias", help="existing trusted SSH known_hosts name for host B; does not disable host-key checking")
     p.add_argument("--b-hostname", default="zjg", help="expected SSH hostname; mismatch aborts")
     p.add_argument("--latency-samples", type=int, default=10, help="encrypted idle RTT samples per direction, 0 disables")
     p.add_argument("--variants", default="native,quic-ip-udp,http3-ip-udp,http3-ip-magicsock")
@@ -181,6 +183,9 @@ def main():
                 ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
                 if args.a_via and name == args.a_name:
                     ssh += ["-J", args.a_via]
+                host_key_alias = args.a_host_key_alias if name == args.a_name else args.b_host_key_alias
+                if host_key_alias:
+                    ssh += ["-o", "HostKeyAlias=" + host_key_alias, "-o", "StrictHostKeyChecking=yes"]
                 actual = run(ssh + [host, "hostname"]).stdout.strip()
                 if actual != expected:
                     raise RuntimeError(f"wrong host: {actual}, expected {expected}")
