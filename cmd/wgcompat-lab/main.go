@@ -64,6 +64,7 @@ func run() error {
 	hostname := fs.String("hostname", "wgcompat-lab", "test node hostname")
 	port := fs.Uint("port", 42641, "test node UDP port, separate from production")
 	profileName := fs.String("profile", "standard", "standard|awg2|awg3|awg31")
+	kernelNamespace := fs.String("kernel-netns", "", "Linux test-only qbench-* namespace containing the kernel TUN; outer sockets remain on host")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		return err
 	}
@@ -120,6 +121,12 @@ func run() error {
 			return err
 		}
 		s.Transport = wgtransport.Config{Mode: wgtransport.Mode(mode), Factory: quicFactory}
+	}
+	if *kernelNamespace != "" {
+		s.Tun, err = openKernelBenchTUN(*kernelNamespace)
+		if err != nil {
+			return err
+		}
 	}
 	defer s.Close()
 	if err := s.Start(); err != nil {

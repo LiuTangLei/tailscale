@@ -112,6 +112,11 @@ def main():
     p.add_argument("--force-derp", action="store_true")
     p.add_argument("--private-stun", action="store_true", help="run a bounded test STUN responder on host A UDP 42643; no external STUN list needed")
     p.add_argument("--proof-only", action="store_true", help="run encrypted integrity checks without throughput benchmarks")
+    p.add_argument("--kernel-iperf", action="store_true", help="Linux-only isolated network namespace + real TUN + kernel iperf; no production routes/firewall changes")
+    p.add_argument("--kernel-seconds", type=int, default=15)
+    p.add_argument("--kernel-flows", default="1,4")
+    p.add_argument("--kernel-mbps", type=int, default=500, help="bounded aggregate offered load, at most 500 Mbps")
+    p.add_argument("--kernel-udp", action="store_true", help="inner UDP offered-load test instead of kernel TCP")
     p.add_argument("--ipv6-proof", action="store_true", help="also verify inner IPv6 TSMP and file transfer")
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
@@ -143,6 +148,14 @@ def main():
         p.error("native QUIC IP rejects AWG profiles; use --profile=standard")
     if args.managed_cli and (not args.managed_cli.is_file() or args.profile != "standard" or any(v not in ("native", "quic-ip-magicsock", "http3-ip-magicsock") for v in variants)):
         p.error("managed CLI tests require a real CLI binary, standard profile and native/magicsock modes")
+    if args.kernel_iperf:
+        try: args.kernel_flows = [int(v) for v in args.kernel_flows.split(',')]
+        except ValueError: p.error('kernel-flows must be comma-separated integers')
+        if not args.kernel_flows or any(v not in (1,2,4,8) for v in args.kernel_flows) or not 3 <= args.kernel_seconds <= 30 or not 1 <= args.kernel_mbps <= 500:
+            p.error('invalid bounded kernel benchmark settings')
+        if args.proof_only: p.error('kernel-iperf conflicts with proof-only')
+        if args.kernel_seconds * len(args.kernel_flows) * args.rounds * 2 > 360:
+            p.error('kernel benchmark exceeds per-mode bounded runtime')
     ident = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
     result = {"run": ident, "linux_sha256": hashlib.sha256(args.linux_binary.read_bytes()).hexdigest(),
               "profile": args.profile, "force_derp": args.force_derp,
@@ -155,6 +168,11 @@ def main():
     def checkpoint():
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
+    if args.kernel_iperf:
+        result['kernel_benchmark'] = {'seconds':args.kernel_seconds,'flows':args.kernel_flows,'aggregate_limit_mbps':args.kernel_mbps,'inner_protocol':'udp' if args.kernel_udp else 'tcp','scope':'same engine and isolated kernel TUN for every mode; no HTTP payload benchmark'}
+        kernel_spec = importlib.util.spec_from_file_location('kernel_iperf', Path(__file__).with_name('kernel-iperf.py'))
+        kernel = importlib.util.module_from_spec(kernel_spec)
+        kernel_spec.loader.exec_module(kernel)
     checkpoint()
     with tempfile.TemporaryDirectory(prefix="quicwg-") as tmp:
         temp = Path(tmp)
@@ -212,6 +230,12 @@ def main():
                     raise RuntimeError(f"test ports are occupied: {name}: {busy}")
                 node["baseline"] = remote(node, "systemctl show tailscaled -p MainPID -p ActiveState; tailscale version | head -1", check=False).stdout.strip()
                 remote(node, "install -d -m 700 " + shlex.quote(node["dir"]))
+                if args.kernel_iperf:
+                    remote(node, 'command -v iperf3; test -c /dev/net/tun')
+                    ns = f"qbench-{ident}-{name}"
+                    remote(node, shlex.join(['ip','netns','add',ns]))
+                    node['kernel_ns'] = ns
+                    remote(node, shlex.join(['ip','-n',ns,'link','set','lo','up']))
                 run(["scp", "-C", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}",
                      str(args.linux_binary.resolve()), f"{host}:{node['dir']}/lab"], timeout=120)
                 remote(node, f"chmod 700 {node['dir']}/lab")
@@ -263,6 +287,8 @@ def main():
                     command = ["systemd-run", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=300", "--property=TimeoutStopSec=15", "--property=Restart=no",
                                "env"] + env + [node["dir"] + "/lab", "node", "--dir", node["dir"] + "/state", "--hostname", "quicwg-" + node["name"],
                                 "--control", f"http://127.0.0.1:{control_port}", "--listen", "127.0.0.1:18441", "--port", "42641", "--profile", profile]
+                    if args.kernel_iperf:
+                        command += ['--kernel-netns', node['kernel_ns']]
                     if args.managed_cli:
                         command += ["--localapi-socket", node["dir"] + "/state/localapi.sock"]
                     if args.private_stun and node["name"] == args.a_name and not args.force_derp:
@@ -314,6 +340,8 @@ def main():
                 phase = {"variant": variant, "probes": [], "benchmarks": [], "passed": False}
                 result["phases"].append(phase)
                 statuses = start(variant, index, args.profile)
+                if args.kernel_iperf:
+                    kernel.configure(nodes, remote)
                 if args.managed_cli:
                     phase["cli_status"] = {n["name"]: cli(n, "status", "--json", json_result=True) for n in nodes}
                     for value in phase["cli_status"].values():
@@ -365,7 +393,9 @@ def main():
                         if latency.get("failed"):
                             raise RuntimeError("encrypted idle latency probe lost responses: " + json.dumps(latency))
                         print(f"RTT {variant} {node['name']}: median={latency['median_ms']:.2f}ms p95={latency['p95_ms']:.2f}ms", flush=True)
-                for i, node in enumerate(nodes if not args.proof_only else []):
+                if args.kernel_iperf:
+                    kernel.benchmark(nodes, args, phase, checkpoint, remote, api, ident, index)
+                for i, node in enumerate(nodes if not args.proof_only and not args.kernel_iperf else []):
                     target = nodes[i ^ 1]["test_ip"]
                     before = {n["name"]: {"process": api(n, "/metrics"), "quic": api(n, "/quic")} for n in nodes}
                     bench = api(node, f"/bench?target={target}&bytes={args.mib << 20}&parallel={args.parallel}&rounds={args.rounds}&direction=download", method="POST", timeout=100)
@@ -410,6 +440,10 @@ def main():
                 try:
                     result.setdefault("hosts", []).append({"name": node["name"], "address": node["address"], "baseline": node.get("baseline"),
                          "after": remote(node, "systemctl show tailscaled -p MainPID -p ActiveState; tailscale version | head -1", check=False).stdout.strip()})
+                    if node.get('kernel_ns'):
+                        pids = remote(node, shlex.join(['ip','netns','pids',node['kernel_ns']])).stdout.strip()
+                        if pids: raise RuntimeError('test namespace still has processes; refusing untracked cleanup: '+pids)
+                        remote(node, shlex.join(['ip','netns','delete',node['kernel_ns']]))
                     if node["dir"].startswith(f"/var/tmp/quicwg-lab-{ident}-"):
                         remote(node, "rm -rf -- " + shlex.quote(node["dir"]), check=False)
                 except Exception as exc:
