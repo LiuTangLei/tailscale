@@ -48,8 +48,8 @@ func parseServerHint(h http.Header) (uint32, error) {
 	}
 }
 
-// serverHints is per-backend, not shared mutable Factory state. Only configured
-// peers get a slot. The map is immutable after construction; slots are atomic.
+// serverHints is per-backend, not shared mutable Factory state. Slots are
+// added only when a live authorized peer actor is created; the map is bounded.
 func (b *Backend) initServerHints() {
 	b.serverHints = make(map[[32]byte]*atomic.Uint32, len(b.factory.peers))
 	for k, p := range b.factory.peers {
@@ -62,6 +62,8 @@ func (b *Backend) initServerHints() {
 }
 
 func (b *Backend) peerServerHint(k [32]byte) uint32 {
+	b.serverHintsMu.RLock()
+	defer b.serverHintsMu.RUnlock()
 	if h := b.serverHints[k]; h != nil {
 		return h.Load()
 	}
@@ -69,8 +71,18 @@ func (b *Backend) peerServerHint(k [32]byte) uint32 {
 }
 
 func (b *Backend) forgetServerHint(k [32]byte) {
+	b.serverHintsMu.RLock()
+	defer b.serverHintsMu.RUnlock()
 	if h := b.serverHints[k]; h != nil {
 		h.Store(serverUnknown)
+	}
+}
+
+func (b *Backend) ensureServerHint(k [32]byte) {
+	b.serverHintsMu.Lock()
+	defer b.serverHintsMu.Unlock()
+	if b.serverHints[k] == nil && len(b.serverHints) < maxPeers {
+		b.serverHints[k] = new(atomic.Uint32)
 	}
 }
 
@@ -113,6 +125,8 @@ func (p *peer) rememberServerHint(s *session, hint uint32) {
 	if p.session != s || !p.stampValid(s.stamp) || s.q.Context().Err() != nil {
 		return
 	}
+	p.g.b.serverHintsMu.RLock()
+	defer p.g.b.serverHintsMu.RUnlock()
 	if h := p.g.b.serverHints[p.cfg.key]; h != nil {
 		h.Store(hint)
 	}

@@ -35,6 +35,8 @@ type TransportControlStatus struct {
 	// Server is the configured next-start declaration. PendingRestart must
 	// be checked before treating it as the running HTTP/3 setting.
 	Server            bool                        `json:"server"`
+	AutoTrust         bool                        `json:"auto_trust,omitempty"`
+	Authentication    string                      `json:"authentication,omitempty"`
 	LocalPublicKey    string                      `json:"local_public_key,omitempty"`
 	Identity          *TransportPeer              `json:"identity,omitempty"`
 	Peers             []TransportPeer             `json:"peers"`
@@ -54,6 +56,7 @@ type TransportControlRequest struct {
 	Mode             string `json:"mode,omitempty"`
 	// Pointer distinguishes an explicit false from a missing update.
 	Server    *bool          `json:"server,omitempty"`
+	AutoTrust *bool          `json:"auto_trust,omitempty"`
 	Peer      *TransportPeer `json:"peer,omitempty"`
 	PublicKey string         `json:"public_key,omitempty"`
 }

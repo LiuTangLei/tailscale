@@ -168,7 +168,25 @@ func newTestPair(t testing.TB, mode string, options ...func(*Config)) *testPair 
 			p.bases[i].avoid[j] = uint16(a.Port)
 		}
 		listener := new(net.ListenConfig)
-		backend, err := f.New(wgtransport.Host{Bind: p.bases[i], Logf: t.Logf, ListenPacket: listener.ListenPacket, PeerAllowed: func([32]byte) bool { return true }})
+		backend, err := f.New(wgtransport.Host{Bind: p.bases[i], Logf: t.Logf, ListenPacket: listener.ListenPacket, PeerAllowed: func([32]byte) bool { return true },
+			NodePublic: func() [32]byte { return p.keys[i].Public().Raw32() },
+			NodeSeal: func(local, remote [32]byte, msg []byte) ([]byte, error) {
+				if local != p.keys[i].Public().Raw32() || remote != p.keys[i^1].Public().Raw32() {
+					return nil, ErrUnknownPeer
+				}
+				return p.keys[i].SealTo(p.keys[i^1].Public(), msg), nil
+			},
+			NodeOpen: func(local, remote [32]byte, msg []byte) ([]byte, error) {
+				if local != p.keys[i].Public().Raw32() || remote != p.keys[i^1].Public().Raw32() {
+					return nil, ErrUnknownPeer
+				}
+				b, ok := p.keys[i].OpenFrom(p.keys[i^1].Public(), msg)
+				if !ok {
+					return nil, ErrUnknownPeer
+				}
+				return b, nil
+			},
+		})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -83,6 +83,7 @@ type userspaceEngine struct {
 	packet            packetEngine
 	packetPolicy      atomic.Pointer[packetPolicy]
 	packetIdentity    atomic.Pointer[key.NodePublic]
+	packetPrivate     atomic.Pointer[key.NodePrivate] // host-only H3 handshake authentication
 	transport         *wgtransport.Manager
 	transportSource   string
 	transportRevision string
@@ -569,6 +570,9 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		ListenPacket:   netns.Listener(e.logf, e.netMon).ListenPacket,
 		ListenTCP:      netns.Listener(e.logf, e.netMon).Listen,
 		PeerAllowed:    func(k [32]byte) bool { return e.peerCurrentlyAllowed(keyFromRaw(k)) },
+		NodePublic:     e.transportNodePublic,
+		NodeSeal:       e.transportNodeSeal,
+		NodeOpen:       e.transportNodeOpen,
 		SessionChanged: func(k [32]byte, s wgtransport.SessionState) { e.packet.CarrierSessionChanged(k, s) },
 		PacketStats: func() map[string]uint64 {
 			if ip, ok := e.packet.(*ipPacketEngine); ok {
@@ -941,6 +945,7 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 			// A rejected native-IP profile must not leave the previous identity
 			// usable while the control plane has already switched profiles.
 			if e.transport.Mode() == wgtransport.QUICIP || e.transport.Mode() == wgtransport.HTTP3IP {
+				e.packetPrivate.Store(nil)
 				e.packetIdentity.Store(new(key.NodePublic))
 				e.transport.LocalIdentityChanged([32]byte{})
 				_ = e.packet.SetIdentity(key.NodePrivate{})
@@ -964,12 +969,15 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 			publicKey = cfg.PrivateKey.Public().Raw32()
 		}
 		// Invalidate the old TLS/node binding before publishing a new identity.
+		e.packetPrivate.Store(nil)
 		e.packetIdentity.Store(new(key.NodePublic))
 		e.transport.LocalIdentityChanged([32]byte{})
 		if err := e.packet.SetIdentity(cfg.PrivateKey); err != nil {
 			return fmt.Errorf("wgengine: set packet-engine identity: %w", err)
 		}
 		pub := keyFromRaw(publicKey)
+		private := cfg.PrivateKey
+		e.packetPrivate.Store(&private)
 		e.packetIdentity.Store(&pub)
 		e.transport.LocalIdentityChanged(publicKey)
 	}
@@ -1187,6 +1195,8 @@ func (e *userspaceEngine) Close() {
 	e.closing = true
 	e.mu.Unlock()
 
+	e.packetPrivate.Store(nil)
+	e.packetIdentity.Store(new(key.NodePublic))
 	e.magicConn.Close()
 	if err := e.transport.Close(); err != nil {
 		e.logf("wgengine: closing transport: %v", err)

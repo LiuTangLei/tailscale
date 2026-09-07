@@ -244,12 +244,16 @@ func renderTransportStatus(status ipn.TransportControlStatus, out io.Writer, jso
 	if status.LocalPublicKey != "" {
 		fmt.Fprintf(out, "  Local public key: %s\n", status.LocalPublicKey)
 	}
+	if status.Authentication != "" {
+		fmt.Fprintf(out, "  Authentication: %s\n", status.Authentication)
+	}
 	if status.Identity != nil {
 		fmt.Fprintf(out, "  Identity: %s (%s)\n", status.Identity.Name, status.Identity.PublicKey)
 	}
-	fmt.Fprintf(out, "  Trusted peers: %d\n", len(status.Peers))
-	if !status.MixedPeerSupport {
-		fmt.Fprintln(out, "  Concurrent native/QUIC peers: not supported by this build")
+	if status.AutoTrust {
+		fmt.Fprintf(out, "  Explicit certificate pins: %d (optional constraints)\n", len(status.Peers))
+	} else {
+		fmt.Fprintf(out, "  Trusted peers: %d\n", len(status.Peers))
 	}
 	if len(status.UnconfiguredPeers) != 0 {
 		fmt.Fprintf(out, "  Routable peers without QUIC identity: %d (QUIC activation is blocked)\n", len(status.UnconfiguredPeers))
@@ -279,7 +283,12 @@ func runAWGTransport(ctx context.Context, args []string) error {
 }
 
 func transportModeRequest(status ipn.TransportControlStatus, mode string) ipn.TransportControlRequest {
-	return ipn.TransportControlRequest{Action: "mode", ExpectedRevision: status.Revision, Mode: mode}
+	req := ipn.TransportControlRequest{Action: "mode", ExpectedRevision: status.Revision, Mode: mode}
+	if mode == "http3-ip" {
+		autoTrust := true
+		req.AutoTrust = &autoTrust
+	}
+	return req
 }
 
 func runAWGTransportMode(ctx context.Context, mode string, yes bool, in io.Reader, out io.Writer) error {
@@ -309,6 +318,9 @@ func stageTransportMode(ctx context.Context, client transportClient, mode string
 	}
 	if mode == "http3-ip" {
 		fmt.Fprintln(out, "HTTP/3 is experimental, not a Chrome fingerprint clone; performance depends on the path.")
+		if status.Identity == nil {
+			fmt.Fprintln(out, "No local HTTP/3 identity is staged yet. The next mode change will generate one automatically and enable node-key auto-trust.")
+		}
 	}
 	fmt.Fprintf(out, "Active: %s; stage %s for the next daemon start. This command will NOT restart the daemon.\n", status.ActiveMode, mode)
 	if !yes {
@@ -417,7 +429,11 @@ func runAWGPeerList(ctx context.Context, out io.Writer) error {
 		return err
 	}
 	if len(status.Peers) == 0 {
-		fmt.Fprintln(out, "No trusted peers configured.")
+		if status.AutoTrust {
+			fmt.Fprintln(out, "Peers authenticate automatically using authorized Tailnet node keys; no explicit certificate pins are configured.")
+		} else {
+			fmt.Fprintln(out, "No explicit peer pins configured. Selecting HTTP/3 enables automatic Tailnet node authentication.")
+		}
 		return nil
 	}
 	for i, peer := range status.Peers {

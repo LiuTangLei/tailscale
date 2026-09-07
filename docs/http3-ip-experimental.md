@@ -49,12 +49,15 @@ request target. A signature from one TLS connection cannot be replayed on
 another. This `Authorization: Peer ...` scheme is a private authorization profile,
 not a claim of implementing HTTP Message Signatures.
 
-A pinned certificate alone does not authorize packets. Admission, source-IP
-ownership, expiry/deletion, and local identity are checked against current
-Tailscale policy. The same longest-prefix source authorization and
-`tstun.Wrapper.Write` path used by native QUIC-IP remains in effect, including
-ACL, jailed-peer handling, NAT, and netstack dispatch. WG `LastHandshake` stays
-zero; session status reports `http3-ip`. No WG Device is constructed.
+A pinned certificate alone does not authorize packets. A profile can also enable
+`auto_trust`, which authenticates active peers using the current authorized
+node key instead of a manually imported pin list. Existing manual pins remain in
+force as additional constraints. Admission, source-IP ownership,
+expiry/deletion, and local identity are checked against current Tailscale
+policy. The same longest-prefix source authorization and `tstun.Wrapper.Write`
+path used by native QUIC-IP remains in effect, including ACL, jailed-peer
+handling, NAT, and netstack dispatch. WG `LastHandshake` stays zero; session
+status reports `http3-ip`. No WG Device is constructed.
 
 Configuration remains immutable for a factory's lifetime. Certificate/pin
 rotation requires a new factory/engine configuration; this is not automatic

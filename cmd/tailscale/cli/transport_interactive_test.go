@@ -52,7 +52,7 @@ func TestStageTransportConfirmationAndCAS(t *testing.T) {
 	if err := stageTransportMode(context.Background(), c, "http3-ip", false, strings.NewReader("y\n"), &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.writes) != 1 || c.writes[0].ExpectedRevision != "revision-7" || c.state.ActiveMode != "native" || !c.state.PendingRestart {
+	if len(c.writes) != 1 || c.writes[0].Action != "mode" || c.writes[0].Mode != "http3-ip" || c.writes[0].AutoTrust == nil || !*c.writes[0].AutoTrust || c.state.ActiveMode != "native" || !c.state.PendingRestart {
 		t.Fatalf("wrong staged request %+v", c)
 	}
 	if !strings.Contains(out.String(), "NOT restart") || !strings.Contains(out.String(), "experimental") {

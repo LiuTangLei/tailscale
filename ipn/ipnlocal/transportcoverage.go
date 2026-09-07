@@ -46,7 +46,7 @@ func (b *LocalBackend) transportPeerCoverage(p transportprofile.Profile) []ipn.T
 }
 
 func (b *LocalBackend) checkTransportPeerCoverage(p transportprofile.Profile) error {
-	if p.Mode == "native" {
+	if p.Mode == "native" || p.AutoTrust {
 		return nil
 	}
 	if missing := b.transportPeerCoverage(p); len(missing) != 0 {

@@ -22,6 +22,11 @@ func (b *Backend) Snapshot() map[string]any {
 
 func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "wireguard_encryption": f.cfg.Payload != "ip", "server": f.cfg.Server, "browser_fingerprint": "none", "browser_fingerprint_supported": true}
+	out["authentication"] = "pinned-key"
+	if f.cfg.AutoTrust {
+		out["authentication"] = "node-key"
+	}
+	out["manual_identity_required"] = !f.cfg.AutoTrust
 	if b == nil {
 		return out
 	}

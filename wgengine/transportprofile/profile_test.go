@@ -88,6 +88,46 @@ func TestProfileLifecycleAndPrivateExport(t *testing.T) {
 		}
 	}
 }
+func TestH3AutoTrustModeGeneratesIdentityWithoutPrepare(t *testing.T) {
+	k := key.NewNode().Public().String()
+	want, err := canonicalKey(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Profile{Version: 1, Mode: "native", Peers: []ipn.TransportPeer{}}
+	p, err = Apply(p, ipn.TransportControlRequest{Action: "mode", Mode: "http3-ip"}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.AutoTrust || p.Identity == nil || p.LocalKey != want || p.Identity.PublicKey != want {
+		t.Fatalf("http3 mode did not generate auto-trust identity: %+v", p)
+	}
+	manual := Profile{Version: 1, Mode: "http3-ip", AutoTrust: false, Peers: []ipn.TransportPeer{}}
+	manual, err = Apply(manual, ipn.TransportControlRequest{Action: "prepare"}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manual.AutoTrust {
+		t.Fatal("prepare auto-enabled node-key trust without an explicit request")
+	}
+}
+
+func TestLoadForStartRejectsMalformedAutoTrustIdentity(t *testing.T) {
+	root := t.TempDir()
+	p, k := newProfile(t)
+	p.Mode = "http3-ip"
+	p.AutoTrust = true
+	p.Certificate = "not-a-cert"
+	p.PrivateKey = "not-a-key"
+	p.Identity = &ipn.TransportPeer{PublicKey: k, SPKISHA256: "deadbeef"}
+	if _, err := Save(root, p, "0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadForStart(root); err == nil {
+		t.Fatal("malformed auto-trust profile accepted")
+	}
+}
+
 func TestInvalidImportsAndModes(t *testing.T) {
 	p, k := newProfile(t)
 	peer, _ := newProfile(t)

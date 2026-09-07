@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"tailscale.com/ipn"
 	"tailscale.com/types/key"
@@ -55,10 +56,26 @@ func (b *LocalBackend) transportStatusLocked() (ipn.TransportControlStatus, erro
 	s.Revision = rev
 	public := p.Public(rev)
 	s.Identity = public.Identity
+	if p.AutoTrust && s.Identity != nil && s.LocalPublicKey != "" {
+		current := strings.TrimPrefix(s.LocalPublicKey, "nodekey:")
+		old := s.Identity.PublicKey
+		if len(current) == 64 && len(old) == 64 {
+			if s.Identity.HTTP3URL == "https://peer-"+old[:12]+".invalid/.well-known/masque/ip/*/*/" {
+				s.Identity.HTTP3URL = "https://peer-" + current[:12] + ".invalid/.well-known/masque/ip/*/*/"
+			}
+			s.Identity.PublicKey = current
+		}
+	}
 	s.Peers = public.Peers
 	s.Server = p.Server
+	s.AutoTrust = p.AutoTrust
+	s.Authentication = public.Authentication
 	s.MixedPeerSupport = false
-	s.UnconfiguredPeers = b.transportPeerCoverage(p)
+	if p.AutoTrust {
+		s.UnconfiguredPeers = nil
+	} else {
+		s.UnconfiguredPeers = b.transportPeerCoverage(p)
+	}
 	if s.Source == "environment" || s.Source == "embedded" {
 		s.DesiredMode = s.ActiveMode
 		s.Warnings = append(s.Warnings, "The running transport is explicitly configured outside this CLI. Remove that override before staging a mode; no service configuration is edited automatically.")
@@ -67,19 +84,31 @@ func (b *LocalBackend) transportStatusLocked() (ipn.TransportControlStatus, erro
 		s.PendingRestart = s.ActiveMode != p.Mode || (p.Mode != "native" && rev != running.PacketTransportRevision)
 	}
 	if s.Identity == nil {
-		s.Warnings = append(s.Warnings, "Initialize a local identity and exchange trusted PUBLIC identity cards before enabling QUIC. No AWG parameters need synchronization.")
+		if p.Mode == "quic-ip" {
+			s.Warnings = append(s.Warnings, "The legacy raw QUIC profile requires explicit public identity pins.")
+		} else {
+			s.Warnings = append(s.Warnings, "Selecting HTTP/3 prepares a local TLS identity automatically; no peer-card export/import or AWG synchronization is required.")
+		}
 	}
-	if p.Identity != nil && p.LocalKey != "" && "nodekey:"+p.LocalKey != s.LocalPublicKey {
+	if p.Identity != nil && p.LocalKey != "" && "nodekey:"+p.LocalKey != s.LocalPublicKey && !p.AutoTrust {
 		s.Warnings = append(s.Warnings, "Stored transport identity belongs to a different node/profile; QUIC activation is blocked.")
 	}
 	if p.Mode != "native" || (s.ActiveMode != "native" && s.ActiveMode != "unknown") {
-		s.Warnings = append(s.Warnings, "QUIC is a node-wide data plane in this build; native communication with old peers does not run concurrently. A trusted identity card is not evidence that the peer enabled the same protocol.")
-		if len(s.UnconfiguredPeers) != 0 {
-			s.Warnings = append(s.Warnings, fmt.Sprintf("%d routable peers are missing QUIC identity configuration. Control-plane online status does not prove their data-plane reachability.", len(s.UnconfiguredPeers)))
+		if p.AutoTrust {
+			s.Warnings = append(s.Warnings, "HTTP/3 auto-trust authenticates by the current authorized Tailnet node key; explicit manual pins remain additional constraints.")
+		} else {
+			s.Warnings = append(s.Warnings, "QUIC is a node-wide data plane in this build; native communication with old peers does not run concurrently. A trusted identity card is not evidence that the peer enabled the same protocol.")
+			if len(s.UnconfiguredPeers) != 0 {
+				s.Warnings = append(s.Warnings, fmt.Sprintf("%d routable peers are missing QUIC identity configuration. Control-plane online status does not prove their data-plane reachability.", len(s.UnconfiguredPeers)))
+			}
 		}
 	}
 	if p.Mode == "http3-ip" {
-		s.Warnings = append(s.Warnings, "HTTP/3 is experimental, not a Chrome fingerprint clone. The generated .invalid authority is private and authenticated by a pinned key, not a public domain certificate.")
+		if p.AutoTrust {
+			s.Warnings = append(s.Warnings, "HTTP/3 is experimental, not a Chrome fingerprint clone. The generated .invalid authority is private and authenticated by the current authorized Tailnet node key, not a public domain certificate.")
+		} else {
+			s.Warnings = append(s.Warnings, "HTTP/3 is experimental, not a Chrome fingerprint clone. The generated .invalid authority is private and authenticated by a pinned key, not a public domain certificate.")
+		}
 	}
 	return s, nil
 }

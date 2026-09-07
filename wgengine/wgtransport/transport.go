@@ -69,7 +69,14 @@ type Host struct {
 	Logf logger.Logf
 	// Native IP requires live authorization even after TLS pin validation.
 	// Callbacks must be fast, concurrency-safe, and not re-enter the carrier.
-	PeerAllowed    func([32]byte) bool
+	PeerAllowed func([32]byte) bool
+	// NodePublic, NodeSeal and NodeOpen authenticate H3 handshakes using the
+	// current host-owned node identity. No private key leaves the engine.
+	// local is an expected identity: a concurrent key change MUST reject the
+	// operation. Callbacks recheck live peer authorization and bound input size.
+	NodePublic     func() [32]byte
+	NodeSeal       func(local, peer [32]byte, plaintext []byte) ([]byte, error)
+	NodeOpen       func(local, peer [32]byte, ciphertext []byte) ([]byte, error)
 	SessionChanged func([32]byte, SessionState)
 	// PacketStats is a cold-path diagnostics hook; no packet data or keys.
 	PacketStats func() map[string]uint64

@@ -16,7 +16,7 @@ import (
 
 // This uses real engines and LocalAPI. The third peer intentionally remains
 // native-only. It is a wire-mode fixture, not a test of an older release binary.
-func TestManagedTransportDoesNotSilentlyDisconnectNativePeer(t *testing.T) {
+func TestManualTransportRejectsMissingPeerPins(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	url, control := startControl(t)
@@ -75,8 +75,9 @@ func TestManagedTransportDoesNotSilentlyDisconnectNativePeer(t *testing.T) {
 	if st.MixedPeerSupport || len(st.UnconfiguredPeers) != 1 {
 		t.Fatalf("misleading compatibility status: %+v", st)
 	}
+	manual := false
 	for _, mode := range []string{"quic-ip", "http3-ip"} {
-		_, err = clients[0].ConfigureTransport(ctx, ipn.TransportControlRequest{Action: "mode", Mode: mode, ExpectedRevision: before})
+		_, err = clients[0].ConfigureTransport(ctx, ipn.TransportControlRequest{Action: "mode", Mode: mode, AutoTrust: &manual, ExpectedRevision: before})
 		if err == nil || !strings.Contains(err.Error(), "routable peers") {
 			t.Fatalf("%s must refuse known isolation: %v", mode, err)
 		}

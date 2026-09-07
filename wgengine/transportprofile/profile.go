@@ -39,6 +39,13 @@ const MaxSize = 1 << 20
 
 var ErrConflict = errors.New("transport profile changed; refresh status before confirming")
 
+var (
+	errStoredTLSIdentityInvalid     = errors.New("stored TLS identity is invalid")
+	errStoredTLSIdentityExpired     = errors.New("stored TLS identity is expired")
+	errStoredTLSIdentityNotYetValid = errors.New("stored TLS identity is not yet valid; check the system clock")
+	errStoredIdentityMismatch       = errors.New("stored identity card does not match private identity")
+)
+
 // Profile contains private key material. Never return or log a Profile through
 // LocalAPI. Public returns its sanitized representation. Storage is separate
 // from the WG state file, whose contents are never modified here.
@@ -46,6 +53,7 @@ type Profile struct {
 	Version     int                 `json:"version"`
 	Mode        string              `json:"mode"`
 	Server      bool                `json:"server,omitempty"`
+	AutoTrust   bool                `json:"auto_trust,omitempty"`
 	LocalKey    string              `json:"local_public_key,omitempty"`
 	Certificate string              `json:"certificate_pem,omitempty"`
 	PrivateKey  string              `json:"private_key_pem,omitempty"`
@@ -108,17 +116,39 @@ func canonicalKey(k string) (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
+func localHTTP3URLForKey(k string) string {
+	if len(k) >= 12 {
+		return "https://peer-" + k[:12] + ".invalid/.well-known/masque/ip/*/*/"
+	}
+	return "https://peer-.invalid/.well-known/masque/ip/*/*/"
+}
 func NewIdentity(p Profile, localKey string) (Profile, error) {
 	k, err := canonicalKey(localKey)
 	if err != nil {
 		return p, err
 	}
 	if p.Identity != nil {
-		if p.LocalKey != k {
-			return p, errors.New("stored identity belongs to a different node; do not reuse it across profiles")
+		// Do not mutate the caller's card on a rejected/CAS-conflicting update.
+		card := *p.Identity
+		p.Identity = &card
+		_, certErr := p.certificate()
+		canRenew := p.AutoTrust && p.Mode == "http3-ip"
+		if certErr != nil && !(canRenew && errors.Is(certErr, errStoredTLSIdentityExpired)) {
+			return p, certErr
 		}
-		_, err := p.certificate()
-		return p, err
+		if p.LocalKey != k {
+			if !canRenew {
+				return p, errors.New("stored identity belongs to a different node; do not reuse it across profiles")
+			}
+			if card.HTTP3URL == localHTTP3URLForKey(p.LocalKey) {
+				card.HTTP3URL = localHTTP3URLForKey(k)
+			}
+			p.LocalKey, card.PublicKey = k, k
+		}
+		if certErr == nil {
+			return p, nil
+		}
+		p.Certificate, p.PrivateKey, p.Identity = "", "", nil
 	}
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -155,18 +185,22 @@ func NewIdentity(p Profile, localKey string) (Profile, error) {
 func (p Profile) certificate() (tls.Certificate, error) {
 	cert, err := tls.X509KeyPair([]byte(p.Certificate), []byte(p.PrivateKey))
 	if err != nil {
-		return cert, errors.New("stored TLS identity is invalid")
+		return cert, errStoredTLSIdentityInvalid
 	}
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
-		return cert, err
-	}
-	if time.Now().Before(leaf.NotBefore) || !time.Now().Before(leaf.NotAfter) {
-		return cert, errors.New("stored TLS identity is expired or not yet valid")
+		return cert, errStoredTLSIdentityInvalid
 	}
 	pin := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 	if p.Identity == nil || p.LocalKey != p.Identity.PublicKey || hex.EncodeToString(pin[:]) != p.Identity.SPKISHA256 {
-		return cert, errors.New("stored identity card does not match private identity")
+		return cert, errStoredIdentityMismatch
+	}
+	now := time.Now()
+	if now.Before(leaf.NotBefore) {
+		return cert, errStoredTLSIdentityNotYetValid
+	}
+	if !now.Before(leaf.NotAfter) {
+		return cert, errStoredTLSIdentityExpired
 	}
 	cert.Leaf = leaf
 	return cert, nil
@@ -178,9 +212,16 @@ func (p Profile) Public(revision string) ipn.TransportControlStatus {
 		card.Server = p.Server
 		identity = &card
 	}
-	return ipn.TransportControlStatus{DesiredMode: p.Mode, Server: p.Server, Revision: revision, Identity: identity, Peers: slices.Clone(p.Peers), Available: true}
+	auth := "pinned-key"
+	if p.AutoTrust {
+		auth = "node-key"
+	}
+	return ipn.TransportControlStatus{DesiredMode: p.Mode, Server: p.Server, AutoTrust: p.AutoTrust, Authentication: auth, Revision: revision, Identity: identity, Peers: slices.Clone(p.Peers), Available: true}
 }
 func (p Profile) Factory() (*quicbind.Factory, error) {
+	if p.AutoTrust && p.Mode != "http3-ip" {
+		return nil, errors.New("automatic node authentication requires HTTP/3")
+	}
 	if p.Mode == "native" {
 		return nil, nil
 	}
@@ -195,7 +236,10 @@ func (p Profile) Factory() (*quicbind.Factory, error) {
 	if p.Mode == "http3-ip" {
 		c.HTTP3 = true
 		c.Server = p.Server
-		c.HTTP3URL = p.Identity.HTTP3URL
+		if p.Identity != nil {
+			c.HTTP3URL = p.Identity.HTTP3URL
+		}
+		c.AutoTrust = p.AutoTrust
 	}
 	for _, peer := range p.Peers {
 		q := quicbind.PeerConfig{PublicKey: peer.PublicKey, SPKISHA256: peer.SPKISHA256}
@@ -211,11 +255,17 @@ func (p Profile) Validate(localKey string) error {
 	if !ValidMode(p.Mode) || p.Version != 1 {
 		return errors.New("invalid profile mode/version")
 	}
+	if p.AutoTrust && p.Mode != "http3-ip" {
+		return errors.New("automatic node authentication requires HTTP/3")
+	}
 	if p.Mode == "native" {
 		return nil
 	}
 	k, err := canonicalKey(localKey)
-	if err != nil || p.LocalKey != k {
+	if err != nil {
+		return errors.New("transport identity does not match the active node")
+	}
+	if !p.AutoTrust && p.LocalKey != k {
 		return errors.New("transport identity does not match the active node")
 	}
 	_, err = p.Factory()
@@ -224,6 +274,12 @@ func (p Profile) Validate(localKey string) error {
 func Apply(p Profile, req ipn.TransportControlRequest, localKey string) (Profile, error) {
 	switch req.Action {
 	case "prepare":
+		if req.AutoTrust != nil {
+			if *req.AutoTrust && p.Mode != "http3-ip" {
+				return p, errors.New("automatic node authentication requires HTTP/3")
+			}
+			p.AutoTrust = *req.AutoTrust
+		}
 		return NewIdentity(p, localKey)
 	case "add-peer":
 		if req.Peer == nil {
@@ -301,7 +357,7 @@ func Apply(p Profile, req ipn.TransportControlRequest, localKey string) (Profile
 			return p, errors.New("peer not in the trusted profile")
 		}
 		p.Peers = slices.Delete(peers, idx, idx+1)
-		if p.Mode != "native" && len(p.Peers) == 0 {
+		if p.Mode != "native" && len(p.Peers) == 0 && !p.AutoTrust {
 			return p, errors.New("cannot remove last peer from an enabled profile; stage native first")
 		}
 	case "server":
@@ -314,6 +370,20 @@ func Apply(p Profile, req ipn.TransportControlRequest, localKey string) (Profile
 			return p, errors.New("choose native, quic-ip or http3-ip; WG-over-QUIC is not a production mode")
 		}
 		p.Mode = req.Mode
+		if req.AutoTrust != nil {
+			p.AutoTrust = *req.AutoTrust
+		} else if req.Mode == "http3-ip" {
+			p.AutoTrust = true
+		} else {
+			p.AutoTrust = false
+		}
+		if req.Mode == "http3-ip" {
+			var err error
+			p, err = NewIdentity(p, localKey)
+			if err != nil {
+				return p, err
+			}
+		}
 	case "validate":
 	default:
 		return p, errors.New("unknown transport action")
@@ -351,6 +421,16 @@ func Save(root string, p Profile, expected string) (string, error) {
 // LoadForStart does not allocate sockets. Corrupt/expired configuration fails
 // closed. An absent file means native; an explicit environment selection is
 // handled by the caller and takes precedence over this managed profile.
+func (p Profile) renewAutoTrustIdentity() (Profile, error) {
+	if !p.AutoTrust || p.Mode != "http3-ip" || p.LocalKey == "" {
+		return p, nil
+	}
+	p.Certificate = ""
+	p.PrivateKey = ""
+	p.Identity = nil
+	return NewIdentity(p, p.LocalKey)
+}
+
 func LoadForStart(root string) (wgtransport.Config, string, error) {
 	if root == "" {
 		return wgtransport.Config{}, "0", nil
@@ -364,6 +444,24 @@ func LoadForStart(root string) (wgtransport.Config, string, error) {
 	}
 	if p.Mode == "native" {
 		return wgtransport.Config{Mode: wgtransport.Native}, rev, nil
+	}
+	if p.AutoTrust && p.Mode == "http3-ip" {
+		if _, err := p.certificate(); err != nil {
+			if !errors.Is(err, errStoredTLSIdentityExpired) {
+				return wgtransport.Config{}, "", err
+			}
+			p, err = p.renewAutoTrustIdentity()
+			if err != nil {
+				return wgtransport.Config{}, "", err
+			}
+			if _, err := Save(root, p, rev); err != nil {
+				return wgtransport.Config{}, "", err
+			}
+			_, rev, err = Read(root)
+			if err != nil {
+				return wgtransport.Config{}, "", err
+			}
+		}
 	}
 	f, err := p.Factory()
 	if err != nil {

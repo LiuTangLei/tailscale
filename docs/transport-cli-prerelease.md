@@ -20,24 +20,18 @@ not offered by the CLI or distribution build script.
 
 Update both binaries, not just the CLI. Use an out-of-band management connection
 when staging transport changes. All currently communicating peers must support
-the chosen node-wide data plane; there is no automatic per-peer protocol fallback.
+the chosen node-wide data plane.
 
 ```sh
 tailscale awg status
-tailscale awg identity --init
-# Export the PUBLIC card from each node, and transfer it through a trusted channel:
-tailscale awg identity --json
-# On the other node, import that card:
-tailscale awg peer add --file peer-public.json
-# --yes is available for an explicit noninteractive import:
-tailscale awg peer add --yes --file peer-public.json
-
-tailscale awg peer list
-tailscale awg doctor
-tailscale awg transport --yes quic-ip
-# Then deliberately restart the daemon/container via its platform's service manager.
+tailscale awg transport --yes http3-ip
+# Deliberately restart the daemon using the existing platform service manager.
 tailscale awg status --json
 ```
+
+For raw `quic-ip` and advanced manual pinning, the legacy identity-card flow is
+still available: initialize a local TLS identity, export the public card to a
+trusted channel, and import it on the peer before enabling the profile.
 
 With AWG preferences or environment options present, QUIC activation is refused.
 Explicitly clear those first only when it is safe to interrupt AWG connectivity.
@@ -57,14 +51,17 @@ hostname is not proof. A card must belong to a currently authorized and routable
 tailnet peer. Replacing a pinned TLS key requires explicit removal and re-import.
 Certificates and pin configuration are validated before enabling a transport.
 
-QUIC modes need no AWG header/padding parameter synchronization. This release
-still requires the trusted identity-card exchange; it does not automatically
-trust keys obtained from unauthenticated discovery. `io=magicsock` is used by
-managed profiles so existing discovery, NAT traversal and relay selection are
-reused. No extra UDP port or firewall rule is opened by this CLI.
+QUIC modes need no AWG header/padding parameter synchronization. `http3-ip`
+can enable `auto_trust` using the current authorized Tailnet node key without
+exporting or importing a peer card. Manual pins remain available as additional
+constraints in advanced profiles and are not implicitly trusted from
+unauthenticated discovery. `io=magicsock` is used by managed profiles so
+existing discovery, NAT traversal and relay selection are reused. No extra UDP
+port or firewall rule is opened by this CLI.
 
-The generated HTTP/3 `.invalid` authority is private and validated by its pinned
-key. It is not a public website or a publicly trusted certificate. A normal
+The generated HTTP/3 `.invalid` authority is private. Automatic profiles bind
+it to the authorized node key; legacy manual profiles validate their explicit
+certificate pins. It is not a public website or a publicly trusted certificate. A normal
 browser-facing website requires an appropriate operator-managed authority and
 certificate; use the explicit advanced HTTP/3 configuration for that deployment.
 

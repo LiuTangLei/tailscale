@@ -62,6 +62,7 @@ type Backend struct {
 	identityEpoch atomic.Uint64 // invalidates queued work across local identity changes
 	networkUp     atomic.Bool
 	counters      Counters
+	serverHintsMu sync.RWMutex
 	serverHints   map[[32]byte]*atomic.Uint32
 }
 type carrierBind struct{ b *Backend }
@@ -158,6 +159,9 @@ func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 		return nil, errors.New("independent QUIC UDP requires a host-protected ListenPacket hook")
 	}
 	b := &Backend{factory: f, host: h}
+	if err := b.autoTrustReady(); err != nil {
+		return nil, err
+	}
 	b.initServerHints()
 	b.bind.b = b
 	b.networkUp.Store(true)
@@ -180,7 +184,7 @@ func (b *Backend) Bind() conn.Bind     { return &b.bind }
 func (b *Backend) Counters() *Counters { return &b.counters }
 func (b *Backend) Close() error        { return b.stop(true) }
 func (b *Backend) LocalIdentityChanged(k [32]byte) {
-	valid := k == b.factory.local
+	valid := k != ([32]byte{}) && k == b.localNodeKey()
 	old := b.identityOK.Swap(valid)
 	if old != valid {
 		b.identityEpoch.Add(1)
@@ -317,7 +321,7 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		Conn: g.pc, ConnectionIDLength: 8, StatelessResetKey: &resetKey,
 		VerifySourceAddress: func(net.Addr) bool { return !admission.Allow() },
 		ConnContext: func(ctx context.Context, info *quic.ClientInfo) (context.Context, error) {
-			if incoming.Add(1) > int64(2*len(b.factory.peers)+16) {
+			if incoming.Add(1) > int64(2*maxPeers+16) {
 				incoming.Add(-1)
 				return nil, errors.New("QUIC connection limit")
 			}
@@ -326,7 +330,7 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		},
 	}
 	qc := b.quicConfig()
-	listener, err := g.transport.Listen(b.factory.tlsConfig(nil), qc)
+	listener, err := g.transport.Listen(b.tlsConfig(nil), qc)
 	if err != nil {
 		rollback()
 		return nil, 0, err
@@ -394,8 +398,8 @@ func (c *carrierBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := c.b.factory.peers[k]; !ok {
-		return nil, ErrUnknownPeer
+	if _, err := c.b.automaticPeer(k); err != nil {
+		return nil, err
 	}
 	base, err := c.b.host.Bind.ParseEndpoint(s)
 	if err != nil {
@@ -497,9 +501,24 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 }
 
 func (g *generation) peer(k [32]byte, base conn.Endpoint) (*peer, error) {
-	cfg, ok := g.b.factory.peers[k]
-	if !ok || !g.b.peerAllowed(k) {
+	// Steady-state packets must not rebuild automatic origins or allocate
+	// handshake metadata. Resolve it only when creating/reviving an actor.
+	if !g.b.peerAllowed(k) {
 		return nil, ErrUnknownPeer
+	}
+	g.peersMu.Lock()
+	if g.ctx.Err() != nil {
+		g.peersMu.Unlock()
+		return nil, net.ErrClosed
+	}
+	existing := g.peers[k]
+	g.peersMu.Unlock()
+	if existing != nil && !existing.disabled.Load() {
+		return existing, nil
+	}
+	cfg, err := g.b.automaticPeer(k)
+	if err != nil {
+		return nil, err
 	}
 	if base == nil {
 		var err error
@@ -528,6 +547,10 @@ func (g *generation) peer(k [32]byte, base conn.Endpoint) (*peer, error) {
 		return p, nil
 	}
 	defer g.peersMu.Unlock()
+	if len(g.peers) >= maxPeers {
+		return nil, errors.New("active H3 peer limit reached")
+	}
+	g.b.ensureServerHint(k)
 	p := &peer{g: g, cfg: cfg, tx: make(chan *packetBuffer, g.b.factory.cfg.QueuePackets)}
 	p.ep.Store(&endpoint{Endpoint: base, b: g.b, key: k})
 	g.peers[k] = p
@@ -575,7 +598,8 @@ func (p *peer) preferredOutgoing(hint uint32) bool {
 	if p.g.b.factory.cfg.HTTP3 && hint != serverUnknown && hint <= serverYes && p.g.b.factory.cfg.Server != (hint == serverYes) {
 		return !p.g.b.factory.cfg.Server
 	}
-	return bytes.Compare(p.g.b.factory.local[:], p.cfg.key[:]) < 0
+	local := p.g.b.localNodeKey()
+	return bytes.Compare(local[:], p.cfg.key[:]) < 0
 }
 
 func (p *peer) install(q *quic.Conn, outgoing bool) *session {
@@ -583,6 +607,10 @@ func (p *peer) install(q *quic.Conn, outgoing bool) *session {
 }
 
 func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChannel, authenticatedServerHint ...uint32) *session {
+	return p.installBoundChannel(q, outgoing, channel, nil, authenticatedServerHint...)
+}
+
+func (p *peer) installBoundChannel(q *quic.Conn, outgoing bool, channel datagramChannel, attempt *lifecycleStamp, authenticatedServerHint ...uint32) *session {
 	state := q.ConnectionState()
 	if !state.SupportsDatagrams.Local || !state.SupportsDatagrams.Remote {
 		q.CloseWithError(1, "QUIC DATAGRAM required")
@@ -595,9 +623,12 @@ func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChann
 	preferredOutgoing := p.preferredOutgoing(hint)
 	preferred := preferredOutgoing == outgoing
 	ns := &session{q: q, dgram: channel, preferred: preferred, outgoing: outgoing, stamp: p.lifecycleStamp()}
+	if attempt != nil {
+		ns.stamp = *attempt
+	}
 	p.mu.Lock()
 	old := p.session
-	if p.g.ctx.Err() != nil || !p.stampValid(ns.stamp) {
+	if p.g.ctx.Err() != nil || q.Context().Err() != nil || !p.stampValid(ns.stamp) {
 		p.mu.Unlock()
 		q.CloseWithError(0, "closed")
 		return nil
@@ -655,7 +686,8 @@ func (p *peer) getSession() (*session, error) {
 	}
 	ctx, cancel := context.WithTimeout(p.g.ctx, 10*time.Second)
 	defer cancel()
-	tlsConfig := p.g.b.factory.tlsConfig(&p.cfg.key)
+	attempt := p.lifecycleStamp()
+	tlsConfig := p.g.b.tlsConfig(&p.cfg.key)
 	if p.cfg.http3URL != nil {
 		tlsConfig.ServerName = http3ClientHelloServerName(p.cfg.http3URL)
 	}
@@ -670,7 +702,7 @@ func (p *peer) getSession() (*session, error) {
 		return nil, err
 	}
 	if p.g.b.factory.cfg.HTTP3 {
-		return p.openHTTP3(q)
+		return p.openHTTP3(q, attempt)
 	}
 	s := p.install(q, true)
 	if s == nil {

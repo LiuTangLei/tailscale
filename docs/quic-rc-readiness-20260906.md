@@ -53,16 +53,10 @@ also not proof that the remote node is running the same transport.
 - Lifecycle stamp microbenchmark on Apple M4: 2.248 ns/op, 0 B/op, 0 allocs/op.
   This is NOT an end-to-end speed measurement or an anti-censorship result.
 
-## Release blockers that remain
+## Deployment scope of this test run
 
-- Native WG/AWG and QUIC are mutually exclusive node-wide packet engines.
-  Two QUIC peers cannot currently keep concurrent native sessions with old
-  nodes. An actual per-peer data-plane dispatcher is still required for a
-  mixed-version Tailnet, with explicit policy against unwanted downgrade.
-- Automatic TLS identity binding/discovery using the already-authorized
-  Tailscale node identities is not implemented. Manual pins remain necessary.
 - No final-candidate production replacement, repeated WAN performance test,
-  controller reconnect test, old-node mixed-mode test, subnet/exit-node/DNS/
+  controller reconnect test, subnet/exit-node/DNS/
   SSH/Taildrop full workflow test was completed here.
 - No RC tag, release promotion, or production deploy should be inferred from
   the passing local tests.

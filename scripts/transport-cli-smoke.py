@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--lab", type=Path, required=True)
     ap.add_argument("--cli", type=Path, required=True)
     ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("--auto-trust", action="store_true", help="test fresh H3 profiles without identity preparation or card import")
     args = ap.parse_args()
     env = dict(os.environ)
     for name in list(env):
@@ -37,7 +38,8 @@ def main():
               "lab_sha256": hashlib.sha256(args.lab.read_bytes()).hexdigest(),
               "cli_sha256": hashlib.sha256(args.cli.read_bytes()).hexdigest(),
               "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-              "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], text=True).strip())}
+              "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()),
+              "automatic_trust": args.auto_trust}
     with tempfile.TemporaryDirectory(prefix="transport-cli-") as tmp:
         root = Path(tmp)
         control_port, derp_port, stun_port = free_port(), free_port(), free_port(socket.SOCK_DGRAM)
@@ -106,20 +108,25 @@ def main():
                         raise RuntimeError("local control did not listen")
                     time.sleep(0.1)
             start_nodes()
-            cards = [cli(n, "identity", "--init", json_result=True) for n in nodes]
+            if not args.auto_trust:
+                cards = [cli(n, "identity", "--init", json_result=True) for n in nodes]
+                for i, n in enumerate(nodes):
+                    cli(n, "peer", "add", "--yes", json.dumps(cards[i ^ 1]))
+                    cli(n, "doctor")
+            else:
+                cli(nodes[1], "server", "--yes", "on")
             for i, n in enumerate(nodes):
-                cli(n, "peer", "add", "--yes", json.dumps(cards[i ^ 1]))
-                cli(n, "doctor")
                 no_tty = cli(n)
                 if "Usage: tailscale awg" not in no_tty.stdout:
                     raise RuntimeError("non-TTY root did not print usage")
                 before = cli(n, "status", "--json", json_result=True)
-                cli(n, "transport", "quic-ip", stdin="")
+                cli(n, "transport", "http3-ip" if args.auto_trust else "quic-ip", stdin="")
                 if cli(n, "status", "--json", json_result=True)["revision"] != before["revision"]:
                     raise RuntimeError("EOF unexpectedly changed profile")
                 if cli(n, "transport", "--yes", "quic", checked=False).returncode == 0:
                     raise RuntimeError("production CLI accepted WG-over-QUIC")
-            for mode in ("quic-ip", "http3-ip", "native"):
+            modes = ("http3-ip", "native", "http3-ip", "native") if args.auto_trust else ("quic-ip", "http3-ip", "native")
+            for mode in modes:
                 for n in nodes:
                     before = cli(n, "status", "--json", json_result=True)
                     pid = n["process"].pid
@@ -134,6 +141,10 @@ def main():
                     status = cli(n, "status", "--json", json_result=True)
                     if status["active_mode"] != mode or status["pending_restart"] or status["source"] != "managed":
                         raise RuntimeError("CLI profile did not activate after restart")
+                    if args.auto_trust and mode == "http3-ip":
+                        if status.get("authentication") != "node-key" or status.get("peers") or not status.get("identity"):
+                            raise RuntimeError("fresh H3 still depends on manual identity cards")
+                        cli(n, "doctor")
                     phase["status"].append(status)
                     proof = http(n, f"/probe?target={nodes[i ^ 1]['ip']}&size=262144", "POST")
                     if proof["upload"]["bytes"] != 262144 or proof["download"]["bytes"] != 262144:

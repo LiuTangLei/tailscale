@@ -130,6 +130,10 @@ func (g *generation) servePublic(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func sameHTTP3Target(r *http.Request, u *url.URL) bool {
+	return r.URL != nil && u != nil && r.Host == u.Host && r.URL.EscapedPath() == u.EscapedPath() && r.URL.RawQuery == u.RawQuery
+}
+
 func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	g.b.counters.HTTP3Requests.Add(1)
 	if r.Method != http.MethodConnect {
@@ -138,7 +142,11 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	}
 	deny := func(code int) { g.b.counters.HTTP3Rejected.Add(1); http.Error(w, http.StatusText(code), code) }
 	u := g.b.factory.http3URL
-	if r.Proto != "connect-ip" || r.Host != u.Host || r.URL.EscapedPath() != u.EscapedPath() || r.URL.RawQuery != u.RawQuery {
+	matches := sameHTTP3Target(r, u)
+	if g.b.factory.cfg.AutoTrust {
+		matches = matches || sameHTTP3Target(r, automaticPeerURL(g.b.localNodeKey()))
+	}
+	if r.Proto != "connect-ip" || !matches {
 		deny(http.StatusNotFound)
 		return
 	}
@@ -147,7 +155,32 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusNotFound)
 		return
 	}
-	k, err := g.b.factory.verifyHTTP3Authorization(r.TLS, r, q.ExportKeyingMaterial)
+	var k [32]byte
+	var requestProof nodeProof
+	var authenticatedPeer *peer
+	var attempt *lifecycleStamp
+	var err error
+	if g.b.factory.cfg.AutoTrust {
+		// Capture the peer lifecycle before verifying a proof. A concurrent
+		// removal/re-add must not install this old authentication attempt.
+		var claimed [32]byte
+		claimed, err = claimedNodeSender(r.Header)
+		if err != nil {
+			deny(http.StatusNotFound)
+			return
+		}
+		authenticatedPeer, err = g.peer(claimed, nil)
+		if err != nil {
+			deny(http.StatusNotFound)
+			return
+		}
+		stamp := authenticatedPeer.lifecycleStamp()
+		attempt = &stamp
+		requestProof, err = g.b.verifyNodeRequest(r.TLS, r, q.ExportKeyingMaterial)
+		k = requestProof.from
+	} else {
+		k, err = g.b.factory.verifyHTTP3Authorization(r.TLS, r, q.ExportKeyingMaterial)
+	}
 	if err != nil || !g.b.peerAllowed(k) {
 		deny(http.StatusNotFound)
 		return
@@ -180,8 +213,15 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusBadRequest)
 		return
 	}
-	p, err := g.peer(k, nil)
-	if err != nil {
+	p := authenticatedPeer
+	if p == nil {
+		p, err = g.peer(k, nil)
+		if err != nil {
+			deny(http.StatusNotFound)
+			return
+		}
+	}
+	if attempt != nil && !p.stampValid(*attempt) {
 		deny(http.StatusNotFound)
 		return
 	}
@@ -197,6 +237,14 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { g.h3.mu.Lock(); delete(g.h3.tunnels, q); g.h3.mu.Unlock() }()
 	fragments := r.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(r.Header.Values(fragmentHeaderName)) == 1
+	if g.b.factory.cfg.AutoTrust {
+		proof, err := g.b.createNodeReply(requestProof)
+		if err != nil {
+			deny(http.StatusNotFound)
+			return
+		}
+		w.Header().Set(nodeAuthReply, proof)
+	}
 	w.Header().Set(http3.CapsuleProtocolHeader, "?1")
 	// Only authenticated CONNECT replies advertise this metadata, never
 	// public pages or unauthenticated discovery responses.
@@ -210,7 +258,7 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	}
 	stream := w.(http3.HTTPStreamer).HTTPStream()
 	channel := newHTTP3Channel(g, q, stream, stream, fragments)
-	session := p.installChannel(q, false, channel, peerServerHint)
+	session := p.installBoundChannel(q, false, channel, attempt, peerServerHint)
 	if session == nil || session.q != q {
 		return
 	}
@@ -225,7 +273,11 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (p *peer) openHTTP3(q *quic.Conn) (_ *session, reterr error) {
+func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (_ *session, reterr error) {
+	attempt := p.lifecycleStamp()
+	if len(attempts) == 1 {
+		attempt = attempts[0]
+	}
 	defer func() {
 		if reterr != nil {
 			p.g.b.counters.HandshakeErrors.Add(1)
@@ -255,9 +307,25 @@ func (p *peer) openHTTP3(q *quic.Conn) (_ *session, reterr error) {
 	u := p.cfg.http3URL
 	req := &http.Request{Method: http.MethodConnect, Proto: "connect-ip", Host: u.Host, URL: u, Header: http.Header{http3.CapsuleProtocolHeader: []string{"?1"}, fragmentHeaderName: []string{fragmentHeaderValue}}}
 	tlsState := q.ConnectionState().TLS
-	proof, err := p.g.b.factory.http3Authorization(&tlsState, req, q.ExportKeyingMaterial)
-	if err != nil {
-		return nil, err
+	var proof string
+	var requestProof nodeProof
+	if p.g.b.factory.cfg.AutoTrust {
+		proof, requestProof, err = p.g.b.createNodeRequest(p.cfg.key, &tlsState, req, q.ExportKeyingMaterial)
+		if err != nil {
+			return nil, err
+		}
+		// Kept as an extra constraint for peers with explicitly pinned old TLS
+		// identities. Automatic trust itself depends solely on the node proof.
+		pinnedProof, err := p.g.b.factory.http3Authorization(&tlsState, req, q.ExportKeyingMaterial)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set(nodeAuthPinProof, pinnedProof)
+	} else {
+		proof, err = p.g.b.factory.http3Authorization(&tlsState, req, q.ExportKeyingMaterial)
+		if err != nil {
+			return nil, err
+		}
 	}
 	req.Header.Set("Authorization", proof)
 	req.Header.Set(serverHintHeader, serverHintValue(p.g.b.factory.cfg.Server))
@@ -269,16 +337,24 @@ func (p *peer) openHTTP3(q *quic.Conn) (_ *session, reterr error) {
 		return nil, err
 	}
 	if response.StatusCode != http.StatusOK || response.Header.Get(http3.CapsuleProtocolHeader) != "?1" {
+		if p.g.b.factory.cfg.AutoTrust {
+			return nil, fmt.Errorf("HTTP/3 node authentication rejected (HTTP %d); both peers must enable node-key authentication and remain authorized", response.StatusCode)
+		}
 		return nil, fmt.Errorf("CONNECT-IP rejected with HTTP %d or missing Capsule-Protocol", response.StatusCode)
 	}
-	peerServerHint, err := parseServerHint(response.Header)
+	var peerServerHint uint32
+	if p.g.b.factory.cfg.AutoTrust {
+		peerServerHint, err = p.g.b.verifyNodeReply(requestProof, &tlsState, response.Header)
+	} else {
+		peerServerHint, err = parseServerHint(response.Header)
+	}
 	if err != nil {
 		return nil, err
 	}
 	_ = stream.SetDeadline(time.Time{})
 	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1
 	channel := newHTTP3Channel(p.g, q, stream, stream, fragments)
-	session := p.installChannel(q, true, channel, peerServerHint)
+	session := p.installBoundChannel(q, true, channel, &attempt, peerServerHint)
 	if session == nil {
 		return nil, net.ErrClosed
 	}

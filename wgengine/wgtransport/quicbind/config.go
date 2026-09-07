@@ -53,6 +53,9 @@ type Config struct {
 	Peers             []PeerConfig `json:"peers"`
 	// HTTP3 selects a real CONNECT-IP request, not raw DATAGRAMs with h3 ALPN.
 	HTTP3 bool `json:"http3,omitempty"`
+	// AutoTrust binds each TLS session to the already-authorized Tailnet node
+	// keys. It is H3/magicsock only and never learns trust from a certificate.
+	AutoTrust bool `json:"auto_trust,omitempty"`
 	// Server advertises this node as a browser-profile target. It does not
 	// force a TLS role, open ports, grant access or disable mesh dialing.
 	Server   bool   `json:"server,omitempty"`
@@ -204,6 +207,9 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	if c.IO != "magicsock" && c.IO != "udp" {
 		return nil, errors.New("QUIC io must be magicsock or udp")
 	}
+	if c.AutoTrust && (!c.HTTP3 || c.Payload != "ip" || c.IO != "magicsock") {
+		return nil, errors.New("automatic node trust requires HTTP/3 native IP over magicsock")
+	}
 	if c.IO == "udp" && !supportsIndependentUDP(runtime.GOOS) {
 		return nil, fmt.Errorf("%s requires io=magicsock so QUIC participates in the host VPN socket-protection and rebind lifecycle", runtime.GOOS)
 	}
@@ -222,7 +228,7 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	if c.InitialPacketSize < 1200 || c.InitialPacketSize > 1400 {
 		return nil, errors.New("initial_packet_size must be 1200..1400")
 	}
-	if len(c.Peers) == 0 || len(c.Peers) > maxPeers {
+	if (!c.AutoTrust && len(c.Peers) == 0) || len(c.Peers) > maxPeers {
 		return nil, fmt.Errorf("QUIC requires 1..%d explicitly pinned peers", maxPeers)
 	}
 	local, err := parseKey(c.LocalPublicKey)

@@ -29,6 +29,8 @@ Native mode returns the underlying Bind verbatim. A wrapper must preserve batch
 sizes, headroom offsets, Endpoint identity callbacks and repeated Open/Close.
 Final Close must cancel and release every worker. `UnwrapEndpoint` is for the
 final host send, not for discarding authenticated peer identity on receive.
+For `http3-ip`, a profile may also use node-key auto-trust so that active,
+authorized Tailnet peers authenticate without requiring a manual pin list.
 
 Desktop/server independent UDP uses host-protected sockets. Mobile/browser
 clients must use magicsock until separate-socket VPN-service rebind/protection
