@@ -25,11 +25,14 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["authentication"] = "pinned-key"
 	if f.cfg.AutoTrust {
 		out["authentication"] = "node-key"
+		out["authentication_protocol"] = "Noise_IK_25519_ChaChaPoly_BLAKE2s/v2"
 	}
 	out["manual_identity_required"] = !f.cfg.AutoTrust
 	if b == nil {
 		return out
 	}
+	out["session_refresh_seconds"] = b.timing.refresh.Seconds()
+	out["session_max_age_seconds"] = b.timing.expire.Seconds()
 	if b.host.PacketStats != nil {
 		out["ip_data_plane"] = b.host.PacketStats()
 	}
