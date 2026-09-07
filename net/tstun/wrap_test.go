@@ -1269,3 +1269,80 @@ func TestFilterDropTSMP(t *testing.T) {
 			metricPacketOutDropTSMP.Value(), wantMetric)
 	}
 }
+
+func TestReadWithBufferGrowthPreservesLargePackets(t *testing.T) {
+	for _, injected := range []bool{false, true} {
+		t.Run(fmt.Sprint(injected), func(t *testing.T) {
+			chtun, tun := newChannelTUN(t.Logf, eventbustest.NewBus(t), false)
+			defer tun.Close()
+			want := bytes.Repeat([]byte{0x45}, 60000)
+			if injected {
+				go func() {
+					if err := tun.InjectOutbound(want); err != nil {
+						t.Error(err)
+					}
+				}()
+			} else {
+				go func() { chtun.Outbound <- want }()
+			}
+			buffs := [][]byte{make([]byte, 2048+16)}
+			sizes := make([]int, 1)
+			n, err := tun.ReadWithBufferGrowth(buffs, sizes, 16)
+			if err != nil || n != 1 || sizes[0] != len(want) || !bytes.Equal(buffs[0][16:16+sizes[0]], want) {
+				t.Fatalf("large packet was truncated: n=%d size=%d err=%v", n, sizes[0], err)
+			}
+		})
+	}
+}
+
+// Compare the adaptive IP path to the unchanged legacy path on a jumbo MSS.
+// This covers GSO slots beyond slot zero, which holds the input super-packet.
+func TestGrowingInjectedJumboGSOAgreesWithLegacy(t *testing.T) {
+	_, tun := newChannelTUN(t.Logf, eventbustest.NewBus(t), false)
+	defer tun.Close()
+	raw := make([]byte, 60040)
+	raw[0] = 0x45
+	raw[8] = 64
+	raw[9] = 6
+	binary.BigEndian.PutUint16(raw[2:4], uint16(len(raw)))
+	copy(raw[12:16], []byte{100, 64, 0, 1})
+	copy(raw[16:20], []byte{100, 64, 0, 2})
+	raw[20+12] = 0x50
+	raw[20+13] = 0x10
+	for i := 40; i < len(raw); i++ {
+		raw[i] = byte(i)
+	}
+	var reference [][]byte
+	for _, grow := range []bool{false, true} {
+		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(bytes.Clone(raw))})
+		if _, ok := pkt.NetworkHeader().Consume(20); !ok {
+			t.Fatal("network header")
+		}
+		if _, ok := pkt.TransportHeader().Consume(20); !ok {
+			t.Fatal("transport header")
+		}
+		pkt.GSOOptions = stack.GSO{Type: stack.GSOTCPv4, L3HdrLen: 20, MSS: 9000, CsumOffset: 16}
+		bufs := make([][]byte, 128)
+		sizes := make([]int, 128)
+		for i := range bufs {
+			size := 65535 + 16
+			if grow && i > 0 {
+				size = 2048 + 16
+			}
+			bufs[i] = make([]byte, size)
+		}
+		n, err := tun.injectedRead(tunInjectedRead{packet: pkt}, bufs, sizes, 16, grow)
+		if err != nil || n != 7 {
+			t.Fatalf("GSO failed: n=%d err=%v", n, err)
+		}
+		var got [][]byte
+		for i := range n {
+			got = append(got, bytes.Clone(bufs[i][16:16+sizes[i]]))
+		}
+		if !grow {
+			reference = got
+		} else if !reflect.DeepEqual(reference, got) {
+			t.Fatal("growing buffers changed jumbo GSO packets")
+		}
+	}
+}

@@ -869,6 +869,16 @@ func (t *Wrapper) awaitStart() {
 }
 
 func (t *Wrapper) Read(buffs [][]byte, sizes []int, offset int) (int, error) {
+	return t.read(buffs, sizes, offset, false)
+}
+
+// ReadWithBufferGrowth is the opt-in IP carrier path on the legacy TUN API.
+// It grows caller-owned slots for actual large packets, preserving GSO and
+// injected super-packets without reserving 64 KiB for every ordinary MTU slot.
+func (t *Wrapper) ReadWithBufferGrowth(buffs [][]byte, sizes []int, offset int) (int, error) {
+	return t.read(buffs, sizes, offset, true)
+}
+func (t *Wrapper) read(buffs [][]byte, sizes []int, offset int, grow bool) (int, error) {
 	if !t.started.Load() {
 		t.awaitStart()
 	}
@@ -881,7 +891,10 @@ func (t *Wrapper) Read(buffs [][]byte, sizes []int, offset int) (int, error) {
 		return 0, res.err
 	}
 	if res.data == nil {
-		return t.injectedRead(res.injected, buffs, sizes, offset)
+		if grow && len(buffs[0]) < offset+65535 {
+			buffs[0] = make([]byte, offset+65535)
+		}
+		return t.injectedRead(res.injected, buffs, sizes, offset, grow)
 	}
 
 	metricPacketOut.Add(int64(len(res.data)))
@@ -915,6 +928,9 @@ func (t *Wrapper) Read(buffs [][]byte, sizes []int, offset int) (int, error) {
 		// Make sure to do SNAT after filtering, so that any flow tracking in
 		// the filter sees the original source address. See #12133.
 		pc.snat(p)
+		if grow && len(buffs[buffsPos]) < offset+len(p.Buffer()) {
+			buffs[buffsPos] = make([]byte, offset+len(p.Buffer()))
+		}
 		n := copy(buffs[buffsPos][offset:], p.Buffer())
 		if n != len(data)-res.dataOffset {
 			panic(fmt.Sprintf("short copy: %d != %d", n, len(data)-res.dataOffset))
@@ -1000,7 +1016,7 @@ func invertGSOChecksum(pkt []byte, gso netstack_GSO) {
 // filter rules, but UDP/SCTP flow state is still recorded via
 // [filter.Filter.UpdateOutboundFlowState] so inbound replies are admitted by
 // [filter.Filter.RunIn].
-func (t *Wrapper) injectedRead(res tunInjectedRead, outBuffs [][]byte, sizes []int, offset int) (n int, err error) {
+func (t *Wrapper) injectedRead(res tunInjectedRead, outBuffs [][]byte, sizes []int, offset int, grow ...bool) (n int, err error) {
 	var gso netstack_GSO
 
 	pkt := outBuffs[0][offset:]
@@ -1077,6 +1093,19 @@ func (t *Wrapper) injectedRead(res tunInjectedRead, outBuffs [][]byte, sizes []i
 		gsoOptions, err = stackGSOToTunGSO(pkt, gso)
 		if err != nil {
 			return 0, err
+		}
+		if len(grow) > 0 && grow[0] && gsoOptions.GSOType != tun.GSONone {
+			// A jumbo MSS can exceed the usual small slot. Preserve the input
+			// in slot zero and grow only actual output segments before splitting.
+			segmentSize := int(gsoOptions.HdrLen) + int(gsoOptions.GSOSize)
+			if gsoOptions.GSOSize > 0 {
+				count := (max(0, len(pkt)-int(gsoOptions.HdrLen)) + int(gsoOptions.GSOSize) - 1) / int(gsoOptions.GSOSize)
+				for i := 1; i < min(count, len(outBuffs)); i++ {
+					if len(outBuffs[i]) < offset+segmentSize {
+						outBuffs[i] = make([]byte, offset+segmentSize)
+					}
+				}
+			}
 		}
 		n, err = tun.GSOSplit(pkt, gsoOptions, outBuffs, sizes, offset)
 	}

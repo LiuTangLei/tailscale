@@ -23,19 +23,30 @@ func TestTransportNodeKeyCallbacksRevocationAndRotation(t *testing.T) {
 	a.packetPolicy.Store(&packetPolicy{peer: func(local, peer key.NodePublic) bool { return allowed.Load() && local == pa && peer == pb }})
 	b.packetPolicy.Store(&packetPolicy{peer: func(local, peer key.NodePublic) bool { return allowed.Load() && local == pb && peer == pa }})
 	data := []byte("connection-bound H3 proof")
-	ciphertext, err := a.transportNodeSeal(pa.Raw32(), pb.Raw32(), data)
+	binding := make([]byte, 32)
+	initiator, err := a.transportNodeHandshake(pa.Raw32(), pb.Raw32(), true, binding)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plaintext, err := b.transportNodeOpen(pb.Raw32(), pa.Raw32(), ciphertext)
+	defer initiator.Close()
+	responder, err := b.transportNodeHandshake(pb.Raw32(), [32]byte{}, false, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer responder.Close()
+	ciphertext, err := initiator.Write(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := responder.Read(ciphertext)
 	if err != nil || !bytes.Equal(plaintext, data) {
 		t.Fatal("proof failed", err)
 	}
 	allowed.Store(false)
-	if _, err := a.transportNodeSeal(pa.Raw32(), pb.Raw32(), data); err == nil {
+	if _, err := initiator.Write(data); err == nil {
 		t.Fatal("revoked peer seal accepted")
 	}
-	if _, err := b.transportNodeOpen(pb.Raw32(), pa.Raw32(), ciphertext); err == nil {
+	if _, err := responder.Write(data); err == nil {
 		t.Fatal("revoked peer open accepted")
 	}
 	allowed.Store(true)
@@ -43,11 +54,11 @@ func TestTransportNodeKeyCallbacksRevocationAndRotation(t *testing.T) {
 	nextPublic := next.Public()
 	a.packetPrivate.Store(&next)
 	a.packetIdentity.Store(&nextPublic)
-	if _, err := a.transportNodeSeal(pa.Raw32(), pb.Raw32(), data); err == nil {
+	if _, err := initiator.Write(data); err == nil {
 		t.Fatal("stale expected local key accepted")
 	}
 	a.packetPrivate.Store(nil)
-	if _, err := a.transportNodeSeal(nextPublic.Raw32(), pb.Raw32(), data); err == nil {
+	if _, err := a.transportNodeHandshake(nextPublic.Raw32(), pb.Raw32(), true, binding); err == nil {
 		t.Fatal("stopped node accepted")
 	}
 }

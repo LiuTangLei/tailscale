@@ -161,23 +161,23 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	var attempt *lifecycleStamp
 	var err error
 	if g.b.factory.cfg.AutoTrust {
-		// Capture the peer lifecycle before verifying a proof. A concurrent
-		// removal/re-add must not install this old authentication attempt.
-		var claimed [32]byte
-		claimed, err = claimedNodeSender(r.Header)
-		if err != nil {
-			deny(http.StatusNotFound)
-			return
-		}
-		authenticatedPeer, err = g.peer(claimed, nil)
-		if err != nil {
-			deny(http.StatusNotFound)
-			return
-		}
-		stamp := authenticatedPeer.lifecycleStamp()
-		attempt = &stamp
+		// The initiator identity is encrypted in IK message 1. Capture the
+		// global revocation epoch before decrypting; do not resurrect an old
+		// attempt if a node was removed/re-added while its identity was hidden.
+		epoch, identity := g.b.authEpoch.Load(), g.b.identityEpoch.Load()
 		requestProof, err = g.b.verifyNodeRequest(r.TLS, r, q.ExportKeyingMaterial)
-		k = requestProof.from
+		if err == nil {
+			defer requestProof.handshake.Close()
+			k = requestProof.from
+			authenticatedPeer, err = g.peer(k, nil)
+			if err == nil {
+				stamp := authenticatedPeer.lifecycleStamp()
+				attempt = &stamp
+				if epoch != g.b.authEpoch.Load() || identity != g.b.identityEpoch.Load() {
+					err = errNodeProof
+				}
+			}
+		}
 	} else {
 		k, err = g.b.factory.verifyHTTP3Authorization(r.TLS, r, q.ExportKeyingMaterial)
 	}
@@ -257,6 +257,19 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream := w.(http3.HTTPStreamer).HTTPStream()
+	if g.b.factory.cfg.AutoTrust {
+		_ = stream.SetDeadline(time.Now().Add(8 * time.Second))
+		if err := readNodeFinished(stream, requestProof.handshake, "initiator finished v2"); err != nil || !p.stampValid(*attempt) {
+			_ = q.CloseWithError(1, "node confirmation failed")
+			return
+		}
+		if err := writeNodeFinished(stream, requestProof.handshake, "responder finished v2"); err != nil {
+			_ = q.CloseWithError(1, "node confirmation failed")
+			return
+		}
+		requestProof.handshake.Close()
+		_ = stream.SetDeadline(time.Time{})
+	}
 	channel := newHTTP3Channel(g, q, stream, stream, fragments)
 	session := p.installBoundChannel(q, false, channel, attempt, peerServerHint)
 	if session == nil || session.q != q {
@@ -322,13 +335,7 @@ func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (_ *session, 
 		if err != nil {
 			return nil, err
 		}
-		// Kept as an extra constraint for peers with explicitly pinned old TLS
-		// identities. Automatic trust itself depends solely on the node proof.
-		pinnedProof, err := p.g.b.factory.http3Authorization(&tlsState, req, q.ExportKeyingMaterial)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set(nodeAuthPinProof, pinnedProof)
+		defer requestProof.handshake.Close()
 	} else {
 		proof, err = p.g.b.factory.http3Authorization(&tlsState, req, q.ExportKeyingMaterial)
 		if err != nil {
@@ -358,6 +365,14 @@ func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (_ *session, 
 	}
 	if err != nil {
 		return nil, err
+	}
+	if p.g.b.factory.cfg.AutoTrust {
+		if err := writeNodeFinished(stream, requestProof.handshake, "initiator finished v2"); err != nil {
+			return nil, err
+		}
+		if err := readNodeFinished(stream, requestProof.handshake, "responder finished v2"); err != nil {
+			return nil, err
+		}
 	}
 	_ = stream.SetDeadline(time.Time{})
 	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1

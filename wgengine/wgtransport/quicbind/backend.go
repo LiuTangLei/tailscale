@@ -60,9 +60,11 @@ type Backend struct {
 	closed        bool
 	active        atomic.Pointer[generation]
 	identityOK    atomic.Bool
+	authEpoch     atomic.Uint64 // invalidates anonymous in-flight authentication on any revocation
 	identityEpoch atomic.Uint64 // invalidates queued work across local identity changes
 	networkUp     atomic.Bool
 	counters      Counters
+	timing        sessionTiming
 	serverHintsMu sync.RWMutex
 	serverHints   map[[32]byte]*atomic.Uint32
 }
@@ -113,6 +115,7 @@ func acquirePacket(data []byte) *packetBuffer {
 func releasePacket(p *packetBuffer) { p.data = nil; packetPool.Put(p) }
 
 type peer struct {
+	lastActivity     atomic.Int64
 	sendMu           sync.Mutex
 	queueMu          sync.RWMutex // final queue drain waits for in-flight enqueues
 	scratch          [1500]byte
@@ -138,8 +141,10 @@ type datagramChannel interface {
 }
 
 type session struct {
-	q     *quic.Conn
-	dgram datagramChannel
+	nextRefresh atomic.Int64
+	created     time.Time
+	q           *quic.Conn
+	dgram       datagramChannel
 	// Raw packets do not touch the reassembly lock. Capsule fragments and
 	// QUIC DATAGRAM fragments share this bounded state when HTTP/3 is used.
 	fragmentMu sync.Mutex
@@ -162,7 +167,7 @@ func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 	if f.cfg.IO == "udp" && h.ListenPacket == nil {
 		return nil, errors.New("independent QUIC UDP requires a host-protected ListenPacket hook")
 	}
-	b := &Backend{factory: f, host: h}
+	b := &Backend{timing: defaultSessionTiming(), factory: f, host: h}
 	if err := b.autoTrustReady(); err != nil {
 		return nil, err
 	}
@@ -198,6 +203,7 @@ func (b *Backend) LocalIdentityChanged(k [32]byte) {
 	}
 }
 func (b *Backend) PeerRemoved(k [32]byte) {
+	b.authEpoch.Add(1)
 	g := b.active.Load()
 	if g == nil {
 		b.forgetServerHint(k)
@@ -280,6 +286,18 @@ func (c *carrierBind) SetMark(mark uint32) error {
 func (c *carrierBind) Close() error { return c.b.stop(false) }
 
 func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+	return c.open(port, 0, false)
+}
+
+// OpenIP opts into caller-owned buffers that may grow while preserving each
+// receive function's original generation and cancellation boundary.
+func (c *carrierBind) OpenIP(port uint16, offset int) ([]conn.ReceiveFunc, uint16, error) {
+	if offset < 0 || offset > 128 {
+		return nil, 0, errors.New("invalid IP headroom")
+	}
+	return c.open(port, offset, true)
+}
+func (c *carrierBind) open(port uint16, offset int, grow bool) ([]conn.ReceiveFunc, uint16, error) {
 	b := c.b
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -331,6 +349,7 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	// validate their address with a Retry before allocating a connection.
 	admission := rate.NewLimiter(8, 16)
 	var incoming atomic.Int64
+	gate := newAdmissionGate(32, 4)
 	resetKey := quic.StatelessResetKey(b.factory.resetKey)
 	g.transport = &quic.Transport{
 		Conn: g.pc, ConnectionIDLength: 8, StatelessResetKey: &resetKey,
@@ -340,8 +359,13 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 				incoming.Add(-1)
 				return nil, errors.New("QUIC connection limit")
 			}
-			context.AfterFunc(ctx, func() { incoming.Add(-1) })
-			return ctx, nil
+			ticket := gate.acquire(admissionSource(info.RemoteAddr))
+			if ticket == nil {
+				incoming.Add(-1)
+				return nil, errors.New("QUIC provisional connection limit")
+			}
+			context.AfterFunc(ctx, func() { incoming.Add(-1); ticket.release() })
+			return context.WithValue(ctx, admissionContextKey{}, ticket), nil
 		},
 	}
 	qc := b.quicConfig()
@@ -364,7 +388,14 @@ func (c *carrierBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	}
 	g.workers.Add(1)
 	go g.accept()
+	g.workers.Add(1)
+	go g.maintainSessions()
 	b.active.Store(g)
+	if grow {
+		return []conn.ReceiveFunc{func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+			return g.receivePackets(bufs, sizes, eps, offset, true)
+		}}, actual, nil
+	}
 	return []conn.ReceiveFunc{g.receive}, actual, nil
 }
 
@@ -545,6 +576,7 @@ func (g *generation) peer(k [32]byte, base conn.Endpoint) (*peer, error) {
 		return nil, ErrUnknownPeer
 	}
 	if existing != nil && !existing.disabled.Load() {
+		existing.touch()
 		return existing, nil
 	}
 	cfg, err := g.b.automaticPeer(k)
@@ -627,6 +659,7 @@ func (g *generation) peer(k [32]byte, base conn.Endpoint) (*peer, error) {
 	g.b.ensureServerHint(k)
 	ctx, cancel := context.WithCancel(g.ctx)
 	p := &peer{g: g, ctx: ctx, cancel: cancel, done: make(chan struct{}), cfg: cfg, tx: make(chan *packetBuffer, g.b.factory.cfg.QueuePackets)}
+	p.touch()
 	p.ep.Store(&endpoint{Endpoint: base, b: g.b, key: k})
 	g.peers[k] = p
 	g.workers.Add(1)
@@ -642,6 +675,7 @@ func (g *generation) accept() {
 			return
 		}
 		if g.h3 != nil {
+			armAdmissionDeadline(q, g.b.timing.authTimeout)
 			g.workers.Add(1)
 			go func() { defer g.workers.Done(); _ = g.h3.server.ServeQUICConn(q) }()
 			continue
@@ -697,7 +731,7 @@ func (p *peer) installBoundChannel(q *quic.Conn, outgoing bool, channel datagram
 	}
 	preferredOutgoing := p.preferredOutgoing(hint)
 	preferred := preferredOutgoing == outgoing
-	ns := &session{q: q, dgram: channel, preferred: preferred, outgoing: outgoing, stamp: p.lifecycleStamp()}
+	ns := &session{created: time.Now(), q: q, dgram: channel, preferred: preferred, outgoing: outgoing, stamp: p.lifecycleStamp()}
 	if attempt != nil {
 		ns.stamp = *attempt
 	}
@@ -720,21 +754,28 @@ func (p *peer) installBoundChannel(q *quic.Conn, outgoing bool, channel datagram
 	p.g.workers.Add(1)
 	p.mu.Unlock()
 	if old != nil {
-		old.q.CloseWithError(0, "prefer deterministic connection")
+		time.AfterFunc(p.g.b.timing.overlap, func() { old.q.CloseWithError(0, "session replaced") })
 	}
+	p.touch()
+	releaseAdmission(q)
 	p.g.b.counters.Connections.Add(1)
 	p.publishState(wgtransport.SessionEstablished)
 	go p.receiveSession(ns)
 	return ns
 }
 
-func (p *peer) getSession() (*session, error) {
+func (p *peer) getSession() (*session, error) { return p.getSessionReplacing(nil) }
+func (p *peer) getSessionReplacing(replace *session) (*session, error) {
 	p.mu.Lock()
-	if s := p.session; s != nil && s.q.Context().Err() == nil {
+	if s := p.session; s != nil && s.q.Context().Err() == nil && (replace == nil || s != replace) {
 		p.mu.Unlock()
 		return s, nil
 	}
 	if p.dialing != nil {
+		if replace != nil {
+			p.mu.Unlock()
+			return replace, nil
+		}
 		wait := p.dialing
 		p.mu.Unlock()
 		select {
@@ -757,7 +798,9 @@ func (p *peer) getSession() (*session, error) {
 	if !p.g.b.peerAllowed(p.cfg.key) {
 		return nil, ErrUnknownPeer
 	}
-	p.publishState(wgtransport.SessionHandshake)
+	if replace == nil {
+		p.publishState(wgtransport.SessionHandshake)
+	}
 	var remote net.Addr = p.cfg.address
 	if p.g.bridge != nil {
 		remote = &bindAddr{ep: p.ep.Load().Endpoint}
@@ -776,7 +819,9 @@ func (p *peer) getSession() (*session, error) {
 	q, err := p.g.transport.Dial(ctx, remote, tlsConfig, cfg)
 	if err != nil {
 		p.g.b.counters.HandshakeErrors.Add(1)
-		p.publishState(wgtransport.SessionExpired)
+		if replace == nil {
+			p.publishState(wgtransport.SessionExpired)
+		}
 		return nil, err
 	}
 	if p.g.b.factory.cfg.HTTP3 {
@@ -841,6 +886,7 @@ func (p *peer) run() {
 }
 
 func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
+	p.touch()
 	if !p.stampValid(s.stamp) {
 		return ErrUnknownPeer
 	}
@@ -919,6 +965,7 @@ func (p *peer) deliverFrame(s *session, data []byte) {
 	if s.q.Context().Err() != nil || !p.stampValid(s.stamp) {
 		return
 	}
+	p.touch()
 	var packet []byte
 	var err error
 	if len(data) > 1 && data[0] == frameRaw && len(data)-1 <= maxPacket {
@@ -952,6 +999,9 @@ func (p *peer) deliverFrame(s *session, data []byte) {
 }
 
 func (g *generation) receive(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+	return g.receivePackets(bufs, sizes, eps, 0, false)
+}
+func (g *generation) receivePackets(bufs [][]byte, sizes []int, eps []conn.Endpoint, offset int, grow bool) (int, error) {
 	if len(bufs) == 0 || len(sizes) < len(bufs) || len(eps) < len(bufs) {
 		return 0, errors.New("invalid receive batch")
 	}
@@ -961,11 +1011,14 @@ func (g *generation) receive(bufs [][]byte, sizes []int, eps []conn.Endpoint) (i
 	}
 	take := func(i int, r received) {
 		g.rxBytes.Add(-int64(len(r.data)))
-		if r.peer == nil || !r.peer.stampValid(r.stamp) || len(r.data) > len(bufs[i]) {
+		if grow && len(bufs[i]) < offset+len(r.data) {
+			bufs[i] = make([]byte, offset+len(r.data))
+		}
+		if r.peer == nil || !r.peer.stampValid(r.stamp) || offset+len(r.data) > len(bufs[i]) {
 			g.b.counters.ReceiveQueueDrops.Add(1)
 			return
 		}
-		sizes[i] = copy(bufs[i], r.data)
+		sizes[i] = copy(bufs[i][offset:], r.data)
 		eps[i] = r.ep
 	}
 	select {

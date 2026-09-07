@@ -17,7 +17,7 @@ import subprocess
 import time
 
 WG = 'github.com/LiuTangLei/wireguard-go'
-WG_VERSION = 'v0.0.31'
+WG_VERSION = 'v0.0.32'
 QUIC = 'github.com/quic-go/quic-go'
 QUIC_FORK = 'github.com/LiuTangLei/quic-go'
 QUIC_VERSION = 'v0.62.0-tailscale.3'
@@ -51,7 +51,7 @@ def digest(path: Path) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', required=True, type=Path)
-    p.add_argument('--tag', default='v1.102.3-quic.3')
+    p.add_argument('--tag', default='v1.102.3-quic.4')
     p.add_argument('--jobs', type=int, default=2)
     a = p.parse_args()
     if not 1 <= a.jobs <= 4:
@@ -92,7 +92,7 @@ def main() -> None:
         'go_version': command(['go', 'version'], env).strip(),
         'dependency_mode': 'published Go modules; no local paths or overlays',
         'dependencies': {
-            WG: {'version': WG_VERSION, 'sum': selected[WG].get('Sum'), 'commit': '8835972ec5d8acec8e028af84261fc5be3be6648'},
+            WG: {'version': WG_VERSION, 'sum': selected[WG].get('Sum'), 'commit': '9db12db0b654cb37f06dc22df8c8a588b526c25f'},
             QUIC_FORK: {'version': QUIC_VERSION, 'sum': replacement['Sum'], 'commit': '816406fe7b944af0a5d0ab75c303ffd762ff12c4'},
         },
         'assets': [],

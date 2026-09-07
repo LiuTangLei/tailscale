@@ -30,9 +30,10 @@ import (
 )
 
 type h3BulkSample struct {
-	Seconds       float64 `json:"seconds"`
-	ReceivedBytes int64   `json:"received_bytes"`
-	IntervalMbps  float64 `json:"interval_mbps"`
+	Connections   *[2]map[string]any `json:"connections,omitempty"`
+	Seconds       float64            `json:"seconds"`
+	ReceivedBytes int64              `json:"received_bytes"`
+	IntervalMbps  float64            `json:"interval_mbps"`
 }
 
 type h3BulkTransfer struct {
@@ -322,6 +323,13 @@ func h3BulkFileTransfer(t *testing.T, ctx context.Context, nodes [2]*Server, ips
 			now, received := time.Now(), progress.Load()
 			samples = append(samples, h3BulkSample{Seconds: now.Sub(start).Seconds(), ReceivedBytes: received, IntervalMbps: float64(received-lastBytes) * 8 / now.Sub(lastTime).Seconds() / 1e6})
 			if now.Sub(lastLog) >= 10*time.Second {
+				if os.Getenv("TS_H3_BULK_TRACE") == "1" {
+					var states [2]map[string]any
+					for i, node := range nodes {
+						states[i], _ = node.PacketTransportDiagnostics()
+					}
+					samples[len(samples)-1].Connections = &states
+				}
 				t.Logf("H3_BULK_PROGRESS from=%d seconds=%.1f GiB=%.3f cumulative_Mbps=%.2f", from, now.Sub(start).Seconds(), float64(received)/(1<<30), float64(received)*8/now.Sub(start).Seconds()/1e6)
 				lastLog = now
 			}

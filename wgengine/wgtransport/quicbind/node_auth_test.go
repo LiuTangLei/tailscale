@@ -10,10 +10,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"sync/atomic"
+	"strings"
 	"testing"
 
 	"tailscale.com/wgengine/wgtransport"
+	"tailscale.com/wgengine/wgtransport/nodeauth"
 )
 
 func TestAutoTrustNoCardsAndRebind(t *testing.T) {
@@ -67,81 +68,102 @@ func TestAutoTrustNoCardsAndRebind(t *testing.T) {
 	}
 }
 
-// Every proof in this test uses actual host NodePrivate.SealTo/OpenFrom. Only
-// TLS exporter values are fixtures so replay/nonce failures are deterministic.
+// Each negative case starts a fresh handshake, so rejection cannot be an
+// artifact of trying to reuse an already-consumed Noise state.
 func TestAutoTrustProofReplayReflectionAndRevocation(t *testing.T) {
-	pair := newTestPair(t, "http3-magicsock", func(c *Config) { c.AutoTrust = true; c.Peers = nil })
-	a, b := pair.backends[0], pair.backends[1]
-	cs := tls.ConnectionState{Version: tls.VersionTLS13, NegotiatedProtocol: "h3"}
-	clientCS := cs
-	clientCS.PeerCertificates = append(clientCS.PeerCertificates, b.factory.cert.Leaf)
-	req := &http.Request{Method: "CONNECT", Proto: "connect-ip", URL: automaticPeerURL(b.localNodeKey()), Header: make(http.Header)}
-	req.Host = req.URL.Host
-	export := func(label string, context []byte, n int) ([]byte, error) {
-		h := sha256.Sum256(append([]byte("connection-A"+label), context...))
-		return bytes.Clone(h[:]), nil
-	}
-	wrongExport := func(label string, context []byte, n int) ([]byte, error) {
-		h := sha256.Sum256(append([]byte("connection-B"+label), context...))
-		return bytes.Clone(h[:]), nil
-	}
-	value, request, err := a.createNodeRequest(b.localNodeKey(), &cs, req, export)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", value)
-	req.Header.Set(serverHintHeader, "?0")
-	verified, err := b.verifyNodeRequest(&cs, req, export)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reply, err := b.createNodeReply(verified)
-	if err != nil {
-		t.Fatal(err)
-	}
-	headers := make(http.Header)
-	headers.Set(nodeAuthReply, reply)
-	headers.Set(serverHintHeader, "?0")
-	if _, err := a.verifyNodeReply(request, &clientCS, headers); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := b.verifyNodeRequest(&cs, req, wrongExport); err == nil {
-		t.Fatal("cross-TLS replay accepted")
-	}
-	altered := request
-	altered.nonce[0] ^= 1
-	if _, err := a.verifyNodeReply(altered, &clientCS, headers); err == nil {
-		t.Fatal("different request nonce accepted")
-	}
-	bad := headers.Clone()
-	bad.Set(serverHintHeader, "?1")
-	if _, err := a.verifyNodeReply(request, &clientCS, bad); err == nil {
-		t.Fatal("unsigned server hint accepted")
-	}
-	bad = headers.Clone()
-	bad.Add(nodeAuthReply, reply)
-	if _, err := a.verifyNodeReply(request, &clientCS, bad); err == nil {
-		t.Fatal("duplicate proof accepted")
-	}
-	if _, err := a.openNodeProof(value, 2); err == nil {
-		t.Fatal("request reflected as response")
-	}
-	fakeCS := clientCS
-	fakeCS.PeerCertificates = append(fakeCS.PeerCertificates[:0:0], a.factory.cert.Leaf)
-	if _, err := a.verifyNodeReply(request, &fakeCS, headers); err == nil {
-		t.Fatal("certificate/channel mismatch accepted")
-	}
-	originalHost := req.Host
-	req.Host = "other.invalid"
-	if _, err := b.verifyNodeRequest(&cs, req, export); err == nil {
-		t.Fatal("request target rebinding accepted")
-	}
-	req.Host = originalHost
-	var revoked atomic.Bool
-	b.host.PeerAllowed = func([32]byte) bool { return !revoked.Load() }
-	revoked.Store(true)
-	if _, err := b.verifyNodeRequest(&cs, req, export); err == nil {
-		t.Fatal("revoked node accepted")
+	for _, name := range []string{"valid", "exporter", "target", "old-scheme", "identity-privacy", "request-hint", "revoked", "nonce", "reply-hint", "duplicate", "reflection", "certificate"} {
+		t.Run(name, func(t *testing.T) {
+			pair := newTestPair(t, "http3-magicsock", func(c *Config) { c.AutoTrust = true; c.Peers = nil })
+			a, b := pair.backends[0], pair.backends[1]
+			cs := tls.ConnectionState{Version: tls.VersionTLS13, NegotiatedProtocol: "h3"}
+			clientCS := cs
+			clientCS.PeerCertificates = append(clientCS.PeerCertificates, b.factory.cert.Leaf)
+			req := &http.Request{Method: "CONNECT", Proto: "connect-ip", URL: automaticPeerURL(b.localNodeKey()), Header: make(http.Header)}
+			req.Host = req.URL.Host
+			export := func(label string, context []byte, n int) ([]byte, error) {
+				h := sha256.Sum256(append([]byte("connection-A"+label), context...))
+				return bytes.Clone(h[:]), nil
+			}
+			value, request, err := a.createNodeRequest(b.localNodeKey(), &cs, req, export)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer request.handshake.Close()
+			req.Header.Set("Authorization", value)
+			req.Header.Set(serverHintHeader, "?0")
+			if name == "identity-privacy" {
+				raw, err := decodeNodeMessage(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				local := a.localNodeKey()
+				if bytes.Contains(raw, local[:]) || strings.Contains(value, hex.EncodeToString(local[:])) || req.Header.Get("X-Tailnet-Pinned-Proof") != "" {
+					t.Fatal("initiator static identity exposed")
+				}
+			}
+			switch name {
+			case "exporter":
+				export = func(string, []byte, int) ([]byte, error) { return make([]byte, 32), nil }
+			case "target":
+				req.Host = "other.invalid"
+			case "old-scheme":
+				req.Header.Set("Authorization", "TailnetNode "+strings.TrimPrefix(value, nodeAuthScheme))
+			case "request-hint":
+				req.Header.Set(serverHintHeader, "?1")
+			case "revoked":
+				b.host.PeerAllowed = func([32]byte) bool { return false }
+			}
+			verified, err := b.verifyNodeRequest(&cs, req, export)
+			switch name {
+			case "exporter", "target", "old-scheme", "request-hint", "revoked":
+				if err == nil {
+					verified.handshake.Close()
+					t.Fatal("invalid request accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer verified.handshake.Close()
+			if name == "nonce" {
+				verified.nonce[0] ^= 1
+			}
+			reply, err := b.createNodeReply(verified)
+			if err != nil {
+				t.Fatal(err)
+			}
+			headers := make(http.Header)
+			headers.Set(nodeAuthReply, reply)
+			headers.Set(serverHintHeader, "?0")
+			switch name {
+			case "reply-hint":
+				headers.Set(serverHintHeader, "?1")
+			case "duplicate":
+				headers.Add(nodeAuthReply, reply)
+			case "reflection":
+				headers.Set(nodeAuthReply, value)
+			case "certificate":
+				clientCS.PeerCertificates = append(clientCS.PeerCertificates[:0:0], a.factory.cert.Leaf)
+			}
+			_, err = a.verifyNodeReply(request, &clientCS, headers)
+			if name != "valid" && name != "identity-privacy" {
+				if err == nil {
+					t.Fatal("invalid reply accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire bytes.Buffer
+			if err := writeNodeFinished(&wire, request.handshake, "initiator finished v2"); err != nil {
+				t.Fatal(err)
+			}
+			if err := readNodeFinished(&wire, verified.handshake, "initiator finished v2"); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -150,7 +172,9 @@ func TestAutoTrustRejectsMissingHostKeys(t *testing.T) {
 	if _, err := p.backends[0].factory.New(wgtransport.Host{Bind: p.bases[0], PeerAllowed: func([32]byte) bool { return true }}); err == nil {
 		t.Fatal("auto trust without host identity accepted")
 	}
-	p.backends[1].host.NodeOpen = func([32]byte, [32]byte, []byte) ([]byte, error) { return nil, errors.New("wrong node key") }
+	p.backends[1].host.NodeHandshake = func([32]byte, [32]byte, bool, []byte) (nodeauth.Handshake, error) {
+		return nil, errors.New("wrong node key")
+	}
 	p.open(t)
 	remote := p.keys[1].Public().Raw32()
 	peer, err := p.backends[0].active.Load().peer(remote, nil)

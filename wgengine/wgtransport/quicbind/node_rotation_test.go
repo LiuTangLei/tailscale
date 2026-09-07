@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"tailscale.com/types/key"
+	"tailscale.com/wgengine/wgtransport/nodeauth"
 )
 
 func TestAutoTrustFollowsNodeKeyRotationWithoutNewCertificate(t *testing.T) {
@@ -21,23 +22,11 @@ func TestAutoTrustFollowsNodeKeyRotationWithoutNewCertificate(t *testing.T) {
 	for i, b := range pair.backends {
 		b.host.NodePublic = func() [32]byte { return keys[i].Load().Public().Raw32() }
 		b.host.PeerAllowed = func(remote [32]byte) bool { return remote == keys[i^1].Load().Public().Raw32() }
-		b.host.NodeSeal = func(local, remote [32]byte, data []byte) ([]byte, error) {
-			own, other := keys[i].Load(), keys[i^1].Load()
-			if own.Public().Raw32() != local || other.Public().Raw32() != remote {
-				return nil, errNodeProof
-			}
-			return own.SealTo(other.Public(), data), nil
-		}
-		b.host.NodeOpen = func(local, remote [32]byte, data []byte) ([]byte, error) {
-			own, other := keys[i].Load(), keys[i^1].Load()
-			if own.Public().Raw32() != local || other.Public().Raw32() != remote {
-				return nil, errNodeProof
-			}
-			result, ok := own.OpenFrom(other.Public(), data)
-			if !ok {
-				return nil, errNodeProof
-			}
-			return result, nil
+		b.host.NodeHandshake = func(local, remote [32]byte, initiator bool, binding []byte) (nodeauth.Handshake, error) {
+			own := keys[i].Load()
+			return nodeauth.New(*own, remote, initiator, binding, func(remote [32]byte) bool {
+				return own == keys[i].Load() && own.Public().Raw32() == local && (remote == ([32]byte{}) || remote == keys[i^1].Load().Public().Raw32())
+			})
 		}
 	}
 	fns := pair.open(t)

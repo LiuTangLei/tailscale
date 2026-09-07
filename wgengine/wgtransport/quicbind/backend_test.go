@@ -31,6 +31,7 @@ import (
 	"github.com/LiuTangLei/wireguard-go/tun/tuntest"
 	"tailscale.com/types/key"
 	"tailscale.com/wgengine/wgtransport"
+	"tailscale.com/wgengine/wgtransport/nodeauth"
 )
 
 func testIdentity(t testing.TB) (certPath, keyPath, pin string) {
@@ -169,23 +170,12 @@ func newTestPair(t testing.TB, mode string, options ...func(*Config)) *testPair 
 		}
 		listener := new(net.ListenConfig)
 		backend, err := f.New(wgtransport.Host{Bind: p.bases[i], Logf: t.Logf, ListenPacket: listener.ListenPacket, PeerAllowed: func([32]byte) bool { return true },
+			NodeHandshake: func(local, remote [32]byte, initiator bool, binding []byte) (nodeauth.Handshake, error) {
+				return nodeauth.New(p.keys[i], remote, initiator, binding, func(remote [32]byte) bool {
+					return local == p.keys[i].Public().Raw32() && (remote == ([32]byte{}) || remote == p.keys[i^1].Public().Raw32())
+				})
+			},
 			NodePublic: func() [32]byte { return p.keys[i].Public().Raw32() },
-			NodeSeal: func(local, remote [32]byte, msg []byte) ([]byte, error) {
-				if local != p.keys[i].Public().Raw32() || remote != p.keys[i^1].Public().Raw32() {
-					return nil, ErrUnknownPeer
-				}
-				return p.keys[i].SealTo(p.keys[i^1].Public(), msg), nil
-			},
-			NodeOpen: func(local, remote [32]byte, msg []byte) ([]byte, error) {
-				if local != p.keys[i].Public().Raw32() || remote != p.keys[i^1].Public().Raw32() {
-					return nil, ErrUnknownPeer
-				}
-				b, ok := p.keys[i].OpenFrom(p.keys[i^1].Public(), msg)
-				if !ok {
-					return nil, ErrUnknownPeer
-				}
-				return b, nil
-			},
 		})
 		if err != nil {
 			t.Fatal(err)

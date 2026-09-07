@@ -195,6 +195,7 @@ func (d *Device) SessionChanged(k [32]byte, state wgtransport.SessionState) {
 		p.last = time.Now()
 	} else if state == wgtransport.SessionNone {
 		p.last = time.Time{}
+		delete(d.peers, k)
 	}
 	d.peersMu.Unlock()
 	if changed {
@@ -235,7 +236,17 @@ func (d *Device) Up() error {
 	if err := d.bind.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		return err
 	}
-	fns, _, err := d.bind.Open(0)
+	var fns []conn.ReceiveFunc
+	var err error
+	grows := false
+	if dynamic, ok := d.bind.(interface {
+		OpenIP(uint16, int) ([]conn.ReceiveFunc, uint16, error)
+	}); ok {
+		fns, _, err = dynamic.OpenIP(0, packetOffset)
+		grows = true
+	} else {
+		fns, _, err = d.bind.Open(0)
+	}
 	if err != nil {
 		return err
 	}
@@ -246,7 +257,7 @@ func (d *Device) Up() error {
 	d.started = true
 	for _, fn := range fns {
 		d.workers.Add(1)
-		go d.receive(fn)
+		go d.receive(fn, grows)
 	}
 	d.workers.Add(1)
 	go d.transmit()
@@ -271,11 +282,19 @@ func (d *Device) failed() { go d.Close() }
 
 func (d *Device) transmit() {
 	defer d.workers.Done()
+	read := d.tun.Read
+	bufferSize := packetOffset + maxIPPacket
+	if dynamic, ok := d.tun.(interface {
+		ReadWithBufferGrowth([][]byte, []int, int) (int, error)
+	}); ok {
+		read = dynamic.ReadWithBufferGrowth
+		bufferSize = packetOffset + 2048
+	}
 	count := d.tun.BatchSize()
 	bufs := make([][]byte, count)
 	sizes := make([]int, count)
 	for i := range bufs {
-		bufs[i] = make([]byte, packetOffset+maxIPPacket)
+		bufs[i] = make([]byte, bufferSize)
 	}
 	batch := make([][]byte, 0, d.bind.BatchSize())
 	var target *peer
@@ -298,7 +317,7 @@ func (d *Device) transmit() {
 		batch = batch[:0]
 	}
 	for {
-		n, err := d.tun.Read(bufs, sizes, packetOffset)
+		n, err := read(bufs, sizes, packetOffset)
 		if err != nil {
 			select {
 			case <-d.stop:
@@ -374,8 +393,12 @@ func (d *Device) transmit() {
 
 type authenticatedEndpoint interface{ AuthenticatedPeerKey() [32]byte }
 
-func (d *Device) receive(fn conn.ReceiveFunc) {
+func (d *Device) receive(fn conn.ReceiveFunc, grows bool) {
 	defer d.workers.Done()
+	bufferSize := packetOffset + maxIPPacket
+	if grows {
+		bufferSize = packetOffset + 2048
+	}
 	count := d.bind.BatchSize()
 	storage := make([][]byte, count)
 	data := make([][]byte, count)
@@ -383,11 +406,20 @@ func (d *Device) receive(fn conn.ReceiveFunc) {
 	sizes := make([]int, count)
 	eps := make([]conn.Endpoint, count)
 	for i := range storage {
-		storage[i] = make([]byte, packetOffset+maxIPPacket)
+		storage[i] = make([]byte, bufferSize)
 		data[i] = storage[i][packetOffset:]
 	}
 	for {
-		n, err := fn(data, sizes, eps)
+		var n int
+		var err error
+		if grows {
+			n, err = fn(storage, sizes, eps)
+			for i := range storage {
+				data[i] = storage[i][packetOffset:]
+			}
+		} else {
+			n, err = fn(data, sizes, eps)
+		}
 		if err != nil {
 			select {
 			case <-d.stop:

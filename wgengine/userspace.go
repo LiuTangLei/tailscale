@@ -77,6 +77,7 @@ type userspaceEngine struct {
 	logf              logger.Logf
 	wgLogger          *wglog.Logger // a wireguard-go logging wrapper
 	reqCh             chan struct{}
+	sessionDisco      chan key.NodePublic
 	waitCh            chan struct{} // chan is closed when first Close call completes; contrast with closing bool
 	timeNow           func() mono.Time
 	tundev            *tstun.Wrapper
@@ -422,6 +423,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		logf:              logf,
 		reqCh:             make(chan struct{}, 1),
 		waitCh:            make(chan struct{}),
+		sessionDisco:      make(chan key.NodePublic, 64),
 		tundev:            tsTUNDev,
 		router:            rtr,
 		dialer:            conf.Dialer,
@@ -571,9 +573,8 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		ListenTCP:      netns.Listener(e.logf, e.netMon).Listen,
 		PeerAllowed:    func(k [32]byte) bool { return e.peerCurrentlyAllowed(keyFromRaw(k)) },
 		NodePublic:     e.transportNodePublic,
-		NodeSeal:       e.transportNodeSeal,
-		NodeOpen:       e.transportNodeOpen,
-		SessionChanged: func(k [32]byte, s wgtransport.SessionState) { e.packet.CarrierSessionChanged(k, s) },
+		NodeHandshake:  e.transportNodeHandshake,
+		SessionChanged: e.carrierSessionChanged,
 		PacketStats: func() map[string]uint64 {
 			if ip, ok := e.packet.(*ipPacketEngine); ok {
 				return ip.dev.SnapshotCounters()
@@ -712,6 +713,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		})
 	})
 	e.eventClient = ec
+	go e.sendSessionDiscoNotifications()
 	e.logf("Engine created.")
 	return e, nil
 }

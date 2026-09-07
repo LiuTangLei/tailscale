@@ -2,24 +2,34 @@
 // SPDX-License-Identifier: BSD-3-Clause
 package quicbind
 
-import "testing"
+import (
+	"tailscale.com/wgengine/wgtransport/nodeauth"
+	"testing"
+)
+
+type revokingHandshake struct {
+	nodeauth.Handshake
+	after func([32]byte)
+}
+
+func (h revokingHandshake) Read(p []byte) ([]byte, error) {
+	out, err := h.Handshake.Read(p)
+	if err == nil {
+		h.after(h.Peer())
+	}
+	return out, err
+}
 
 func TestAutoTrustCannotCrossRevocationDuringProof(t *testing.T) {
 	pair := newTestPair(t, "http3-magicsock", func(c *Config) { c.AutoTrust = true; c.Peers = nil })
 	server := pair.backends[1]
-	originalOpen := server.host.NodeOpen
-	server.host.NodeOpen = func(local, remote [32]byte, ciphertext []byte) ([]byte, error) {
-		cleartext, err := originalOpen(local, remote, ciphertext)
+	original := server.host.NodeHandshake
+	server.host.NodeHandshake = func(local, remote [32]byte, initiator bool, binding []byte) (nodeauth.Handshake, error) {
+		h, err := original(local, remote, initiator, binding)
 		if err != nil {
 			return nil, err
 		}
-		// Reproduce a control-plane revoke/re-add during an in-flight proof. The
-		// current policy is permissive again, but the old attempt must not survive.
-		server.PeerRemoved(remote)
-		if _, err := server.active.Load().peer(remote, nil); err != nil {
-			return nil, err
-		}
-		return cleartext, nil
+		return revokingHandshake{h, func(remote [32]byte) { server.PeerRemoved(remote); _, _ = server.active.Load().peer(remote, nil) }}, nil
 	}
 	pair.open(t)
 	peer, err := pair.backends[0].active.Load().peer(pair.keys[1].Public().Raw32(), nil)

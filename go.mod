@@ -6,7 +6,7 @@ require (
 	filippo.io/mkcert v1.4.4
 	fyne.io/systray v1.11.1-0.20250812065214-4856ac3adc3c
 	github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9
-	github.com/LiuTangLei/wireguard-go v0.0.31
+	github.com/LiuTangLei/wireguard-go v0.0.32
 	github.com/akutz/memconn v0.1.0
 	github.com/alexbrainman/sspi v0.0.0-20231016080023-1a75b4708caa
 	github.com/andybalholm/brotli v1.1.0
@@ -40,6 +40,7 @@ require (
 	github.com/dsnet/try v0.0.3
 	github.com/elastic/crd-ref-docs v0.0.12
 	github.com/evanw/esbuild v0.19.11
+	github.com/flynn/noise v1.1.0
 	github.com/fogleman/gg v1.3.0
 	github.com/frankban/quicktest v1.14.6
 	github.com/fxamacker/cbor/v2 v2.9.0

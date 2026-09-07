@@ -13,17 +13,18 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"tailscale.com/wgengine/wgtransport/nodeauth"
 )
 
 const (
-	nodeAuthScheme   = "TailnetNode "
-	nodeAuthReply    = "X-Tailnet-Node-Auth"
-	nodeAuthPinProof = "X-Tailnet-Pinned-Proof"
-	nodeAuthLabel    = "EXPORTER-HTTP3-TAILNET-NODE-AUTH-v1"
-	nodeProofLen     = 163 // version, direction, src/dst/nonce/exporter/SPKI (32 each), server flag
+	nodeAuthScheme = "TailnetNoiseIKv2 "
+	nodeAuthReply  = "X-Tailnet-Node-Auth"
+	nodeAuthLabel  = "EXPORTER-HTTP3-TAILNET-NODE-AUTH-v2"
+	nodeProofLen   = 163 // version, direction, src/dst/nonce/exporter/SPKI (32 each), server flag
 )
 
 var errNodeProof = errors.New("HTTP/3 Tailnet node authentication failed")
@@ -31,6 +32,8 @@ var errNodeProof = errors.New("HTTP/3 Tailnet node authentication failed")
 type nodeProof struct {
 	from, to, nonce, binding, pin [32]byte
 	server                        bool
+	pinnedProof                   string
+	handshake                     nodeauth.Handshake
 }
 
 func automaticPeerURL(k [32]byte) *url.URL {
@@ -102,7 +105,7 @@ func nodeBinding(cs *tls.ConnectionState, r *http.Request, export tlsExporter) (
 }
 func (p nodeProof) marshal(direction byte) []byte {
 	b := make([]byte, nodeProofLen)
-	b[0] = 1
+	b[0] = 2
 	b[1] = direction
 	copy(b[2:34], p.from[:])
 	copy(b[34:66], p.to[:])
@@ -112,10 +115,10 @@ func (p nodeProof) marshal(direction byte) []byte {
 	if p.server {
 		b[162] = 1
 	}
-	return b
+	return append(b, []byte(p.pinnedProof)...)
 }
 func parseNodeProof(b []byte, direction byte) (p nodeProof, err error) {
-	if len(b) != nodeProofLen || b[0] != 1 || b[1] != direction || b[162] > 1 {
+	if len(b) < nodeProofLen || len(b) > 2048 || b[0] != 2 || b[1] != direction || b[162] > 1 {
 		return p, errNodeProof
 	}
 	copy(p.from[:], b[2:34])
@@ -124,51 +127,21 @@ func parseNodeProof(b []byte, direction byte) (p nodeProof, err error) {
 	copy(p.binding[:], b[98:130])
 	copy(p.pin[:], b[130:162])
 	p.server = b[162] == 1
+	p.pinnedProof = string(b[163:])
 	return p, nil
 }
-func (b *Backend) sealNodeProof(p nodeProof, direction byte) (string, error) {
-	if !b.identityOK.Load() || b.localNodeKey() != p.from || !b.peerAllowed(p.to) || b.host.NodeSeal == nil {
-		return "", errNodeProof
-	}
-	raw := p.marshal(direction)
-	defer clear(raw)
-	sealed, err := b.host.NodeSeal(p.from, p.to, raw)
-	if err != nil {
-		return "", errNodeProof
-	}
-	return nodeAuthScheme + hex.EncodeToString(p.from[:]) + "." + base64.RawURLEncoding.EncodeToString(sealed), nil
+func encodeNodeMessage(raw []byte) string {
+	return nodeAuthScheme + base64.RawURLEncoding.EncodeToString(raw)
 }
-func (b *Backend) openNodeProof(value string, direction byte) (nodeProof, error) {
-	var zero nodeProof
-	if !b.identityOK.Load() || len(value) > 512 || !strings.HasPrefix(value, nodeAuthScheme) || b.host.NodeOpen == nil {
-		return zero, errNodeProof
+func decodeNodeMessage(value string) ([]byte, error) {
+	if len(value) > 5500 || !strings.HasPrefix(value, nodeAuthScheme) {
+		return nil, errNodeProof
 	}
-	pub, encoded, ok := strings.Cut(strings.TrimPrefix(value, nodeAuthScheme), ".")
-	if !ok {
-		return zero, errNodeProof
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, nodeAuthScheme))
+	if err != nil || len(raw) > 4096 {
+		return nil, errNodeProof
 	}
-	remote, err := parseKey(pub)
-	if err != nil || !b.peerAllowed(remote) {
-		return zero, errNodeProof
-	}
-	local := b.localNodeKey()
-	if local == ([32]byte{}) || local == remote {
-		return zero, errNodeProof
-	}
-	cipher, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || len(cipher) != nodeProofLen+40 {
-		return zero, errNodeProof
-	}
-	raw, err := b.host.NodeOpen(local, remote, cipher)
-	if err != nil {
-		return zero, errNodeProof
-	}
-	defer clear(raw)
-	p, err := parseNodeProof(raw, direction)
-	if err != nil || p.from != remote || p.to != local || !b.identityOK.Load() || b.localNodeKey() != local || !b.peerAllowed(remote) {
-		return zero, errNodeProof
-	}
-	return p, nil
+	return raw, nil
 }
 func (b *Backend) createNodeRequest(remote [32]byte, cs *tls.ConnectionState, r *http.Request, export tlsExporter) (string, nodeProof, error) {
 	p := nodeProof{from: b.localNodeKey(), to: remote, server: b.factory.cfg.Server, pin: sha256.Sum256(b.factory.cert.Leaf.RawSubjectPublicKeyInfo)}
@@ -180,22 +153,20 @@ func (b *Backend) createNodeRequest(remote [32]byte, cs *tls.ConnectionState, r 
 	if err != nil {
 		return "", p, err
 	}
-	value, err := b.sealNodeProof(p, 1)
-	return value, p, err
-}
-
-// This only extracts an untrusted claim for a bounded lifecycle lookup. The
-// caller must still verifyNodeRequest; no session is authorized here.
-func claimedNodeSender(headers http.Header) ([32]byte, error) {
-	values := headers.Values("Authorization")
-	if len(values) != 1 || len(values[0]) > 512 || !strings.HasPrefix(values[0], nodeAuthScheme) {
-		return [32]byte{}, errNodeProof
+	p.pinnedProof, err = b.factory.http3Authorization(cs, r, export)
+	if err != nil {
+		return "", p, err
 	}
-	pub, _, ok := strings.Cut(strings.TrimPrefix(values[0], nodeAuthScheme), ".")
-	if !ok {
-		return [32]byte{}, errNodeProof
+	p.handshake, err = b.host.NodeHandshake(p.from, remote, true, p.binding[:])
+	if err != nil {
+		return "", p, err
 	}
-	return parseKey(pub)
+	raw, err := p.handshake.Write(p.marshal(1))
+	if err != nil {
+		p.handshake.Close()
+		return "", p, err
+	}
+	return encodeNodeMessage(raw), p, nil
 }
 
 func (b *Backend) verifyNodeRequest(cs *tls.ConnectionState, r *http.Request, export tlsExporter) (nodeProof, error) {
@@ -204,14 +175,35 @@ func (b *Backend) verifyNodeRequest(cs *tls.ConnectionState, r *http.Request, ex
 	if len(values) != 1 {
 		return zero, errNodeProof
 	}
-	p, err := b.openNodeProof(values[0], 1)
+	binding, err := nodeBinding(cs, r, export)
 	if err != nil {
 		return zero, err
 	}
-	expected, err := nodeBinding(cs, r, export)
-	if err != nil || subtle.ConstantTimeCompare(p.binding[:], expected[:]) != 1 {
+	local := b.localNodeKey()
+	hs, err := b.host.NodeHandshake(local, [32]byte{}, false, binding[:])
+	if err != nil {
+		return zero, err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			hs.Close()
+		}
+	}()
+	raw, err := decodeNodeMessage(values[0])
+	if err != nil {
+		return zero, err
+	}
+	plain, err := hs.Read(raw)
+	if err != nil {
+		return zero, err
+	}
+	defer clear(plain)
+	p, err := parseNodeProof(plain, 1)
+	if err != nil || p.from != hs.Peer() || p.to != local || p.binding != binding || !b.identityOK.Load() || b.localNodeKey() != local || !b.peerAllowed(p.from) {
 		return zero, errNodeProof
 	}
+	p.handshake = hs
 	hint, err := parseServerHint(r.Header)
 	if err != nil || hint != boolServerHint(p.server) {
 		return zero, errNodeProof
@@ -222,28 +214,45 @@ func (b *Backend) verifyNodeRequest(cs *tls.ConnectionState, r *http.Request, ex
 		if p.pin != pinned.pin {
 			return zero, errNodeProof
 		}
-		values := r.Header.Values(nodeAuthPinProof)
-		if len(values) != 1 {
+		if p.pinnedProof == "" {
 			return zero, errNodeProof
 		}
 		copyRequest := r.Clone(r.Context())
-		copyRequest.Header.Set("Authorization", values[0])
+		copyRequest.Header.Set("Authorization", p.pinnedProof)
 		k, err := b.factory.verifyHTTP3Authorization(cs, copyRequest, export)
 		if err != nil || k != p.from {
 			return zero, errNodeProof
 		}
 	}
+	keep = true
 	return p, nil
 }
 func (b *Backend) createNodeReply(request nodeProof) (string, error) {
-	return b.sealNodeProof(nodeProof{from: request.to, to: request.from, nonce: request.nonce, binding: request.binding, pin: sha256.Sum256(b.factory.cert.Leaf.RawSubjectPublicKeyInfo), server: b.factory.cfg.Server}, 2)
+	p := nodeProof{from: request.to, to: request.from, nonce: request.nonce, binding: request.binding, pin: sha256.Sum256(b.factory.cert.Leaf.RawSubjectPublicKeyInfo), server: b.factory.cfg.Server}
+	raw, err := request.handshake.Write(p.marshal(2))
+	if err != nil {
+		return "", err
+	}
+	return encodeNodeMessage(raw), nil
 }
 func (b *Backend) verifyNodeReply(request nodeProof, cs *tls.ConnectionState, headers http.Header) (uint32, error) {
+	if !b.identityOK.Load() || b.localNodeKey() != request.from || !b.peerAllowed(request.to) {
+		return serverUnknown, errNodeProof
+	}
 	values := headers.Values(nodeAuthReply)
 	if len(values) != 1 {
 		return serverUnknown, errNodeProof
 	}
-	p, err := b.openNodeProof(values[0], 2)
+	raw, err := decodeNodeMessage(values[0])
+	if err != nil {
+		return serverUnknown, err
+	}
+	plain, err := request.handshake.Read(raw)
+	if err != nil {
+		return serverUnknown, err
+	}
+	defer clear(plain)
+	p, err := parseNodeProof(plain, 2)
 	if err != nil {
 		return serverUnknown, err
 	}
@@ -267,8 +276,48 @@ func boolServerHint(v bool) uint32 {
 }
 
 func (b *Backend) autoTrustReady() error {
-	if b.factory.cfg.AutoTrust && (b.host.NodePublic == nil || b.host.NodeSeal == nil || b.host.NodeOpen == nil) {
+	if b.factory.cfg.AutoTrust && (b.host.NodePublic == nil || b.host.NodeHandshake == nil) {
 		return fmt.Errorf("automatic H3 trust requires host node-key authentication callbacks")
+	}
+	return nil
+}
+
+// These bounded private capsules are exchanged before starting the generic
+// capsule reader. A 200 response is provisional until both Finished messages
+// verify. The encrypted role strings prevent reflection and require IK split keys.
+const nodeFinishedCapsule byte = 0x3e
+
+func writeNodeFinished(w io.Writer, hs nodeauth.Handshake, role string) error {
+	msg, err := hs.Write([]byte(role))
+	if err != nil {
+		return err
+	}
+	if len(msg) > 63 {
+		return errNodeProof
+	}
+	frame := append([]byte{nodeFinishedCapsule, byte(len(msg))}, msg...)
+	n, err := w.Write(frame)
+	if err == nil && n != len(frame) {
+		return io.ErrShortWrite
+	}
+	return err
+}
+func readNodeFinished(r io.Reader, hs nodeauth.Handshake, role string) error {
+	var hdr [2]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return err
+	}
+	if hdr[0] != nodeFinishedCapsule || hdr[1] > 63 {
+		return errNodeProof
+	}
+	msg := make([]byte, int(hdr[1]))
+	if _, err := io.ReadFull(r, msg); err != nil {
+		return err
+	}
+	plain, err := hs.Read(msg)
+	defer clear(plain)
+	if err != nil || string(plain) != role {
+		return errNodeProof
 	}
 	return nil
 }
