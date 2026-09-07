@@ -9,6 +9,7 @@ import (
 	"errors"
 
 	"github.com/flynn/noise"
+	"golang.org/x/crypto/chacha20poly1305"
 	"tailscale.com/types/key"
 )
 
@@ -41,6 +42,11 @@ type handshake struct {
 func New(k key.NodePrivate, peer [32]byte, initiator bool, binding []byte, valid func([32]byte) bool) (Handshake, error) {
 	if k.IsZero() || len(binding) != 32 || valid == nil || !valid(peer) || (initiator && peer == ([32]byte{})) {
 		return nil, ErrHandshake
+	}
+	// flynn/noise's cipher constructor panics on an unavailable algorithm.
+	// Surface the process crypto-policy refusal as an authentication error.
+	if _, err := chacha20poly1305.New(make([]byte, chacha20poly1305.KeySize)); err != nil {
+		return nil, err
 	}
 	s := &handshake{secret: k.Raw32(), peer: peer, initiator: initiator, valid: valid}
 	pub := k.Public().Raw32()
