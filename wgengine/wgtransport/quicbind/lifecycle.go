@@ -17,7 +17,7 @@ func (p *peer) lifecycleStamp() lifecycleStamp {
 
 func (p *peer) stampValid(s lifecycleStamp) bool {
 	b := p.g.b
-	if !b.identityOK.Load() || p.disabled.Load() || s.identity != b.identityEpoch.Load() || s.peer != p.epoch.Load() {
+	if !b.identityOK.Load() || p.disabled.Load() || p.retired.Load() || s.identity != b.identityEpoch.Load() || s.peer != p.epoch.Load() {
 		return false
 	}
 	return b.peerAllowed(p.cfg.key)

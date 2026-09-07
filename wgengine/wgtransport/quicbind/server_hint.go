@@ -71,11 +71,9 @@ func (b *Backend) peerServerHint(k [32]byte) uint32 {
 }
 
 func (b *Backend) forgetServerHint(k [32]byte) {
-	b.serverHintsMu.RLock()
-	defer b.serverHintsMu.RUnlock()
-	if h := b.serverHints[k]; h != nil {
-		h.Store(serverUnknown)
-	}
+	b.serverHintsMu.Lock()
+	defer b.serverHintsMu.Unlock()
+	delete(b.serverHints, k)
 }
 
 func (b *Backend) ensureServerHint(k [32]byte) {
@@ -127,7 +125,7 @@ func (p *peer) rememberServerHint(s *session, hint uint32) {
 	}
 	p.g.b.serverHintsMu.RLock()
 	defer p.g.b.serverHintsMu.RUnlock()
-	if h := p.g.b.serverHints[p.cfg.key]; h != nil {
+	if h := p.g.b.serverHints[p.cfg.key]; h != nil && !p.retired.Load() {
 		h.Store(hint)
 	}
 }

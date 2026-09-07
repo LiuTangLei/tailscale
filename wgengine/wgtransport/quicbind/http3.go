@@ -285,8 +285,14 @@ func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (_ *session, 
 		}
 	}()
 	client := (&http3.Transport{EnableDatagrams: true, MaxResponseHeaderBytes: 16 << 10, DisableCompression: true}).NewClientConn(q)
-	ctx, cancel := context.WithTimeout(p.g.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
 	defer cancel()
+	// A retired actor must also interrupt a provisional CONNECT already waiting
+	// for response headers, before any session exists for closeSession to close.
+	stopOnRetire := context.AfterFunc(p.ctx, func() {
+		_ = q.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeRequestCanceled), "peer actor stopped")
+	})
+	defer stopOnRetire()
 	select {
 	case <-client.ReceivedSettings():
 	case <-ctx.Done():
@@ -298,8 +304,10 @@ func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (_ *session, 
 	if !s.EnableDatagrams || !s.EnableExtendedConnect {
 		return nil, errors.New("HTTP/3 peer did not negotiate DATAGRAM and Extended CONNECT")
 	}
-	// Stream lifetime is the generation, not the temporary handshake deadline.
-	stream, err := client.OpenRequestStream(p.g.ctx)
+	// Bound the wait for the peer to grant bidirectional stream credit too.
+	// OpenRequestStream uses this context only while opening; the returned
+	// stream remains alive after the temporary handshake context is canceled.
+	stream, err := client.OpenRequestStream(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -56,6 +56,7 @@ type Backend struct {
 	host          wgtransport.Host
 	bind          carrierBind
 	mu            sync.Mutex
+	eventMu       sync.Mutex // serialize host notifications across actor replacement
 	closed        bool
 	active        atomic.Pointer[generation]
 	identityOK    atomic.Bool
@@ -112,12 +113,14 @@ func acquirePacket(data []byte) *packetBuffer {
 func releasePacket(p *packetBuffer) { p.data = nil; packetPool.Put(p) }
 
 type peer struct {
-	// Session notifications are serialized separately from packet I/O.
-	eventMu          sync.Mutex
 	sendMu           sync.Mutex
+	queueMu          sync.RWMutex // final queue drain waits for in-flight enqueues
 	scratch          [1500]byte
 	connectingPacket atomic.Bool
 	g                *generation
+	ctx              context.Context
+	cancel           context.CancelFunc
+	done             chan struct{}
 	cfg              peerConfig
 	ep               atomic.Pointer[endpoint]
 	tx               chan *packetBuffer
@@ -125,6 +128,7 @@ type peer struct {
 	session          *session
 	dialing          chan struct{}
 	disabled         atomic.Bool
+	retired          atomic.Bool   // actor was evicted; it can never be revived
 	epoch            atomic.Uint64 // changes on explicit reset/revocation, not ordinary reconnect
 	nextID           atomic.Uint32
 }
@@ -201,12 +205,13 @@ func (b *Backend) PeerRemoved(k [32]byte) {
 	}
 	g.peersMu.Lock()
 	p := g.peers[k]
+	// Drop the old metadata before any session callback can block. A concurrent
+	// re-add may create a new hint slot; never delete that replacement afterward.
+	b.forgetServerHint(k)
 	g.peersMu.Unlock()
 	if p != nil {
-		p.disabled.Store(true)
-		p.closeSession("peer removed or reset")
+		p.resetSession("peer removed or reset", true)
 	}
-	b.forgetServerHint(k)
 }
 func (b *Backend) NetworkChanged(up, rebind bool) {
 	b.networkUp.Store(up)
@@ -230,8 +235,11 @@ func (b *Backend) resetConnections(reason string) {
 	}
 }
 func (p *peer) publishState(state wgtransport.SessionState) {
-	p.eventMu.Lock()
-	defer p.eventMu.Unlock()
+	p.g.b.eventMu.Lock()
+	defer p.g.b.eventMu.Unlock()
+	if p.retired.Load() || p.g.ctx.Err() != nil || p.g.b.active.Load() != p.g {
+		return
+	}
 	p.mu.Lock()
 	live := p.session != nil && p.session.q.Context().Err() == nil
 	p.mu.Unlock()
@@ -244,7 +252,14 @@ func (p *peer) publishState(state wgtransport.SessionState) {
 }
 
 func (p *peer) closeSession(reason string) {
+	p.resetSession(reason, false)
+}
+
+func (p *peer) resetSession(reason string, disable bool) {
 	p.mu.Lock()
+	if disable {
+		p.disabled.Store(true)
+	}
 	p.epoch.Add(1) // queued packets belong to the pre-reset peer, even if re-added
 	s := p.session
 	p.session = nil
@@ -460,6 +475,19 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 		return nil
 	}
 	p.sendMu.Unlock()
+	return p.enqueue(bufs, offset)
+}
+
+func (p *peer) enqueue(bufs [][]byte, offset int) error {
+	g, b := p.g, p.g.b
+	p.queueMu.RLock()
+	defer p.queueMu.RUnlock()
+	if p.retired.Load() {
+		return ErrUnknownPeer
+	}
+	if p.ctx.Err() != nil {
+		return net.ErrClosed
+	}
 	stamp := p.lifecycleStamp()
 	for _, buf := range bufs {
 		data := buf[offset:]
@@ -471,7 +499,7 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 		packet := acquirePacket(data)
 		packet.stamp = stamp
 		select {
-		case <-g.ctx.Done():
+		case <-p.ctx.Done():
 			g.txBytes.Add(-int64(len(data)))
 			releasePacket(packet)
 			return net.ErrClosed
@@ -484,7 +512,7 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 			select {
 			case p.tx <- packet:
 				timer.Stop()
-			case <-g.ctx.Done():
+			case <-p.ctx.Done():
 				timer.Stop()
 				g.txBytes.Add(-int64(len(data)))
 				releasePacket(packet)
@@ -513,6 +541,9 @@ func (g *generation) peer(k [32]byte, base conn.Endpoint) (*peer, error) {
 	}
 	existing := g.peers[k]
 	g.peersMu.Unlock()
+	if existing != nil && existing.retired.Load() {
+		return nil, ErrUnknownPeer
+	}
 	if existing != nil && !existing.disabled.Load() {
 		return existing, nil
 	}
@@ -534,24 +565,68 @@ func (g *generation) peer(k [32]byte, base conn.Endpoint) (*peer, error) {
 	}
 	if p := g.peers[k]; p != nil {
 		g.peersMu.Unlock()
+		if p.retired.Load() {
+			return nil, ErrUnknownPeer
+		}
 		if p.disabled.Load() {
+			refreshStamp := p.lifecycleStamp()
 			// Never acquire host magicsock locks while holding the carrier map
 			// lock: peer-removal callbacks may arrive in the opposite direction.
 			fresh, err := g.b.host.Bind.ParseEndpoint(hex.EncodeToString(k[:]))
 			if err != nil {
 				return nil, err
 			}
+			if !g.b.peerAllowed(k) {
+				return nil, ErrUnknownPeer
+			}
+			g.peersMu.Lock()
+			if g.peers[k] != p || p.retired.Load() {
+				g.peersMu.Unlock()
+				return g.peer(k, fresh)
+			}
+			if g.ctx.Err() != nil {
+				g.peersMu.Unlock()
+				return nil, net.ErrClosed
+			}
+			p.mu.Lock()
+			if p.epoch.Load() != refreshStamp.peer || g.b.identityEpoch.Load() != refreshStamp.identity || !g.b.identityOK.Load() {
+				p.mu.Unlock()
+				g.peersMu.Unlock()
+				return nil, ErrUnknownPeer
+			}
 			p.ep.Store(&endpoint{Endpoint: fresh, b: g.b, key: k})
 			p.disabled.Store(false)
+			p.mu.Unlock()
+			g.b.ensureServerHint(k)
+			g.peersMu.Unlock()
 		}
 		return p, nil
 	}
-	defer g.peersMu.Unlock()
 	if len(g.peers) >= maxPeers {
-		return nil, errors.New("active H3 peer limit reached")
+		// Automatic peers accumulate across node-key rotations and removals.
+		// Reclaim only a revoked actor, preserving every live peer and leaving
+		// old packet/session references permanently invalid. Cancellation also
+		// stops a pending dial before the worker drains its bounded send queue.
+		for oldKey, old := range g.peers {
+			if old.disabled.Load() && !old.retired.Load() {
+				old.retired.Store(true)
+				old.cancel()
+				delete(g.peers, oldKey)
+				g.b.serverHintsMu.Lock()
+				delete(g.b.serverHints, oldKey)
+				g.b.serverHintsMu.Unlock()
+				break
+			}
+		}
+		if len(g.peers) >= maxPeers {
+			g.peersMu.Unlock()
+			return nil, errors.New("active H3 peer limit reached")
+		}
 	}
+	defer g.peersMu.Unlock()
 	g.b.ensureServerHint(k)
-	p := &peer{g: g, cfg: cfg, tx: make(chan *packetBuffer, g.b.factory.cfg.QueuePackets)}
+	ctx, cancel := context.WithCancel(g.ctx)
+	p := &peer{g: g, ctx: ctx, cancel: cancel, done: make(chan struct{}), cfg: cfg, tx: make(chan *packetBuffer, g.b.factory.cfg.QueuePackets)}
 	p.ep.Store(&endpoint{Endpoint: base, b: g.b, key: k})
 	g.peers[k] = p
 	g.workers.Add(1)
@@ -663,7 +738,7 @@ func (p *peer) getSession() (*session, error) {
 		wait := p.dialing
 		p.mu.Unlock()
 		select {
-		case <-p.g.ctx.Done():
+		case <-p.ctx.Done():
 			return nil, net.ErrClosed
 		case <-wait:
 			return p.getSession()
@@ -676,6 +751,9 @@ func (p *peer) getSession() (*session, error) {
 	if !p.g.b.identityOK.Load() {
 		return nil, ErrIdentity
 	}
+	if p.retired.Load() {
+		return nil, ErrUnknownPeer
+	}
 	if !p.g.b.peerAllowed(p.cfg.key) {
 		return nil, ErrUnknownPeer
 	}
@@ -684,7 +762,7 @@ func (p *peer) getSession() (*session, error) {
 	if p.g.bridge != nil {
 		remote = &bindAddr{ep: p.ep.Load().Endpoint}
 	}
-	ctx, cancel := context.WithTimeout(p.g.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
 	defer cancel()
 	attempt := p.lifecycleStamp()
 	tlsConfig := p.g.b.tlsConfig(&p.cfg.key)
@@ -713,7 +791,11 @@ func (p *peer) getSession() (*session, error) {
 
 func (p *peer) run() {
 	defer p.g.workers.Done()
+	defer close(p.done)
+	defer p.closeSession("peer actor stopped")
 	defer func() {
+		p.queueMu.Lock()
+		defer p.queueMu.Unlock()
 		for {
 			select {
 			case packet := <-p.tx:
@@ -726,7 +808,7 @@ func (p *peer) run() {
 	}()
 	for {
 		select {
-		case <-p.g.ctx.Done():
+		case <-p.ctx.Done():
 			return
 		case packet := <-p.tx:
 			p.connectingPacket.Store(true)
@@ -807,6 +889,7 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 
 func (p *peer) receiveSession(s *session) {
 	defer p.g.workers.Done()
+	defer s.q.CloseWithError(0, "datagram receiver stopped")
 	defer func() {
 		p.mu.Lock()
 		current := p.session == s
@@ -822,7 +905,7 @@ func (p *peer) receiveSession(s *session) {
 		capsules.StartCapsules(func(data []byte) { p.deliverFrame(s, data) })
 	}
 	for {
-		data, err := s.dgram.ReceiveDatagram(p.g.ctx)
+		data, err := s.dgram.ReceiveDatagram(p.ctx)
 		if err != nil {
 			return
 		}
