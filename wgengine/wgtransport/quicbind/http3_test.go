@@ -16,9 +16,6 @@ import (
 )
 
 func TestProductionRejectsLegacyConfig(t *testing.T) {
-	if wgtransport.LegacyWGOverQUIC {
-		t.Skip("development build")
-	}
 	if _, err := NewFactory(Config{Version: 1}); !errors.Is(err, wgtransport.ErrUnsupported) {
 		t.Fatalf("legacy config: %v", err)
 	}

@@ -21,9 +21,9 @@ import (
 )
 
 var (
-	ErrQueueFull   = errors.New("QUIC-WG bounded send queue is full")
-	ErrUnknownPeer = errors.New("QUIC-WG peer is not configured or is unavailable")
-	ErrIdentity    = errors.New("QUIC-WG configured local public key does not match the active WireGuard identity")
+	ErrQueueFull   = errors.New("QUIC-IP bounded send queue is full")
+	ErrUnknownPeer = errors.New("QUIC-IP peer is not configured or is unavailable")
+	ErrIdentity    = errors.New("QUIC-IP configured local public key does not match the active node identity")
 )
 
 const packetBudget = 8 << 20
@@ -158,7 +158,7 @@ func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 	if h.Bind == nil {
 		return nil, errors.New("QUIC requires a host Bind")
 	}
-	if f.cfg.Payload == "ip" && h.PeerAllowed == nil {
+	if h.PeerAllowed == nil {
 		return nil, errors.New("native QUIC IP requires live host peer authorization")
 	}
 	if h.Logf == nil {
@@ -174,14 +174,10 @@ func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 	b.initServerHints()
 	b.bind.b = b
 	b.networkUp.Store(true)
-	f.last.Store(b)
 	return b, nil
 }
 func (b *Backend) peerAllowed(k [32]byte) bool {
-	if b.host.PeerAllowed != nil {
-		return b.host.PeerAllowed(k)
-	}
-	return b.factory.cfg.Payload != "ip"
+	return b.host.PeerAllowed != nil && b.host.PeerAllowed(k)
 }
 func (b *Backend) notify(k [32]byte, state wgtransport.SessionState) {
 	if b.host.SessionChanged != nil {
@@ -462,7 +458,7 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 		return ErrIdentity
 	}
 	if !b.networkUp.Load() {
-		return errors.New("QUIC-WG network is down")
+		return errors.New("QUIC-IP network is down")
 	}
 	g := b.active.Load()
 	if g == nil {
@@ -536,7 +532,7 @@ func (p *peer) enqueue(bufs [][]byte, offset int) error {
 			return net.ErrClosed
 		case p.tx <- packet:
 		default:
-			// Avoid dropping whole WG batches during short QUIC pacing stalls.
+			// Avoid dropping whole IP batches during short QUIC pacing stalls.
 			// Backpressure is bounded; no timer/allocation on the normal path.
 			b.counters.EnqueueWaits.Add(1)
 			timer := time.NewTimer(250 * time.Millisecond)
@@ -681,7 +677,7 @@ func (g *generation) accept() {
 			continue
 		}
 		if !g.b.identityOK.Load() {
-			q.CloseWithError(1, "inactive WireGuard identity")
+			q.CloseWithError(1, "inactive node identity")
 			continue
 		}
 		key, err := g.b.factory.verify(q.ConnectionState().TLS, nil)
@@ -905,7 +901,7 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 		}
 		limit = int(tooLarge.MaxDatagramPayloadSize)
 	}
-	// No WG MTU is silently lowered. Fragment only when the current QUIC path
+	// No IP MTU is silently lowered. Fragment only when the current QUIC path
 	// cannot carry the whole encrypted WG message. Sender retains no retransmit
 	// state; QUIC DATAGRAM and the inner protocols retain their UDP semantics.
 	if limit > len(scratch) {

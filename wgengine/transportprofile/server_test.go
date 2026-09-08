@@ -6,6 +6,9 @@ package transportprofile
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/LiuTangLei/wireguard-go/conn"
+	"tailscale.com/wgengine/wgtransport"
+	"tailscale.com/wgengine/wgtransport/quicbind"
 	"testing"
 
 	"tailscale.com/ipn"
@@ -56,8 +59,15 @@ func TestSingleServerFlagPersistsWithoutChangingIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if f != nil && f.Snapshot()["server"] != (mode == "http3-ip" && enabled) {
-				t.Fatal("flag leaked into non-H3 mode")
+			if f != nil {
+				backend, err := f.New(wgtransport.Host{Bind: conn.NewDefaultBind(), PeerAllowed: func([32]byte) bool { return true }})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { backend.Close() })
+				if backend.(*quicbind.Backend).Snapshot()["server"] != (mode == "http3-ip" && enabled) {
+					t.Fatal("flag leaked into non-H3 mode")
+				}
 			}
 		}
 	}

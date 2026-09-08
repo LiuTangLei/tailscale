@@ -3,7 +3,7 @@
 
 // Package quicbind carries IP packets over authenticated QUIC DATAGRAMs.
 // The host Bind is an I/O interface, not a WireGuard encryption requirement.
-// Legacy WG payloads are available only with ts_dev_wg_over_quic.
+// Retired WireGuard-over-QUIC payloads are always rejected.
 package quicbind
 
 import (
@@ -26,13 +26,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"tailscale.com/wgengine/wgtransport"
 )
 
-const ALPN = "quic-wg/1"   // Legacy ciphertext carrier, not HTTP/3.
 const IPALPN = "quic-ip/1" // Native IP; never interchangeable with WG ciphertext.
 const maxPeers = 256
 
@@ -74,7 +72,6 @@ type PeerConfig struct {
 
 type Factory struct {
 	resetKey [32]byte // secret, derived from the persistent local TLS key
-	last     atomic.Pointer[Backend]
 	cfg      Config
 	local    [32]byte
 	cert     tls.Certificate
@@ -95,19 +92,13 @@ func (f *Factory) Mode() wgtransport.Mode {
 	if f.cfg.HTTP3 {
 		return wgtransport.HTTP3IP
 	}
-	if f.cfg.Payload == "ip" {
-		return wgtransport.QUICIP
-	}
-	return wgtransport.QUIC
+	return wgtransport.QUICIP
 }
 func (f *Factory) protocol() string {
 	if f.cfg.HTTP3 {
 		return "h3"
 	}
-	if f.cfg.Payload == "ip" {
-		return IPALPN
-	}
-	return ALPN
+	return IPALPN
 }
 
 func Load(path string) (*Factory, error) {
@@ -163,22 +154,13 @@ func NewFactoryWithCertificate(c Config, identity tls.Certificate) (*Factory, er
 func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	switch c.Version {
 	case 1:
-		if !wgtransport.LegacyWGOverQUIC {
-			return nil, fmt.Errorf("%w: version 1 WG-over-QUIC config is development-only; use native or version 2 payload=ip", wgtransport.ErrUnsupported)
-		}
-		if c.Payload != "" && c.Payload != "wireguard" {
-			return nil, errors.New("version 1 only supports WireGuard payloads")
-		}
-		c.Payload = "wireguard"
+		return nil, fmt.Errorf("%w: WG-over-QUIC was removed; use native or version 2 payload=ip", wgtransport.ErrUnsupported)
 	case 2:
 		if c.Payload != "ip" {
 			return nil, errors.New("version 2 requires explicit payload=ip")
 		}
 	default:
 		return nil, errors.New("QUIC config must be version 2 with payload=ip")
-	}
-	if c.HTTP3 && c.Payload != "ip" {
-		return nil, errors.New("HTTP/3 is supported only by native IP, never WG-over-QUIC")
 	}
 	var h3URL *url.URL
 	if c.HTTP3 {
@@ -207,7 +189,7 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	if c.IO != "magicsock" && c.IO != "udp" {
 		return nil, errors.New("QUIC io must be magicsock or udp")
 	}
-	if c.AutoTrust && (!c.HTTP3 || c.Payload != "ip" || c.IO != "magicsock") {
+	if c.AutoTrust && (!c.HTTP3 || c.IO != "magicsock") {
 		return nil, errors.New("automatic node trust requires HTTP/3 native IP over magicsock")
 	}
 	if c.IO == "udp" && !supportsIndependentUDP(runtime.GOOS) {

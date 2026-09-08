@@ -326,10 +326,10 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	if mode == "" {
 		mode = wgtransport.Mode(envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
 	}
-	if mode == wgtransport.QUIC && !wgtransport.LegacyWGOverQUIC {
-		return nil, fmt.Errorf("%w: WG-over-QUIC is development-only; use native or quic-ip", wgtransport.ErrUnsupported)
+	if mode == wgtransport.QUIC {
+		return nil, fmt.Errorf("%w: WG-over-QUIC was removed; use native, quic-ip or http3-ip", wgtransport.ErrUnsupported)
 	}
-	if (mode == wgtransport.QUIC || mode == wgtransport.QUICIP || mode == wgtransport.HTTP3IP) && transportChoice.Factory == nil {
+	if (mode == wgtransport.QUICIP || mode == wgtransport.HTTP3IP) && transportChoice.Factory == nil {
 		path := envknob.String("TS_EXPERIMENTAL_QUIC_CONFIG")
 		if path == "" {
 			return nil, fmt.Errorf("%w: quic requires TS_EXPERIMENTAL_QUIC_CONFIG with trusted peer pins; native fallback is forbidden", wgtransport.ErrUnsupported)

@@ -8,20 +8,13 @@ import (
 	"slices"
 )
 
-// Snapshot contains counters, not keys or packet contents. A factory is normally
-// used for one engine; with multiple engines this reports the last created one.
-func (f *Factory) Snapshot() map[string]any {
-	return f.snapshotBackend(f.last.Load())
-}
-
-// Snapshot reports only this running backend. Factory.Snapshot remains a
-// compatibility helper for callers that deliberately use one factory/engine.
+// Snapshot reports only this running backend; a shared factory owns no engine.
 func (b *Backend) Snapshot() map[string]any {
 	return b.factory.snapshotBackend(b)
 }
 
 func (f *Factory) snapshotBackend(b *Backend) map[string]any {
-	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "wireguard_encryption": f.cfg.Payload != "ip", "server": f.cfg.Server, "browser_fingerprint": "none", "browser_fingerprint_supported": true}
+	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "wireguard_encryption": false, "server": f.cfg.Server, "browser_fingerprint": "none", "browser_fingerprint_supported": true}
 	out["authentication"] = "pinned-key"
 	if f.cfg.AutoTrust {
 		out["authentication"] = "node-key"

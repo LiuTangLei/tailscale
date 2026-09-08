@@ -42,7 +42,7 @@ def main():
         goos,arch=platform.split('/')
         for name in programs:
             target=out/(name+'-'+goos+'-'+arch+('.exe' if goos=='windows' else ''))
-            cmd=['go','build','-mod=readonly','-modfile='+str(mod),'-tags=ts_http3_queue_overlay','-trimpath','-ldflags',flags,'-o',str(target),'./cmd/'+name]
+            cmd=['go','build','-mod=readonly','-modfile='+str(mod),'-trimpath','-ldflags',flags,'-o',str(target),'./cmd/'+name]
             subprocess.run(cmd,check=True,env={**env,'GOOS':goos,'GOARCH':arch})
             results['files'][target.name]=hashlib.sha256(target.read_bytes()).hexdigest()
             print('BUILT',target.name,flush=True)

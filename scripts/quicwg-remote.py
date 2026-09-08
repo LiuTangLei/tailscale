@@ -103,7 +103,6 @@ def main():
     p.add_argument("--b-hostname", default="zjg", help="expected SSH hostname; mismatch aborts")
     p.add_argument("--latency-samples", type=int, default=10, help="encrypted idle RTT samples per direction, 0 disables")
     p.add_argument("--variants", default="native,quic-ip-udp,http3-ip-udp,http3-ip-magicsock")
-    p.add_argument("--dev-wg-over-quic", action="store_true", help="requires a ts_dev_wg_over_quic binary")
     p.add_argument("--browser-smoke", action="store_true", help="isolated headless Chrome visit to the HTTP/3 public site (UDP mode)")
     p.add_argument("--profile", choices=["standard", "awg2", "awg3", "awg31"], default="standard")
     p.add_argument("--declared-servers", default="", help="comma-separated test node labels declaring server; empty keeps both ordinary mesh")
@@ -148,10 +147,8 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     variants = args.variants.split(",")
-    if not variants or any(v not in ("native", "quic-udp", "quic-magicsock", "quic-ip-udp", "quic-ip-magicsock", "http3-ip-udp", "http3-ip-magicsock") for v in variants):
+    if not variants or any(v not in ("native", "quic-ip-udp", "quic-ip-magicsock", "http3-ip-udp", "http3-ip-magicsock") for v in variants):
         p.error("invalid variants")
-    if not args.dev_wg_over_quic and any(v in ("quic-udp", "quic-magicsock") for v in variants):
-        p.error("WG-over-QUIC is development-only; use native or --dev-wg-over-quic with the build tag")
     if not 1 <= args.mib <= 64 or not 1 <= args.parallel <= 4 or not 1 <= args.rounds <= 3:
         p.error("invalid benchmark limits")
     if args.force_derp and any(v.endswith("-udp") for v in variants):
@@ -272,15 +269,12 @@ def main():
                         env += ["TS_EXPERIMENTAL_WG_TRANSPORT=native"]
                     else:
                         h3 = variant.startswith("http3-ip-")
-                        native_ip = h3 or variant.startswith("quic-ip-")
-                        io_mode = variant.removeprefix("http3-ip-" if h3 else "quic-ip-" if native_ip else "quic-")
+                        io_mode = variant.removeprefix("http3-ip-" if h3 else "quic-ip-")
                         peer = nodes[i ^ 1]
                         peer_cfg = {"public_key": peer["public_key"], "spki_sha256": peer["identity"]["spki_sha256"]}
-                        config = {"version": 1, "io": io_mode, "local_public_key": node["public_key"],
+                        config = {"version": 2, "payload": "ip", "io": io_mode, "local_public_key": node["public_key"],
                                   "certificate": node["identity"]["certificate"], "private_key": node["identity"]["private_key"],
                                   "initial_packet_size": 1400, "queue_packets": 2048, "peers": [peer_cfg]}
-                        if native_ip:
-                            config.update({"version": 2, "payload": "ip"})
                         if io_mode == "udp":
                             config["listen"] = "0.0.0.0:42642"
                             peer_cfg["endpoint"] = f"{peer['address']}:42642"
@@ -298,7 +292,7 @@ def main():
                         local_config.write_text(json.dumps(config))
                         run(["scp", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}",
                              str(local_config), f"{node['host']}:{node['dir']}/quic.json"])
-                        env += [f"TS_EXPERIMENTAL_WG_TRANSPORT={'http3-ip' if h3 else 'quic-ip' if native_ip else 'quic'}", f"TS_EXPERIMENTAL_QUIC_CONFIG={node['dir']}/quic.json"]
+                        env += [f"TS_EXPERIMENTAL_WG_TRANSPORT={'http3-ip' if h3 else 'quic-ip'}", f"TS_EXPERIMENTAL_QUIC_CONFIG={node['dir']}/quic.json"]
                     unit = f"quicwg-{ident}-{node['name']}-{index}"
                     command = ["systemd-run", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=300", "--property=TimeoutStopSec=15", "--property=Restart=no",
                                "env"] + env + [node["dir"] + "/lab", "node", "--dir", node["dir"] + "/state", "--hostname", "quicwg-" + node["name"],
