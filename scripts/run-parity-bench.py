@@ -38,6 +38,7 @@ def main() -> None:
     p.add_argument('--flows', default='4')
     p.add_argument('--mbps', type=int, default=500)
     p.add_argument('--variants', default='native,http3-ip-magicsock')
+    p.add_argument('--cpu-profile', action='store_true', help='diagnostic sample, not performance acceptance')
     a = p.parse_args()
     out = a.output.resolve()
     if Path.cwd().resolve() == out or Path.cwd().resolve() in out.parents:
@@ -87,6 +88,7 @@ def main() -> None:
                 '--variants',a.variants,'--auto-trust','--private-stun','--private-origins','--kernel-iperf',
                 '--kernel-seconds',str(a.seconds),'--kernel-flows',a.flows,'--kernel-mbps',str(a.mbps),
                 '--rounds',str(a.rounds),'--kernel-idle','2','--latency-samples','3','--ipv6-proof','--output',str(result)]
+            if a.cpu_profile: command.append('--kernel-cpu-profile')
             for prefix,node in [('a',left),('b',right)]:
                 t=targets[node]
                 command += ['--'+prefix+'-host',t['host'],'--'+prefix+'-address',t['address'],
@@ -96,7 +98,7 @@ def main() -> None:
             state['runs'].append(entry);save(statefile,state)
             with logpath.open('w') as log:
                 current=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=log,stderr=log)
-                try: code=current.wait(timeout=1000)
+                try: code=current.wait(timeout=2400)
                 except subprocess.TimeoutExpired:
                     current.terminate()
                     try: code=current.wait(timeout=90)

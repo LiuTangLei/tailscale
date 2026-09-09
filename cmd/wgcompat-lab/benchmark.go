@@ -82,6 +82,7 @@ func registerTailnetHandlers(mux *http.ServeMux) {
 
 func registerAdminHandlers(mux *http.ServeMux, n *node) {
 	mux.HandleFunc("/metrics", n.metrics)
+	mux.HandleFunc("/cpu-profile", cpuProfile)
 	mux.HandleFunc("/bench", n.bench)
 	mux.HandleFunc("/latency", n.latency)
 }

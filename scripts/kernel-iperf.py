@@ -9,6 +9,17 @@ from __future__ import annotations
 import json
 import shlex
 import time
+import concurrent.futures
+import urllib.request
+from pathlib import Path
+
+
+def capture_profile(node, seconds, target):
+    req = urllib.request.Request(f"http://127.0.0.1:{node['admin_local']}/cpu-profile?seconds={seconds}", method='POST', headers={'X-WG-Lab':'1'})
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=seconds+10) as response:
+        data = response.read(16<<20)
+    target.write_bytes(data)
+    return {'file':str(target),'bytes':len(data)}
 
 
 def configure(nodes, remote):
@@ -68,9 +79,19 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                            '-b',str(int(args.kernel_mbps*1_000_000/flows))]
                     if reverse: cmd.append('-R')
                     if args.kernel_udp: cmd += ['-u','-l','1100']
-                    started = time.monotonic()
-                    p = remote(client, shlex.join(cmd), check=False, timeout=args.kernel_seconds + 25)
-                    elapsed = time.monotonic() - started
+                    profile_results = {}
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as profiles:
+                        pending = {}
+                        if getattr(args, 'kernel_cpu_profile', False):
+                            for n in nodes:
+                                target = args.output.with_name(args.output.stem + f'-{index}-{round_no}-{int(reverse)}-{flows}-{n["name"]}.cpu.prof')
+                                pending[n['name']] = profiles.submit(capture_profile, n, args.kernel_seconds, target)
+                            time.sleep(0.5)
+                        started = time.monotonic()
+                        p = remote(client, shlex.join(cmd), check=False, timeout=args.kernel_seconds + 25)
+                        elapsed = time.monotonic() - started
+                        for name, future in pending.items():
+                            profile_results[name] = future.result(timeout=15)
                     try: doc = json.loads(p.stdout)
                     except ValueError: raise RuntimeError('iperf returned invalid JSON: '+p.stderr[-500:])
                     if p.returncode or doc.get('error'):
@@ -91,7 +112,8 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                             'offered_total_mbps':args.kernel_mbps,'protocol':'udp' if args.kernel_udp else 'tcp',
                             'omitted_seconds':args.kernel_omit, 'idle_before_seconds':args.kernel_idle,
                             'receiver_wall_lower_bound_mbps':receiver['bytes']*8/elapsed/1_000_000,
-                            'wall_seconds':elapsed,'before':before,'after':after,'iperf':doc}
+                            'wall_seconds':elapsed,'before':before,'after':after,'iperf':doc,
+                            'profiling_affected':bool(profile_results), 'cpu_profiles':profile_results}
                     if phase['variant'] != 'native':
                         item['session_reused'] = all(
                             before[n['name']]['quic'].get('connections') == after[n['name']]['quic'].get('connections')

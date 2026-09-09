@@ -138,6 +138,7 @@ def main():
     p.add_argument("--kernel-flows", default="1,4")
     p.add_argument("--kernel-mbps", type=int, default=500, help="bounded aggregate offered load, at most 500 Mbps")
     p.add_argument("--kernel-udp", action="store_true", help="inner UDP offered-load test instead of kernel TCP")
+    p.add_argument("--kernel-cpu-profile", action="store_true", help="diagnostic-only bounded CPU profiles; throughput is profiling-affected")
     p.add_argument("--ipv6-proof", action="store_true", help="also verify inner IPv6 TSMP and file transfer")
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
