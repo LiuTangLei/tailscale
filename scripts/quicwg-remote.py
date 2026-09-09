@@ -108,6 +108,7 @@ def main():
     p.add_argument("--profile", choices=["standard", "awg2", "awg3", "awg31"], default="standard")
     p.add_argument("--declared-servers", default="", help="comma-separated test node labels declaring server; empty keeps both ordinary mesh")
     p.add_argument("--private-origins", action="store_true", help="use private .invalid origins and verify they are not sent as TLS SNI")
+    p.add_argument("--auto-trust", action="store_true", help="test current H3 Noise node authentication without provisioned peer pins")
     p.add_argument("--mib", type=int, default=8)
     p.add_argument("--parallel", type=int, default=1)
     p.add_argument("--rounds", type=int, default=1)
@@ -154,6 +155,8 @@ def main():
         p.error("WG-over-QUIC is development-only; use native or --dev-wg-over-quic with the build tag")
     if not 1 <= args.mib <= 64 or not 1 <= args.parallel <= 4 or not 1 <= args.rounds <= 3:
         p.error("invalid benchmark limits")
+    if args.auto_trust and (args.managed_cli or any(v not in ('native', 'http3-ip-magicsock') for v in variants)):
+        p.error('auto-trust fixture supports native/http3-ip-magicsock without managed-cli')
     if args.force_derp and any(v.endswith("-udp") for v in variants):
         p.error("independent UDP mode does not use DERP; test magicsock instead")
     if args.profile != "standard" and any(v.startswith(("quic-ip-", "http3-ip-")) for v in variants):
@@ -170,7 +173,7 @@ def main():
             p.error('kernel benchmark exceeds per-mode bounded runtime')
     ident = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
     result = {"run": ident, "linux_sha256": hashlib.sha256(args.linux_binary.read_bytes()).hexdigest(),
-              "profile": args.profile, "force_derp": args.force_derp,
+              "profile": args.profile, "force_derp": args.force_derp, "auto_trust": args.auto_trust,
               "declared_servers": sorted(declared_servers), "private_origins": args.private_origins,
               "nodes": [{"name": args.a_name, "address": args.sg_address}, {"name": args.b_name, "address": args.zjg_address}],
               "source_commit": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
@@ -294,13 +297,18 @@ def main():
                             peer_cfg["http3_url"] = f"https://{peer['name']}.{suffix}:{origin_port}/.well-known/masque/ip/*/*/"
                             node["h3url"] = config["http3_url"]
                             if args.browser_smoke and io_mode == "udp": config["http3_tcp_listen"] = "0.0.0.0:42642"
+                        if h3 and args.auto_trust:
+                            config['auto_trust'] = True
+                            config['peers'] = []
+                            config['http3_url'] = f"https://peer-{node['public_key'].removeprefix('nodekey:')[:12]}.invalid/.well-known/masque/ip/*/*/"
+                            node['h3url'] = config['http3_url']
                         local_config = temp / f"{node['name']}-config.json"
                         local_config.write_text(json.dumps(config))
                         run(["scp", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}",
                              str(local_config), f"{node['host']}:{node['dir']}/quic.json"])
                         env += [f"TS_EXPERIMENTAL_WG_TRANSPORT={'http3-ip' if h3 else 'quic-ip' if native_ip else 'quic'}", f"TS_EXPERIMENTAL_QUIC_CONFIG={node['dir']}/quic.json"]
                     unit = f"quicwg-{ident}-{node['name']}-{index}"
-                    command = ["systemd-run", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=300", "--property=TimeoutStopSec=15", "--property=Restart=no",
+                    command = ["systemd-run", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=600", "--property=TimeoutStopSec=15", "--property=Restart=no",
                                "env"] + env + [node["dir"] + "/lab", "node", "--dir", node["dir"] + "/state", "--hostname", "quicwg-" + node["name"],
                                 "--control", f"http://127.0.0.1:{control_port}", "--listen", "127.0.0.1:18441", "--port", "42641", "--profile", profile]
                     if args.kernel_iperf:
@@ -505,6 +513,9 @@ def main():
             log.close()
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, indent=2) + "\n")
+    if result['cleanup_errors']:
+        result['passed'] = False
+        args.output.write_text(json.dumps(result, indent=2) + '\n')
     if not result["passed"]:
         raise SystemExit(1)
 
