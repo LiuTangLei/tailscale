@@ -152,13 +152,25 @@ def main():
         p.error("declaration matrix currently uses isolated environment profiles, not managed CLI setup")
     if not 0 <= args.latency_samples <= 30:
         p.error("latency-samples must be 0..30")
-    # All invocations use the same isolated ports. Never overlap two runs and
-    # then mistake another run's listener for a production service or our own.
-    lock = open(Path(tempfile.gettempdir()) / "tailscale-transport-lab.lock", "a+")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        p.error("another transport lab holds the test ports; no remote changes made")
+    # Lock canonical test hosts rather than all WAN tests globally. Disjoint
+    # pairs may run concurrently; any shared host is serialized, with sorted
+    # lock acquisition preventing deadlocks. No remote resources exist yet.
+    host_locks = []
+    if args.sg_address == args.zjg_address:
+        p.error('test endpoints must identify distinct machines')
+    for address in sorted((args.sg_address, args.zjg_address)):
+        lock_id = hashlib.sha256(address.encode()).hexdigest()[:20]
+        lock = open(Path(tempfile.gettempdir()) / ('tailscale-transport-' + lock_id + '.lock'), 'a+')
+        deadline = time.monotonic() + 600
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                host_locks.append(lock)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    p.error('another test still owns this host; no remote changes made')
+                time.sleep(0.5)
     def interrupted(signum, frame):
         raise RuntimeError(f"test interrupted by signal {signum}; cleaning owned resources")
     signal.signal(signal.SIGTERM, interrupted)
