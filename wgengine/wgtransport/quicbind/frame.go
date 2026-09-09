@@ -27,21 +27,21 @@ type assembly struct {
 
 // reassembler is owned by ONE QUIC receive goroutine. Allocation and lifetime
 // are bounded, overlapping fragments fail closed, and partial packets are never
-// delivered to WireGuard. Complete single-frame packets have no reassembly copy.
+// delivered to the IP engine. Complete single-frame packets have no reassembly copy.
 type reassembler struct{ messages map[uint32]*assembly }
 
 func (r *reassembler) consume(frame []byte, now time.Time) ([]byte, error) {
 	if len(frame) < 2 {
-		return nil, errors.New("short QUIC-WG frame")
+		return nil, errors.New("short QUIC-IP frame")
 	}
 	if frame[0] == frameRaw {
 		if len(frame)-1 > maxPacket {
-			return nil, errors.New("oversized WG packet")
+			return nil, errors.New("oversized IP packet")
 		}
 		return frame[1:], nil
 	}
 	if frame[0] != frameFragment || len(frame) <= fragmentHeader {
-		return nil, errors.New("invalid QUIC-WG frame type/length")
+		return nil, errors.New("invalid QUIC-IP frame type/length")
 	}
 	id := binary.BigEndian.Uint32(frame[1:5])
 	total := int(binary.BigEndian.Uint16(frame[5:7]))
@@ -61,7 +61,21 @@ func (r *reassembler) consume(frame []byte, now time.Time) ([]byte, error) {
 	a := r.messages[id]
 	if a == nil {
 		if len(r.messages) >= maxAssemblies {
-			return nil, errors.New("fragment assembly limit")
+			// QUIC DATAGRAM is unreliable: a lost final fragment can occupy a
+			// slot for the whole lifetime. Rejecting every new ID here turns a
+			// handful of independent losses into a multi-second tunnel outage.
+			// Replace only the oldest incomplete message, keeping the exact
+			// same memory and lifetime limits. Authenticated peers can already
+			// abandon fragments; partial data is never delivered.
+			var oldestID uint32
+			var oldest *assembly
+			for candidateID, candidate := range r.messages {
+				if oldest == nil || candidate.expires.Before(oldest.expires) ||
+					(candidate.expires.Equal(oldest.expires) && candidateID < oldestID) {
+					oldestID, oldest = candidateID, candidate
+				}
+			}
+			delete(r.messages, oldestID)
 		}
 		a = &assembly{data: make([]byte, total), expires: now.Add(assemblyLifetime)}
 		r.messages[id] = a

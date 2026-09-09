@@ -21,9 +21,9 @@ import (
 )
 
 var (
-	ErrQueueFull   = errors.New("QUIC-WG bounded send queue is full")
-	ErrUnknownPeer = errors.New("QUIC-WG peer is not configured or is unavailable")
-	ErrIdentity    = errors.New("QUIC-WG configured local public key does not match the active WireGuard identity")
+	ErrQueueFull   = errors.New("QUIC-IP bounded send queue is full")
+	ErrUnknownPeer = errors.New("QUIC-IP peer is not configured or is unavailable")
+	ErrIdentity    = errors.New("QUIC-IP configured local public key does not match the active node identity")
 )
 
 const packetBudget = 8 << 20
@@ -51,6 +51,9 @@ type Counters struct {
 	HTTP3Tunnels        atomic.Uint64
 	HTTP3Rejected       atomic.Uint64
 	HTTP3Datagrams      atomic.Uint64
+	TCPStreams          atomic.Uint64
+	TCPBytesSent        atomic.Uint64
+	TCPBytesReceived    atomic.Uint64
 }
 
 type Backend struct {
@@ -67,6 +70,7 @@ type Backend struct {
 	networkUp     atomic.Bool
 	counters      Counters
 	timing        sessionTiming
+	tcpStreams    sync.Map // *tcpStreamConn -> struct{}; retained until FIN acknowledgment
 	serverHintsMu sync.RWMutex
 	serverHints   map[[32]byte]*atomic.Uint32
 }
@@ -143,6 +147,7 @@ type datagramChannel interface {
 }
 
 type session struct {
+	tcpActive atomic.Int64
 	nextRefresh atomic.Int64
 	created     time.Time
 	q           *quic.Conn
@@ -160,7 +165,7 @@ func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 	if h.Bind == nil {
 		return nil, errors.New("QUIC requires a host Bind")
 	}
-	if f.cfg.Payload == "ip" && h.PeerAllowed == nil {
+	if h.PeerAllowed == nil {
 		return nil, errors.New("native QUIC IP requires live host peer authorization")
 	}
 	if h.Logf == nil {
@@ -176,14 +181,10 @@ func (f *Factory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 	b.initServerHints()
 	b.bind.b = b
 	b.networkUp.Store(true)
-	f.last.Store(b)
 	return b, nil
 }
 func (b *Backend) peerAllowed(k [32]byte) bool {
-	if b.host.PeerAllowed != nil {
-		return b.host.PeerAllowed(k)
-	}
-	return b.factory.cfg.Payload != "ip"
+	return b.host.PeerAllowed != nil && b.host.PeerAllowed(k)
 }
 func (b *Backend) notify(k [32]byte, state wgtransport.SessionState) {
 	if b.host.SessionChanged != nil {
@@ -406,15 +407,29 @@ func (b *Backend) quicConfig() *quic.Config {
 	if b.factory.cfg.HTTP3 {
 		streams, uni = 16, 8
 	}
+	if b.factory.cfg.TCPStreams { streams = 256 }
 	cfg := &quic.Config{
 		EnableDatagrams: true, HandshakeIdleTimeout: 8 * time.Second, MaxIdleTimeout: 60 * time.Second,
 		KeepAlivePeriod: 20 * time.Second, InitialPacketSize: b.factory.cfg.InitialPacketSize,
 		MaxIncomingStreams: streams, MaxIncomingUniStreams: uni, Allow0RTT: false,
 		MaxStreamReceiveWindow: 128 << 10, MaxConnectionReceiveWindow: 1 << 20,
 	}
+	if b.factory.cfg.TCPStreams {
+		// TCP payload is carried by reliable QUIC streams, not by the inner
+		// TCP stack. Receive windows must cover a real WAN bandwidth-delay
+		// product; credit is bounded and allocated only as streams consume it.
+		cfg.InitialStreamReceiveWindow = 1 << 20
+		cfg.MaxStreamReceiveWindow = 16 << 20
+		cfg.InitialConnectionReceiveWindow = 4 << 20
+		cfg.MaxConnectionReceiveWindow = 32 << 20
+	}
 	// The released dependency is required at compile time. Never silently
 	// ship Reno when the advertised application-limited BBR fixes are absent.
-	cfg.EnableBBRCongestionControl()
+	if b.factory.cfg.BBRv3 {
+		cfg.EnableBBRv3CongestionControl()
+	} else {
+		cfg.EnableBBRCongestionControl()
+	}
 	return cfg
 }
 
@@ -428,11 +443,26 @@ func (b *Backend) stop(final bool) error {
 	if g == nil {
 		return b.host.Bind.Close()
 	}
+	// Send CONNECTION_CLOSE while the carrier is still usable. Closing the
+	// PacketConn first silently discards that notification and leaves remote
+	// TCP stream readers waiting for the idle timeout instead of EOF/error.
+	g.peersMu.Lock()
+	peers := make([]*peer, 0, len(g.peers))
+	for _, p := range g.peers { peers = append(peers, p) }
+	g.peersMu.Unlock()
+	for _, p := range peers {
+		p.mu.Lock()
+		s := p.session
+		p.mu.Unlock()
+		if s != nil { _ = s.q.CloseWithError(0, "transport stopped") }
+	}
+	// Cancellation retires peer actors and may clear p.session. It must
+	// follow the close notification rather than racing the snapshot above.
 	g.cancel()
+	g.closeHTTP3()
 	// Cancel the external reader before asking QUIC to join its workers.
 	g.pc.Close()
 	g.transport.Close()
-	g.closeHTTP3()
 	err := b.host.Bind.Close()
 	// Synchronize with any Send that entered peer creation before cancel.
 	g.peersMu.Lock()
@@ -464,7 +494,7 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 		return ErrIdentity
 	}
 	if !b.networkUp.Load() {
-		return errors.New("QUIC-WG network is down")
+		return errors.New("QUIC-IP network is down")
 	}
 	g := b.active.Load()
 	if g == nil {
@@ -538,7 +568,7 @@ func (p *peer) enqueue(bufs [][]byte, offset int) error {
 			return net.ErrClosed
 		case p.tx <- packet:
 		default:
-			// Avoid dropping whole WG batches during short QUIC pacing stalls.
+			// Avoid dropping whole IP batches during short QUIC pacing stalls.
 			// Backpressure is bounded; no timer/allocation on the normal path.
 			b.counters.EnqueueWaits.Add(1)
 			timer := time.NewTimer(250 * time.Millisecond)
@@ -683,7 +713,7 @@ func (g *generation) accept() {
 			continue
 		}
 		if !g.b.identityOK.Load() {
-			q.CloseWithError(1, "inactive WireGuard identity")
+			q.CloseWithError(1, "inactive node identity")
 			continue
 		}
 		key, err := g.b.factory.verify(q.ConnectionState().TLS, nil)
@@ -706,6 +736,7 @@ func (g *generation) accept() {
 // key-based rule. This arbitrates already-established candidates; it never
 // starts or resets a healthy connection merely to change its fingerprint.
 func (p *peer) preferredOutgoing(hint uint32) bool {
+	if p.g.b.factory.cfg.TCPStreams { return !p.g.b.factory.cfg.Server }
 	if p.g.b.factory.cfg.HTTP3 && hint != serverUnknown && hint <= serverYes && p.g.b.factory.cfg.Server != (hint == serverYes) {
 		return !p.g.b.factory.cfg.Server
 	}
@@ -768,6 +799,10 @@ func (p *peer) installBoundChannel(q *quic.Conn, outgoing bool, channel datagram
 
 func (p *peer) getSession() (*session, error) { return p.getSessionReplacing(nil) }
 func (p *peer) getSessionReplacing(replace *session) (*session, error) {
+	return p.getSessionContext(p.ctx, replace)
+}
+func (p *peer) getSessionContext(parent context.Context, replace *session) (*session, error) {
+	if err := parent.Err(); err != nil { return nil, err }
 	p.mu.Lock()
 	if s := p.session; s != nil && s.q.Context().Err() == nil && (replace == nil || s != replace) {
 		p.mu.Unlock()
@@ -783,8 +818,10 @@ func (p *peer) getSessionReplacing(replace *session) (*session, error) {
 		select {
 		case <-p.ctx.Done():
 			return nil, net.ErrClosed
+		case <-parent.Done():
+			return nil, parent.Err()
 		case <-wait:
-			return p.getSession()
+			return p.getSessionContext(parent, nil)
 		}
 	}
 	p.dialing = make(chan struct{})
@@ -807,8 +844,10 @@ func (p *peer) getSessionReplacing(replace *session) (*session, error) {
 	if p.g.bridge != nil {
 		remote = &bindAddr{ep: p.ep.Load().Endpoint}
 	}
-	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
+	stopOnRetire := context.AfterFunc(p.ctx, cancel)
+	defer stopOnRetire()
 	attempt := p.lifecycleStamp()
 	tlsConfig := p.g.b.tlsConfig(&p.cfg.key)
 	if p.cfg.http3URL != nil {
@@ -827,7 +866,7 @@ func (p *peer) getSessionReplacing(replace *session) (*session, error) {
 		return nil, err
 	}
 	if p.g.b.factory.cfg.HTTP3 {
-		return p.openHTTP3(q, attempt)
+		return p.openHTTP3Context(ctx, q, attempt)
 	}
 	s := p.install(q, true)
 	if s == nil {
@@ -897,6 +936,7 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 	if len(packet)+1 <= len(scratch) {
 		scratch[0] = frameRaw
 		copy(scratch[1:], packet)
+		clampTCPMSS(scratch[1:len(packet)+1], p.g.b.factory.cfg.TCPMSS)
 		err := s.dgram.SendDatagram(scratch[:len(packet)+1])
 		if err == nil {
 			p.g.b.counters.SentPackets.Add(1)
@@ -907,7 +947,7 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 		}
 		limit = int(tooLarge.MaxDatagramPayloadSize)
 	}
-	// No WG MTU is silently lowered. Fragment only when the current QUIC path
+	// No IP MTU is silently lowered. Fragment only when the current QUIC path
 	// cannot carry the whole encrypted WG message. Sender retains no retransmit
 	// state; QUIC DATAGRAM and the inner protocols retain their UDP semantics.
 	if limit > len(scratch) {

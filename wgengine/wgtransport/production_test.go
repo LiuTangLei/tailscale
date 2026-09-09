@@ -10,9 +10,6 @@ import (
 )
 
 func TestProductionLegacyFactoryCannotBypassModeGate(t *testing.T) {
-	if LegacyWGOverQUIC {
-		t.Skip("explicit development build")
-	}
 	b := &testBackend{bind: conn.NewDefaultBind()}
 	c := Config{Mode: QUIC, Factory: &testFactory{mode: QUIC, backend: b}}
 	if _, err := Resolve(c, ""); !errors.Is(err, ErrUnsupported) {

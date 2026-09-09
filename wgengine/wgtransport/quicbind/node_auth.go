@@ -5,6 +5,7 @@ package quicbind
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -103,6 +104,22 @@ func nodeBinding(cs *tls.ConnectionState, r *http.Request, export tlsExporter) (
 	clear(b)
 	return out, nil
 }
+
+// authenticatedNodeBinding binds an optional application credential to this
+// exact TLS connection and CONNECT target, before either Noise message can be
+// accepted. A bootstrap proof cannot be relayed into a different TLS session.
+func (b *Backend) authenticatedNodeBinding(cs *tls.ConnectionState, r *http.Request, export tlsExporter) ([32]byte, error) {
+	binding, err := nodeBinding(cs, r, export)
+	if err != nil || b.factory.cfg.AuthenticationSecret == ([32]byte{}) {
+		return binding, err
+	}
+	mac := hmac.New(sha256.New, b.factory.cfg.AuthenticationSecret[:])
+	mac.Write([]byte("tailcat-h3/application-node-binding/v1\x00"))
+	mac.Write(binding[:])
+	copy(binding[:], mac.Sum(nil))
+	return binding, nil
+}
+
 func (p nodeProof) marshal(direction byte) []byte {
 	b := make([]byte, nodeProofLen)
 	b[0] = 2
@@ -149,7 +166,7 @@ func (b *Backend) createNodeRequest(remote [32]byte, cs *tls.ConnectionState, r 
 		return "", p, err
 	}
 	var err error
-	p.binding, err = nodeBinding(cs, r, export)
+	p.binding, err = b.authenticatedNodeBinding(cs, r, export)
 	if err != nil {
 		return "", p, err
 	}
@@ -175,7 +192,7 @@ func (b *Backend) verifyNodeRequest(cs *tls.ConnectionState, r *http.Request, ex
 	if len(values) != 1 {
 		return zero, errNodeProof
 	}
-	binding, err := nodeBinding(cs, r, export)
+	binding, err := b.authenticatedNodeBinding(cs, r, export)
 	if err != nil {
 		return zero, err
 	}

@@ -25,7 +25,7 @@ type Mode string
 
 const (
 	Native  Mode = "native"
-	QUIC    Mode = "quic"     // Development only: requires ts_dev_wg_over_quic.
+	QUIC    Mode = "quic"     // Retired mode name, retained only for explicit rejection.
 	QUICIP  Mode = "quic-ip"  // Native IP, no WireGuard device or inner encryption.
 	HTTP3IP Mode = "http3-ip" // Native IP over HTTP/3 CONNECT-IP.
 )
@@ -132,10 +132,9 @@ func Resolve(c Config, environment string) (Config, error) {
 	switch c.Mode {
 	case Native:
 		return c, nil
-	case QUIC, QUICIP, HTTP3IP:
-		if c.Mode == QUIC && !LegacyWGOverQUIC {
-			return Config{}, fmt.Errorf("%w: WG-over-QUIC is development-only; use native for WG/AWG compatibility or quic-ip for QUIC", ErrUnsupported)
-		}
+	case QUIC:
+		return Config{}, fmt.Errorf("%w: WG-over-QUIC was removed; use native, quic-ip or http3-ip", ErrUnsupported)
+	case QUICIP, HTTP3IP:
 		if isNil(c.Factory) {
 			return Config{}, fmt.Errorf("%w: %q (no QUIC provider configured; refusing native fallback)", ErrUnsupported, c.Mode)
 		}

@@ -3,7 +3,7 @@
 
 // Package quicbind carries IP packets over authenticated QUIC DATAGRAMs.
 // The host Bind is an I/O interface, not a WireGuard encryption requirement.
-// Legacy WG payloads are available only with ts_dev_wg_over_quic.
+// Retired WireGuard-over-QUIC payloads are always rejected.
 package quicbind
 
 import (
@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,13 +27,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"tailscale.com/wgengine/wgtransport"
 )
 
-const ALPN = "quic-wg/1"   // Legacy ciphertext carrier, not HTTP/3.
 const IPALPN = "quic-ip/1" // Native IP; never interchangeable with WG ciphertext.
 const maxPeers = 256
 
@@ -53,6 +52,24 @@ type Config struct {
 	Peers             []PeerConfig `json:"peers"`
 	// HTTP3 selects a real CONNECT-IP request, not raw DATAGRAMs with h3 ALPN.
 	HTTP3 bool `json:"http3,omitempty"`
+	// BBRv3 selects the independent userspace v3 controller on every QUIC
+	// connection. The default preserves the existing Tailscale release policy.
+	BBRv3 bool `json:"bbr_v3,omitempty"`
+	// TCPMSS optionally caps existing TCP SYN MSS options without changing the
+	// IPv6 IP MTU or UDP semantics. Embedded stacks can avoid fragmenting every
+	// bulk TCP packet on a 1200-byte QUIC carrier. Zero preserves peer MSS.
+	TCPMSS uint16 `json:"tcp_mss,omitempty"`
+	// TCPStreams enables authenticated HTTP/3 CONNECT streams for an embedded
+	// point-to-point proxy. UDP remains on CONNECT-IP DATAGRAM. Authentication
+	// and revocation belong to the same QUIC session; no alternate transport.
+	TCPStreams bool `json:"tcp_streams,omitempty"`
+	TCPHandler func([32]byte, netip.AddrPort) func(net.Conn) `json:"-"`
+	TCPNodeAddress func([32]byte) netip.Addr `json:"-"`
+	// AuthenticationSecret optionally binds node authentication to an embedded
+	// application's additional connection credential. It is never serialized
+	// in a profile or sent on the wire. A zero value preserves Tailnet auth.
+	// Both endpoints of a session must use the same 256-bit random secret.
+	AuthenticationSecret [32]byte `json:"-"`
 	// AutoTrust binds each TLS session to the already-authorized Tailnet node
 	// keys. It is H3/magicsock only and never learns trust from a certificate.
 	AutoTrust bool `json:"auto_trust,omitempty"`
@@ -74,7 +91,6 @@ type PeerConfig struct {
 
 type Factory struct {
 	resetKey [32]byte // secret, derived from the persistent local TLS key
-	last     atomic.Pointer[Backend]
 	cfg      Config
 	local    [32]byte
 	cert     tls.Certificate
@@ -95,19 +111,13 @@ func (f *Factory) Mode() wgtransport.Mode {
 	if f.cfg.HTTP3 {
 		return wgtransport.HTTP3IP
 	}
-	if f.cfg.Payload == "ip" {
-		return wgtransport.QUICIP
-	}
-	return wgtransport.QUIC
+	return wgtransport.QUICIP
 }
 func (f *Factory) protocol() string {
 	if f.cfg.HTTP3 {
 		return "h3"
 	}
-	if f.cfg.Payload == "ip" {
-		return IPALPN
-	}
-	return ALPN
+	return IPALPN
 }
 
 func Load(path string) (*Factory, error) {
@@ -163,22 +173,13 @@ func NewFactoryWithCertificate(c Config, identity tls.Certificate) (*Factory, er
 func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	switch c.Version {
 	case 1:
-		if !wgtransport.LegacyWGOverQUIC {
-			return nil, fmt.Errorf("%w: version 1 WG-over-QUIC config is development-only; use native or version 2 payload=ip", wgtransport.ErrUnsupported)
-		}
-		if c.Payload != "" && c.Payload != "wireguard" {
-			return nil, errors.New("version 1 only supports WireGuard payloads")
-		}
-		c.Payload = "wireguard"
+		return nil, fmt.Errorf("%w: WG-over-QUIC was removed; use native or version 2 payload=ip", wgtransport.ErrUnsupported)
 	case 2:
 		if c.Payload != "ip" {
 			return nil, errors.New("version 2 requires explicit payload=ip")
 		}
 	default:
 		return nil, errors.New("QUIC config must be version 2 with payload=ip")
-	}
-	if c.HTTP3 && c.Payload != "ip" {
-		return nil, errors.New("HTTP/3 is supported only by native IP, never WG-over-QUIC")
 	}
 	var h3URL *url.URL
 	if c.HTTP3 {
@@ -207,7 +208,10 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	if c.IO != "magicsock" && c.IO != "udp" {
 		return nil, errors.New("QUIC io must be magicsock or udp")
 	}
-	if c.AutoTrust && (!c.HTTP3 || c.Payload != "ip" || c.IO != "magicsock") {
+	if c.AuthenticationSecret != ([32]byte{}) && !c.AutoTrust {
+		return nil, errors.New("an application authentication secret requires automatic H3 node trust")
+	}
+	if c.AutoTrust && (!c.HTTP3 || c.IO != "magicsock") {
 		return nil, errors.New("automatic node trust requires HTTP/3 native IP over magicsock")
 	}
 	if c.IO == "udp" && !supportsIndependentUDP(runtime.GOOS) {
@@ -215,6 +219,12 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	}
 	if c.HTTP3TCPListen != "" && !supportsIndependentUDP(runtime.GOOS) {
 		return nil, fmt.Errorf("public HTTPS listening is not supported inside the %s VPN client", runtime.GOOS)
+	}
+	if c.TCPStreams && (!c.AutoTrust || !c.HTTP3 || c.TCPNodeAddress == nil) {
+		return nil, errors.New("TCP streams require H3 node authentication and embedded node addressing")
+	}
+	if c.TCPMSS != 0 && (c.TCPMSS < 536 || c.TCPMSS > 1220) {
+		return nil, errors.New("tcp_mss must be zero or 536..1220")
 	}
 	if c.QueuePackets == 0 {
 		c.QueuePackets = 256

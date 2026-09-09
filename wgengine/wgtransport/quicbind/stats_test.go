@@ -27,7 +27,4 @@ func TestBackendSnapshotDoesNotFollowSharedFactoryLast(t *testing.T) {
 	if got := second.Snapshot()["sent_packets"]; got != uint64(22) {
 		t.Fatalf("second counters: %v", got)
 	}
-	if got := first.factory.Snapshot()["sent_packets"]; got != uint64(22) {
-		t.Fatalf("legacy Factory snapshot contract changed: %v", got)
-	}
 }

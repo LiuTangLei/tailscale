@@ -9,13 +9,11 @@ Bind. `quic-ip` and `http3-ip` create a native IP packet engine, never a WG Devi
 - `native`: default and compatibility path for WG/AWG peers.
 - `quic-ip`: native IP through QUIC DATAGRAM.
 - `http3-ip`: native IP through a real HTTP/3 CONNECT-IP request and HTTP Datagrams.
-- `quic`: legacy WG-over-QUIC; **rejected in normal builds**, available only with
-  `-tags ts_dev_wg_over_quic` for development comparisons.
+- Retired `quic` / version-1 WG-over-QUIC configurations are always rejected.
 
 Selection uses `wgengine.Config.Transport` / `tsnet.Server.Transport`, or the
 explicit experimental environment configuration. Version-1 WG-over-QUIC JSON
-is gated as well as the mode resolver; a supplied factory cannot bypass the
-normal-build mode gate. There is no silent fallback to bare WG.
+is rejected as well as the retired mode; no development tag re-enables it. There is no silent fallback to bare WG.
 
 ## Interfaces and ownership
 

@@ -326,10 +326,10 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	if mode == "" {
 		mode = wgtransport.Mode(envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
 	}
-	if mode == wgtransport.QUIC && !wgtransport.LegacyWGOverQUIC {
-		return nil, fmt.Errorf("%w: WG-over-QUIC is development-only; use native or quic-ip", wgtransport.ErrUnsupported)
+	if mode == wgtransport.QUIC {
+		return nil, fmt.Errorf("%w: WG-over-QUIC was removed; use native, quic-ip or http3-ip", wgtransport.ErrUnsupported)
 	}
-	if (mode == wgtransport.QUIC || mode == wgtransport.QUICIP || mode == wgtransport.HTTP3IP) && transportChoice.Factory == nil {
+	if (mode == wgtransport.QUICIP || mode == wgtransport.HTTP3IP) && transportChoice.Factory == nil {
 		path := envknob.String("TS_EXPERIMENTAL_QUIC_CONFIG")
 		if path == "" {
 			return nil, fmt.Errorf("%w: quic requires TS_EXPERIMENTAL_QUIC_CONFIG with trusted peer pins; native fallback is forbidden", wgtransport.ErrUnsupported)
@@ -637,7 +637,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		}
 	}()
 
-	e.logf("Bringing WireGuard device up...")
+	e.logf("Bringing %s packet device up...", e.transport.Mode())
 	if err := e.packet.Up(); err != nil {
 		return nil, fmt.Errorf("wgdev.Up: %w", err)
 	}
@@ -1199,10 +1199,13 @@ func (e *userspaceEngine) Close() {
 
 	e.packetPrivate.Store(nil)
 	e.packetIdentity.Store(new(key.NodePublic))
-	e.magicConn.Close()
+	// A QUIC carrier must send CONNECTION_CLOSE before its underlying
+	// magicsock socket disappears, so remote stream readers terminate promptly.
+	// Native mode has no separate backend and retains its existing behavior.
 	if err := e.transport.Close(); err != nil {
 		e.logf("wgengine: closing transport: %v", err)
 	}
+	e.magicConn.Close()
 	if e.netMonOwned {
 		e.netMon.Close()
 	}

@@ -115,7 +115,7 @@ func TestNativeIPDataPlaneActualQUIC(t *testing.T) {
 			default:
 			}
 			for _, b := range pair.backends {
-				st := b.factory.Snapshot()
+				st := b.Snapshot()
 				if st["alpn"] != b.factory.protocol() || st["wireguard_encryption"] != false || st["payload"] != "ip" {
 					t.Fatalf("not native IP: %+v", st)
 				}

@@ -36,7 +36,7 @@ func TestTransportRejectedBeforeEngineResources(t *testing.T) {
 
 type transportTestFactory struct{ b *transportTestBackend }
 
-func (f transportTestFactory) Mode() wgtransport.Mode { return wgtransport.QUIC }
+func (f transportTestFactory) Mode() wgtransport.Mode { return wgtransport.QUICIP }
 func (f transportTestFactory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 	f.b.bind = h.Bind
 	return f.b, nil
@@ -55,15 +55,12 @@ func (b *transportTestBackend) LocalIdentityChanged(k [32]byte) { b.keys <- k }
 func (b *transportTestBackend) PeerRemoved(k [32]byte)          { b.removed <- k }
 
 func TestTransportEngineLifecycle(t *testing.T) {
-	if !wgtransport.LegacyWGOverQUIC {
-		t.Skip("legacy WG-over-QUIC lifecycle requires development tag; native IP has separate tests")
-	}
 	bus := eventbustest.NewBus(t)
 	b := &transportTestBackend{keys: make(chan [32]byte, 8), removed: make(chan [32]byte, 8)}
 	// This is a test double for the future extension point, NOT a QUIC implementation.
 	e, err := NewUserspaceEngine(t.Logf, Config{
 		HealthTracker: health.NewTracker(bus), Metrics: new(usermetric.Registry), EventBus: bus,
-		Transport: wgtransport.Config{Mode: wgtransport.QUIC, Factory: transportTestFactory{b}},
+		Transport: wgtransport.Config{Mode: wgtransport.QUICIP, Factory: transportTestFactory{b}},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -71,10 +71,22 @@ func TestAutoTrustNoCardsAndRebind(t *testing.T) {
 // Each negative case starts a fresh handshake, so rejection cannot be an
 // artifact of trying to reuse an already-consumed Noise state.
 func TestAutoTrustProofReplayReflectionAndRevocation(t *testing.T) {
-	for _, name := range []string{"valid", "exporter", "target", "old-scheme", "identity-privacy", "request-hint", "revoked", "nonce", "reply-hint", "duplicate", "reflection", "certificate"} {
+	for _, name := range []string{"valid", "valid-secret", "wrong-secret", "client-secret-only", "server-secret-only", "exporter-with-secret", "exporter", "target", "old-scheme", "identity-privacy", "request-hint", "revoked", "nonce", "reply-hint", "duplicate", "reflection", "certificate"} {
 		t.Run(name, func(t *testing.T) {
 			pair := newTestPair(t, "http3-magicsock", func(c *Config) { c.AutoTrust = true; c.Peers = nil })
 			a, b := pair.backends[0], pair.backends[1]
+			switch name {
+			case "valid-secret", "wrong-secret", "exporter-with-secret":
+				a.factory.cfg.AuthenticationSecret = [32]byte{1}
+				b.factory.cfg.AuthenticationSecret = [32]byte{1}
+			case "client-secret-only":
+				a.factory.cfg.AuthenticationSecret = [32]byte{1}
+			case "server-secret-only":
+				b.factory.cfg.AuthenticationSecret = [32]byte{1}
+			}
+			if name == "wrong-secret" {
+				b.factory.cfg.AuthenticationSecret = [32]byte{2}
+			}
 			cs := tls.ConnectionState{Version: tls.VersionTLS13, NegotiatedProtocol: "h3"}
 			clientCS := cs
 			clientCS.PeerCertificates = append(clientCS.PeerCertificates, b.factory.cert.Leaf)
@@ -102,7 +114,7 @@ func TestAutoTrustProofReplayReflectionAndRevocation(t *testing.T) {
 				}
 			}
 			switch name {
-			case "exporter":
+			case "exporter", "exporter-with-secret":
 				export = func(string, []byte, int) ([]byte, error) { return make([]byte, 32), nil }
 			case "target":
 				req.Host = "other.invalid"
@@ -115,7 +127,7 @@ func TestAutoTrustProofReplayReflectionAndRevocation(t *testing.T) {
 			}
 			verified, err := b.verifyNodeRequest(&cs, req, export)
 			switch name {
-			case "exporter", "target", "old-scheme", "request-hint", "revoked":
+			case "exporter", "exporter-with-secret", "wrong-secret", "client-secret-only", "server-secret-only", "target", "old-scheme", "request-hint", "revoked":
 				if err == nil {
 					verified.handshake.Close()
 					t.Fatal("invalid request accepted")
@@ -147,7 +159,7 @@ func TestAutoTrustProofReplayReflectionAndRevocation(t *testing.T) {
 				clientCS.PeerCertificates = append(clientCS.PeerCertificates[:0:0], a.factory.cert.Leaf)
 			}
 			_, err = a.verifyNodeReply(request, &clientCS, headers)
-			if name != "valid" && name != "identity-privacy" {
+			if name != "valid" && name != "valid-secret" && name != "identity-privacy" {
 				if err == nil {
 					t.Fatal("invalid reply accepted")
 				}

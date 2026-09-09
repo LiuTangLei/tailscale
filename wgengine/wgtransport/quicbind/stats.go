@@ -8,20 +8,13 @@ import (
 	"slices"
 )
 
-// Snapshot contains counters, not keys or packet contents. A factory is normally
-// used for one engine; with multiple engines this reports the last created one.
-func (f *Factory) Snapshot() map[string]any {
-	return f.snapshotBackend(f.last.Load())
-}
-
-// Snapshot reports only this running backend. Factory.Snapshot remains a
-// compatibility helper for callers that deliberately use one factory/engine.
+// Snapshot reports only this running backend; a shared factory owns no engine.
 func (b *Backend) Snapshot() map[string]any {
 	return b.factory.snapshotBackend(b)
 }
 
 func (f *Factory) snapshotBackend(b *Backend) map[string]any {
-	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "wireguard_encryption": f.cfg.Payload != "ip", "server": f.cfg.Server, "browser_fingerprint": "none", "browser_fingerprint_supported": true}
+	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "wireguard_encryption": false, "server": f.cfg.Server, "browser_fingerprint": "none", "browser_fingerprint_supported": true}
 	out["authentication"] = "pinned-key"
 	if f.cfg.AutoTrust {
 		out["authentication"] = "node-key"
@@ -33,6 +26,12 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	}
 	out["session_refresh_seconds"] = b.timing.refresh.Seconds()
 	out["session_max_age_seconds"] = b.timing.expire.Seconds()
+	out["tcp_streams_enabled"] = f.cfg.TCPStreams
+	if f.cfg.TCPStreams {
+		out["session_refresh_seconds"] = 0
+		out["session_max_age_seconds"] = 0
+		out["session_key_updates"] = "quic-key-phase"
+	}
 	if b.host.PacketStats != nil {
 		out["ip_data_plane"] = b.host.PacketStats()
 	}
@@ -46,6 +45,9 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["http3_tunnels"] = c.HTTP3Tunnels.Load()
 	out["http3_rejected"] = c.HTTP3Rejected.Load()
 	out["http3_datagrams"] = c.HTTP3Datagrams.Load()
+	out["tcp_streams"] = c.TCPStreams.Load()
+	out["tcp_stream_bytes_sent"] = c.TCPBytesSent.Load()
+	out["tcp_stream_bytes_received"] = c.TCPBytesReceived.Load()
 	out["sent_packets"] = c.SentPackets.Load()
 	out["received_packets"] = c.ReceivedPackets.Load()
 	out["send_drops"] = c.SendQueueDrops.Load()

@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,8 +26,6 @@ import (
 	"time"
 
 	"github.com/LiuTangLei/wireguard-go/conn"
-	"github.com/LiuTangLei/wireguard-go/device"
-	"github.com/LiuTangLei/wireguard-go/tun/tuntest"
 	"tailscale.com/types/key"
 	"tailscale.com/wgengine/wgtransport"
 	"tailscale.com/wgengine/wgtransport/nodeauth"
@@ -259,69 +256,6 @@ func TestQUICBidirectionalAndReopen(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestRealWGAndAWGOverQUIC(t *testing.T) {
-	if !wgtransport.LegacyWGOverQUIC {
-		t.Skip("development-only WG-over-QUIC")
-	}
-	for _, mode := range []string{"udp", "magicsock"} {
-		for _, awg := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/awg=%v", mode, awg), func(t *testing.T) {
-				p := newTestPair(t, mode, func(c *Config) { c.Version = 1; c.Payload = "wireguard" })
-				var devs [2]*device.Device
-				var tuns [2]*tuntest.ChannelTUN
-				for i := range 2 {
-					tuns[i] = tuntest.NewChannelTUN()
-					devs[i] = device.NewDevice(tuns[i].TUN(), p.backends[i].Bind(), device.NewLogger(device.LogLevelError, "quic-test "))
-					d := devs[i]
-					t.Cleanup(d.Close)
-					profile := ""
-					if awg {
-						profile = "s1=20\ns2=24\ns3=16\ns4=16\nheader_protection_key=" + strings.Repeat("12", 32) + "\nrandom_trailers=true\ndisable_cookies=true\n"
-					}
-					priv := key.NodePrivateAs[device.NoisePrivateKey](p.keys[i])
-					pub := p.keys[i^1].Public().Raw32()
-					if err := d.IpcSet(profile + fmt.Sprintf("private_key=%x\npublic_key=%x\nallowed_ip=10.89.0.%d/32\n", priv, pub, (i^1)+1)); err != nil {
-						t.Fatal(err)
-					}
-					if err := d.Up(); err != nil {
-						t.Fatal(err)
-					}
-					p.bases[i^1].setRemote(fmt.Sprintf("127.0.0.1:%d", p.backends[i].active.Load().port))
-				}
-				for i, d := range devs {
-					pub := p.keys[i^1].Public().Raw32()
-					if err := d.IpcSet(fmt.Sprintf("public_key=%x\nendpoint=%x\n", pub, pub)); err != nil {
-						t.Fatal(err)
-					}
-				}
-				for i := range 2 {
-					src := netip.AddrFrom4([4]byte{10, 89, 0, byte(i + 1)})
-					dst := netip.AddrFrom4([4]byte{10, 89, 0, byte((i ^ 1) + 1)})
-					packet := tuntest.Ping(dst, src)
-					select {
-					case tuns[i].Outbound <- packet:
-					case <-time.After(5 * time.Second):
-						t.Fatal("TUN send blocked")
-					}
-					select {
-					case got := <-tuns[i^1].Inbound:
-						if !bytes.Equal(got, packet) {
-							t.Fatal("WG plaintext differs")
-						}
-					case <-time.After(12 * time.Second):
-						t.Fatal("WG/QUIC encrypted transit failed")
-					}
-				}
-				for _, b := range p.backends {
-					if b.counters.Connections.Load() == 0 || b.counters.ReceivedPackets.Load() == 0 {
-						t.Fatal("QUIC was bypassed")
-					}
-				}
-			})
-		}
 	}
 }
 
