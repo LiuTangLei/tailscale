@@ -10,6 +10,7 @@ import signal
 import fcntl
 import re
 from urllib.parse import urlsplit
+import urllib.request
 import datetime as dt
 import hashlib
 import importlib.util
@@ -24,7 +25,21 @@ import time
 spec = importlib.util.spec_from_file_location("compat", Path(__file__).with_name("wgcompat-remote.py"))
 compat = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(compat)
-run, remote, api = compat.run, compat.remote, compat.api
+run, remote = compat.run, compat.remote
+
+
+def api(node, path, *, method='GET', check=True, timeout=10):
+    # A localhost SSH forward avoids spawning a remote curl/session for every
+    # metric sample. It never exposes the admin API on a public interface.
+    if not node.get('admin_local'):
+        return compat.api(node, path, method=method, check=check, timeout=timeout)
+    req = urllib.request.Request(f"http://127.0.0.1:{node['admin_local']}{path}", method=method, headers={'X-WG-Lab':'1'})
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout) as response:
+            return json.load(response)
+    except Exception as exc:
+        if check: raise RuntimeError(f"{node['name']} {path}: {exc}") from exc
+        return None
 
 
 def free_port():
@@ -213,7 +228,7 @@ def main():
                 raise RuntimeError("control startup timeout")
             for name, host, expected, address in [(args.a_name, args.sg, args.a_hostname, args.sg_address), (args.b_name, args.zjg, args.b_hostname, args.zjg_address)]:
                 node = {"name": name, "host": host, "address": address, "dir": f"/var/tmp/quicwg-lab-{ident}-{name}",
-                        "socket": str(temp / name), "admin": 18441}
+                        "socket": str(temp / name), "admin": 18441, "admin_local": free_port()}
                 ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
                 if args.a_via and name == args.a_name:
                     ssh += ["-J", args.a_via]
@@ -225,7 +240,8 @@ def main():
                     raise RuntimeError(f"wrong host: {actual}, expected {expected}")
                 tunnel = subprocess.Popen(ssh + ["-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=10", "-M", "-S", node["socket"], "-N",
                     "-R", f"127.0.0.1:{control_port}:127.0.0.1:{control_port}",
-                    "-R", f"127.0.0.1:{derp_port}:127.0.0.1:{derp_port}", host], stdout=subprocess.DEVNULL, stderr=log)
+                    "-R", f"127.0.0.1:{derp_port}:127.0.0.1:{derp_port}",
+                    "-L", f"127.0.0.1:{node['admin_local']}:127.0.0.1:18441", host], stdout=subprocess.DEVNULL, stderr=log)
                 processes.append(tunnel)
                 # SSH may finish key exchange after ConnectTimeout's TCP phase;
                 # a six-second socket wait falsely failed on this real WAN.
@@ -485,6 +501,12 @@ def main():
                     result.setdefault("failure_stats", {})[node["name"]] = {"quic": api(node, "/quic", check=False), "process": api(node, "/metrics", check=False)}
                     result.setdefault("failure_logs", {})[node["name"]] = remote(node, "journalctl -u " + shlex.quote(unit) + " -n 100 --no-pager", check=False).stdout
         finally:
+            for node in nodes:
+                for unit in node.get('aux_units', []):
+                    try:
+                        remote(node, 'systemctl stop ' + shlex.quote(unit), check=False, timeout=45)
+                    except Exception as exc:
+                        result['cleanup_errors'].append(str(exc))
             for node, unit in units:
                 try:
                     remote(node, "systemctl stop " + shlex.quote(unit), check=False, timeout=20)

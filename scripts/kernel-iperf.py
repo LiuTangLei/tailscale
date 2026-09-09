@@ -46,6 +46,7 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                '--property=RuntimeMaxSec=600', '--property=TimeoutStopSec=5',
                'ip', 'netns', 'exec', server['kernel_ns'], 'iperf3', '-s', '-B', server['test_ip'], '-p', '18530']
     remote(server, shlex.join(command))
+    server.setdefault('aux_units', []).append(unit)
     try:
         for _ in range(30):
             listening = remote(server, shlex.join(['ip','netns','exec',server['kernel_ns'],'ss','-H','-lnt','sport = :18530'])).stdout
@@ -101,5 +102,10 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                     cpu = {n['name']: round(after[n['name']]['process']['cpu_total_seconds'] - before[n['name']]['process']['cpu_total_seconds'],3) for n in nodes}
                     print(f"KERNEL {phase['variant']} {direction} P={flows} round={round_no}: receiver={mbps:.2f} Mbps CPU={cpu}",flush=True)
     finally:
-        remote(server, 'systemctl stop '+shlex.quote(unit),check=False,timeout=15)
+        # Preserve the original benchmark exception; outer cleanup also owns
+        # this exact unit if management is temporarily slow under CPU load.
+        try:
+            remote(server, 'systemctl stop '+shlex.quote(unit),check=False,timeout=45)
+        except Exception as exc:
+            phase.setdefault('cleanup_warnings', []).append(str(exc))
         # The namespace owns the listening address; never a public iperf server.
