@@ -15,6 +15,8 @@ import (
 )
 
 type http3Channel struct {
+	client *http3.ClientConn // immutable, non-nil on an outgoing authenticated tunnel
+	tcpStreams bool // authenticated peer advertised CONNECT byte streams
 	g               *generation
 	q               *quic.Conn
 	stream          datagramChannel

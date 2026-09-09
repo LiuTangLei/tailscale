@@ -61,7 +61,21 @@ func (r *reassembler) consume(frame []byte, now time.Time) ([]byte, error) {
 	a := r.messages[id]
 	if a == nil {
 		if len(r.messages) >= maxAssemblies {
-			return nil, errors.New("fragment assembly limit")
+			// QUIC DATAGRAM is unreliable: a lost final fragment can occupy a
+			// slot for the whole lifetime. Rejecting every new ID here turns a
+			// handful of independent losses into a multi-second tunnel outage.
+			// Replace only the oldest incomplete message, keeping the exact
+			// same memory and lifetime limits. Authenticated peers can already
+			// abandon fragments; partial data is never delivered.
+			var oldestID uint32
+			var oldest *assembly
+			for candidateID, candidate := range r.messages {
+				if oldest == nil || candidate.expires.Before(oldest.expires) ||
+					(candidate.expires.Equal(oldest.expires) && candidateID < oldestID) {
+					oldestID, oldest = candidateID, candidate
+				}
+			}
+			delete(r.messages, oldestID)
 		}
 		a = &assembly{data: make([]byte, total), expires: now.Add(assemblyLifetime)}
 		r.messages[id] = a

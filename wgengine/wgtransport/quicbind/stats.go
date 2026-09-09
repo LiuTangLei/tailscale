@@ -26,6 +26,12 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	}
 	out["session_refresh_seconds"] = b.timing.refresh.Seconds()
 	out["session_max_age_seconds"] = b.timing.expire.Seconds()
+	out["tcp_streams_enabled"] = f.cfg.TCPStreams
+	if f.cfg.TCPStreams {
+		out["session_refresh_seconds"] = 0
+		out["session_max_age_seconds"] = 0
+		out["session_key_updates"] = "quic-key-phase"
+	}
 	if b.host.PacketStats != nil {
 		out["ip_data_plane"] = b.host.PacketStats()
 	}
@@ -39,6 +45,9 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["http3_tunnels"] = c.HTTP3Tunnels.Load()
 	out["http3_rejected"] = c.HTTP3Rejected.Load()
 	out["http3_datagrams"] = c.HTTP3Datagrams.Load()
+	out["tcp_streams"] = c.TCPStreams.Load()
+	out["tcp_stream_bytes_sent"] = c.TCPBytesSent.Load()
+	out["tcp_stream_bytes_received"] = c.TCPBytesReceived.Load()
 	out["sent_packets"] = c.SentPackets.Load()
 	out["received_packets"] = c.ReceivedPackets.Load()
 	out["send_drops"] = c.SendQueueDrops.Load()

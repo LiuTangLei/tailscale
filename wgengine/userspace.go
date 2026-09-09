@@ -1199,10 +1199,13 @@ func (e *userspaceEngine) Close() {
 
 	e.packetPrivate.Store(nil)
 	e.packetIdentity.Store(new(key.NodePublic))
-	e.magicConn.Close()
+	// A QUIC carrier must send CONNECTION_CLOSE before its underlying
+	// magicsock socket disappears, so remote stream readers terminate promptly.
+	// Native mode has no separate backend and retains its existing behavior.
 	if err := e.transport.Close(); err != nil {
 		e.logf("wgengine: closing transport: %v", err)
 	}
+	e.magicConn.Close()
 	if e.netMonOwned {
 		e.netMon.Close()
 	}

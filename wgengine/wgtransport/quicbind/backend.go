@@ -49,6 +49,9 @@ type Counters struct {
 	HTTP3Tunnels        atomic.Uint64
 	HTTP3Rejected       atomic.Uint64
 	HTTP3Datagrams      atomic.Uint64
+	TCPStreams          atomic.Uint64
+	TCPBytesSent        atomic.Uint64
+	TCPBytesReceived    atomic.Uint64
 }
 
 type Backend struct {
@@ -65,6 +68,7 @@ type Backend struct {
 	networkUp     atomic.Bool
 	counters      Counters
 	timing        sessionTiming
+	tcpStreams    sync.Map // *tcpStreamConn -> struct{}; retained until FIN acknowledgment
 	serverHintsMu sync.RWMutex
 	serverHints   map[[32]byte]*atomic.Uint32
 }
@@ -141,6 +145,7 @@ type datagramChannel interface {
 }
 
 type session struct {
+	tcpActive atomic.Int64
 	nextRefresh atomic.Int64
 	created     time.Time
 	q           *quic.Conn
@@ -400,11 +405,21 @@ func (b *Backend) quicConfig() *quic.Config {
 	if b.factory.cfg.HTTP3 {
 		streams, uni = 16, 8
 	}
+	if b.factory.cfg.TCPStreams { streams = 256 }
 	cfg := &quic.Config{
 		EnableDatagrams: true, HandshakeIdleTimeout: 8 * time.Second, MaxIdleTimeout: 60 * time.Second,
 		KeepAlivePeriod: 20 * time.Second, InitialPacketSize: b.factory.cfg.InitialPacketSize,
 		MaxIncomingStreams: streams, MaxIncomingUniStreams: uni, Allow0RTT: false,
 		MaxStreamReceiveWindow: 128 << 10, MaxConnectionReceiveWindow: 1 << 20,
+	}
+	if b.factory.cfg.TCPStreams {
+		// TCP payload is carried by reliable QUIC streams, not by the inner
+		// TCP stack. Receive windows must cover a real WAN bandwidth-delay
+		// product; credit is bounded and allocated only as streams consume it.
+		cfg.InitialStreamReceiveWindow = 1 << 20
+		cfg.MaxStreamReceiveWindow = 16 << 20
+		cfg.InitialConnectionReceiveWindow = 4 << 20
+		cfg.MaxConnectionReceiveWindow = 32 << 20
 	}
 	// The released dependency is required at compile time. Never silently
 	// ship Reno when the advertised application-limited BBR fixes are absent.
@@ -426,11 +441,26 @@ func (b *Backend) stop(final bool) error {
 	if g == nil {
 		return b.host.Bind.Close()
 	}
+	// Send CONNECTION_CLOSE while the carrier is still usable. Closing the
+	// PacketConn first silently discards that notification and leaves remote
+	// TCP stream readers waiting for the idle timeout instead of EOF/error.
+	g.peersMu.Lock()
+	peers := make([]*peer, 0, len(g.peers))
+	for _, p := range g.peers { peers = append(peers, p) }
+	g.peersMu.Unlock()
+	for _, p := range peers {
+		p.mu.Lock()
+		s := p.session
+		p.mu.Unlock()
+		if s != nil { _ = s.q.CloseWithError(0, "transport stopped") }
+	}
+	// Cancellation retires peer actors and may clear p.session. It must
+	// follow the close notification rather than racing the snapshot above.
 	g.cancel()
+	g.closeHTTP3()
 	// Cancel the external reader before asking QUIC to join its workers.
 	g.pc.Close()
 	g.transport.Close()
-	g.closeHTTP3()
 	err := b.host.Bind.Close()
 	// Synchronize with any Send that entered peer creation before cancel.
 	g.peersMu.Lock()
@@ -704,6 +734,7 @@ func (g *generation) accept() {
 // key-based rule. This arbitrates already-established candidates; it never
 // starts or resets a healthy connection merely to change its fingerprint.
 func (p *peer) preferredOutgoing(hint uint32) bool {
+	if p.g.b.factory.cfg.TCPStreams { return !p.g.b.factory.cfg.Server }
 	if p.g.b.factory.cfg.HTTP3 && hint != serverUnknown && hint <= serverYes && p.g.b.factory.cfg.Server != (hint == serverYes) {
 		return !p.g.b.factory.cfg.Server
 	}
@@ -766,6 +797,10 @@ func (p *peer) installBoundChannel(q *quic.Conn, outgoing bool, channel datagram
 
 func (p *peer) getSession() (*session, error) { return p.getSessionReplacing(nil) }
 func (p *peer) getSessionReplacing(replace *session) (*session, error) {
+	return p.getSessionContext(p.ctx, replace)
+}
+func (p *peer) getSessionContext(parent context.Context, replace *session) (*session, error) {
+	if err := parent.Err(); err != nil { return nil, err }
 	p.mu.Lock()
 	if s := p.session; s != nil && s.q.Context().Err() == nil && (replace == nil || s != replace) {
 		p.mu.Unlock()
@@ -781,8 +816,10 @@ func (p *peer) getSessionReplacing(replace *session) (*session, error) {
 		select {
 		case <-p.ctx.Done():
 			return nil, net.ErrClosed
+		case <-parent.Done():
+			return nil, parent.Err()
 		case <-wait:
-			return p.getSession()
+			return p.getSessionContext(parent, nil)
 		}
 	}
 	p.dialing = make(chan struct{})
@@ -805,8 +842,10 @@ func (p *peer) getSessionReplacing(replace *session) (*session, error) {
 	if p.g.bridge != nil {
 		remote = &bindAddr{ep: p.ep.Load().Endpoint}
 	}
-	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
+	stopOnRetire := context.AfterFunc(p.ctx, cancel)
+	defer stopOnRetire()
 	attempt := p.lifecycleStamp()
 	tlsConfig := p.g.b.tlsConfig(&p.cfg.key)
 	if p.cfg.http3URL != nil {
@@ -825,7 +864,7 @@ func (p *peer) getSessionReplacing(replace *session) (*session, error) {
 		return nil, err
 	}
 	if p.g.b.factory.cfg.HTTP3 {
-		return p.openHTTP3(q, attempt)
+		return p.openHTTP3Context(ctx, q, attempt)
 	}
 	s := p.install(q, true)
 	if s == nil {
@@ -895,6 +934,7 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 	if len(packet)+1 <= len(scratch) {
 		scratch[0] = frameRaw
 		copy(scratch[1:], packet)
+		clampTCPMSS(scratch[1:len(packet)+1], p.g.b.factory.cfg.TCPMSS)
 		err := s.dgram.SendDatagram(scratch[:len(packet)+1])
 		if err == nil {
 			p.g.b.counters.SentPackets.Add(1)

@@ -37,7 +37,8 @@ func (g *generation) maintainAt(now time.Time) {
 	for k, p := range g.peers {
 		p.queueMu.Lock()
 		p.mu.Lock()
-		idle := now.Sub(time.Unix(0, p.lastActivity.Load())) >= g.b.timing.idle && len(p.tx) == 0 && !p.connectingPacket.Load() && p.dialing == nil
+		activeStreams := p.session != nil && p.session.tcpActive.Load() > 0
+		idle := now.Sub(time.Unix(0, p.lastActivity.Load())) >= g.b.timing.idle && len(p.tx) == 0 && !p.connectingPacket.Load() && p.dialing == nil && !activeStreams
 		if idle && !p.retired.Load() {
 			p.retired.Store(true)
 			p.epoch.Add(1)
@@ -68,6 +69,13 @@ func (g *generation) maintainAt(now time.Time) {
 		dialing := p.dialing != nil
 		p.mu.Unlock()
 		if s == nil || s.q.Context().Err() != nil {
+			continue
+		}
+		if g.b.factory.cfg.TCPStreams {
+			// Reliable streams cannot migrate to a replacement QUIC connection.
+			// Embedded CONNECT proxies use QUIC's ordinary packet-key updates
+			// and peer-revocation handling, not the IP tunnel's periodic full
+			// TLS connection replacement (which would truncate live SSH/files).
 			continue
 		}
 		age := now.Sub(s.created)

@@ -140,6 +140,10 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		g.servePublic(w, r)
 		return
 	}
+	if r.Proto == "HTTP/3.0" && r.ProtoMajor == 3 && g.b.factory.cfg.TCPStreams {
+		g.handleTCPStream(w, r)
+		return
+	}
 	deny := func(code int) { g.b.counters.HTTP3Rejected.Add(1); http.Error(w, http.StatusText(code), code) }
 	u := g.b.factory.http3URL
 	matches := sameHTTP3Target(r, u)
@@ -246,6 +250,7 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(nodeAuthReply, proof)
 	}
 	w.Header().Set(http3.CapsuleProtocolHeader, "?1")
+	if g.b.factory.cfg.TCPStreams { w.Header().Set(tcpStreamsHeader, "1") }
 	// Only authenticated CONNECT replies advertise this metadata, never
 	// public pages or unauthenticated discovery responses.
 	w.Header().Set(serverHintHeader, serverHintValue(g.b.factory.cfg.Server))
@@ -286,7 +291,10 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (_ *session, reterr error) {
+func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (*session, error) {
+	return p.openHTTP3Context(p.ctx, q, attempts...)
+}
+func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, attempts ...lifecycleStamp) (_ *session, reterr error) {
 	attempt := p.lifecycleStamp()
 	if len(attempts) == 1 {
 		attempt = attempts[0]
@@ -298,7 +306,7 @@ func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (_ *session, 
 		}
 	}()
 	client := (&http3.Transport{EnableDatagrams: true, MaxResponseHeaderBytes: 16 << 10, DisableCompression: true}).NewClientConn(q)
-	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	// A retired actor must also interrupt a provisional CONNECT already waiting
 	// for response headers, before any session exists for closeSession to close.
@@ -377,6 +385,8 @@ func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (_ *session, 
 	_ = stream.SetDeadline(time.Time{})
 	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1
 	channel := newHTTP3Channel(p.g, q, stream, stream, fragments)
+	channel.client = client
+	channel.tcpStreams = response.Header.Get(tcpStreamsHeader) == "1" && len(response.Header.Values(tcpStreamsHeader)) == 1
 	session := p.installBoundChannel(q, true, channel, &attempt, peerServerHint)
 	if session == nil {
 		return nil, net.ErrClosed

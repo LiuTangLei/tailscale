@@ -42,7 +42,10 @@ func TestFragmentsBoundedAndOutOfOrder(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	if _, e := r.consume(fragment(100, 6, 0, []byte("abc")), now); e == nil {
+	if _, e := r.consume(fragment(100, 6, 0, []byte("abc")), now); e != nil {
+		t.Fatal("bounded replacement rejected new traffic", e)
+	}
+	if len(r.messages) != maxAssemblies {
 		t.Fatal("unbounded assemblies")
 	}
 	if _, e := r.consume(fragment(101, 6, 0, []byte("abc")), now.Add(3*time.Second)); e != nil {
