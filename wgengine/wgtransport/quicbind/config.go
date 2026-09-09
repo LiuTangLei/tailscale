@@ -51,6 +51,14 @@ type Config struct {
 	Peers             []PeerConfig `json:"peers"`
 	// HTTP3 selects a real CONNECT-IP request, not raw DATAGRAMs with h3 ALPN.
 	HTTP3 bool `json:"http3,omitempty"`
+	// BBRv3 selects the independent userspace v3 controller on every QUIC
+	// connection. The default preserves the existing Tailscale release policy.
+	BBRv3 bool `json:"bbr_v3,omitempty"`
+	// AuthenticationSecret optionally binds node authentication to an embedded
+	// application's additional connection credential. It is never serialized
+	// in a profile or sent on the wire. A zero value preserves Tailnet auth.
+	// Both endpoints of a session must use the same 256-bit random secret.
+	AuthenticationSecret [32]byte `json:"-"`
 	// AutoTrust binds each TLS session to the already-authorized Tailnet node
 	// keys. It is H3/magicsock only and never learns trust from a certificate.
 	AutoTrust bool `json:"auto_trust,omitempty"`
@@ -188,6 +196,9 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	}
 	if c.IO != "magicsock" && c.IO != "udp" {
 		return nil, errors.New("QUIC io must be magicsock or udp")
+	}
+	if c.AuthenticationSecret != ([32]byte{}) && !c.AutoTrust {
+		return nil, errors.New("an application authentication secret requires automatic H3 node trust")
 	}
 	if c.AutoTrust && (!c.HTTP3 || c.IO != "magicsock") {
 		return nil, errors.New("automatic node trust requires HTTP/3 native IP over magicsock")

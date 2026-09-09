@@ -41,7 +41,14 @@ func newBindPacketConn(g *generation) *bindPacketConn {
 	return &bindPacketConn{g: g, rx: make(chan rawPacket, 2048), done: make(chan struct{}), changed: make(chan struct{})}
 }
 func (c *bindPacketConn) LocalAddr() net.Addr { return localBindAddr{c.g.port} }
-func (c *bindPacketConn) Close() error        { c.once.Do(func() { close(c.done) }); return nil }
+
+// Socket buffers belong to magicsock (or to the externally supplied packet
+// socket configured by Backend.Open), not to this logical peer PacketConn.
+// A per-QUIC-connection request must not resize a shared socket or warn that
+// this in-memory adapter is an unconfigured UDP socket.
+func (c *bindPacketConn) SetReadBuffer(int) error  { return nil }
+func (c *bindPacketConn) SetWriteBuffer(int) error { return nil }
+func (c *bindPacketConn) Close() error             { c.once.Do(func() { close(c.done) }); return nil }
 func (c *bindPacketConn) SetDeadline(t time.Time) error {
 	c.SetWriteDeadline(t)
 	return c.SetReadDeadline(t)

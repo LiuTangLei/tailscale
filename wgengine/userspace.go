@@ -637,7 +637,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		}
 	}()
 
-	e.logf("Bringing WireGuard device up...")
+	e.logf("Bringing %s packet device up...", e.transport.Mode())
 	if err := e.packet.Up(); err != nil {
 		return nil, fmt.Errorf("wgdev.Up: %w", err)
 	}

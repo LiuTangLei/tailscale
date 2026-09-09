@@ -408,7 +408,11 @@ func (b *Backend) quicConfig() *quic.Config {
 	}
 	// The released dependency is required at compile time. Never silently
 	// ship Reno when the advertised application-limited BBR fixes are absent.
-	cfg.EnableBBRCongestionControl()
+	if b.factory.cfg.BBRv3 {
+		cfg.EnableBBRv3CongestionControl()
+	} else {
+		cfg.EnableBBRCongestionControl()
+	}
 	return cfg
 }
 
