@@ -12,6 +12,7 @@ def main():
     p.add_argument('--output',type=pathlib.Path,required=True)
     p.add_argument('--platforms',default='darwin/arm64,linux/amd64')
     p.add_argument('--programs',default='tailscale,wgcompat-lab',help='tailscale,tailscaled,wgcompat-lab; test builds only')
+    p.add_argument('--tags',default='',help='optional development tags; current fork needs no queue overlay')
     a=p.parse_args()
     programs=a.programs.split(',')
     platforms=a.platforms.split(',')
@@ -42,7 +43,9 @@ def main():
         goos,arch=platform.split('/')
         for name in programs:
             target=out/(name+'-'+goos+'-'+arch+('.exe' if goos=='windows' else ''))
-            cmd=['go','build','-mod=readonly','-modfile='+str(mod),'-tags=ts_http3_queue_overlay','-trimpath','-ldflags',flags,'-o',str(target),'./cmd/'+name]
+            cmd=['go','build','-mod=readonly','-modfile='+str(mod),'-trimpath','-ldflags',flags,'-o',str(target)]
+            if a.tags:cmd+=['-tags='+a.tags]
+            cmd+=['./cmd/'+name]
             subprocess.run(cmd,check=True,env={**env,'GOOS':goos,'GOARCH':arch})
             results['files'][target.name]=hashlib.sha256(target.read_bytes()).hexdigest()
             print('BUILT',target.name,flush=True)

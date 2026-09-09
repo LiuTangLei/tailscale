@@ -43,6 +43,8 @@ type Counters struct {
 	RawPacketsDropped   atomic.Uint64
 	RawBytesSent        atomic.Uint64
 	RawBytesReceived    atomic.Uint64
+	RawWriteBatches     atomic.Uint64
+	RawBatchPackets     atomic.Uint64
 	HTTP3Requests       atomic.Uint64
 	HTTP3PublicRequests atomic.Uint64
 	HTTP3PublicPages    atomic.Uint64
