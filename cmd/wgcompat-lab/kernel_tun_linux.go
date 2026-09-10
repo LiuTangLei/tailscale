@@ -24,6 +24,13 @@ type kernelBenchTUN struct{ tun.Device }
 
 func (*kernelBenchTUN) MTU() (int, error) { return kernelBenchMTU, nil }
 
+func (t *kernelBenchTUN) SetReadBatching(enabled bool) bool {
+	if reader, ok := t.Device.(interface{ SetReadBatching(bool) bool }); ok {
+		return reader.SetReadBatching(enabled)
+	}
+	return false
+}
+
 func openKernelBenchTUN(namespace string) (tun.Device, error) {
 	if !regexp.MustCompile(`^qbench-[a-z0-9-]{1,40}$`).MatchString(namespace) {
 		return nil, fmt.Errorf("kernel benchmark namespace must be an existing qbench-* namespace")

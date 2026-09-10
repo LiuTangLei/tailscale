@@ -378,6 +378,14 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		}
 	}
 
+	// H3's IP pipeline benefits from draining records already queued on a
+	// virtio TUN before handing them to filtering/transport. This opt-in API
+	// never changes the host qdisc or WireGuard/AWG's default reader.
+	if !conf.IsTAP && transportConfig.Mode == wgtransport.HTTP3IP {
+		if reader, ok := conf.Tun.(interface{ SetReadBatching(bool) bool }); ok && reader.SetReadBatching(true) {
+			logf("wgengine: ready-record TUN batching enabled for H3")
+		}
+	}
 	var tsTUNDev *tstun.Wrapper
 	if conf.IsTAP {
 		tsTUNDev = tstun.WrapTAP(logf, conf.Tun, conf.Metrics, conf.EventBus)

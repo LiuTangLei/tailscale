@@ -9,6 +9,7 @@ import argparse, hashlib, json, os, pathlib, shlex, shutil, subprocess
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--quic-root',type=pathlib.Path,required=True)
+    p.add_argument('--wg-root',type=pathlib.Path,help='optional isolated WG/TUN development module; native protocol unchanged')
     p.add_argument('--output',type=pathlib.Path,required=True)
     p.add_argument('--platforms',default='darwin/arm64,linux/amd64')
     p.add_argument('--programs',default='tailscale,wgcompat-lab',help='tailscale,tailscaled,wgcompat-lab; test builds only')
@@ -26,6 +27,10 @@ def main():
     mod=out/'candidate.mod'
     shutil.copyfile(root/'go.mod',mod);shutil.copyfile(root/'go.sum',out/'candidate.sum')
     subprocess.run(['go','mod','edit','-modfile='+str(mod),'-replace=github.com/quic-go/quic-go='+str(quic)],check=True)
+    wg = a.wg_root.resolve() if a.wg_root else None
+    if wg:
+        if not (wg/'go.mod').is_file():raise SystemExit('missing WG/TUN module')
+        subprocess.run(['go','mod','edit','-modfile='+str(mod),'-replace=github.com/LiuTangLei/wireguard-go='+str(wg)],check=True)
     env=os.environ.copy();env.update(CGO_ENABLED='0')
     host=subprocess.check_output(['go','env','GOHOSTOS','GOHOSTARCH'],text=True).splitlines()
     vars_text=subprocess.check_output(['go','run','./cmd/mkversion'],env={**env,'GOOS':host[0],'GOARCH':host[1]},text=True)
@@ -39,6 +44,9 @@ def main():
              'release_ready':False, 'dependency_source':'local test-only modfile; GitHub release and fixed version still required',
              'quic_source':subprocess.check_output(['git','-C',str(quic),'rev-parse','HEAD'],text=True).strip(),
              'quic_dirty':bool(subprocess.check_output(['git','-C',str(quic),'status','--porcelain'],text=True).strip()),'files':{}}
+    if wg:
+        results['wg_source']=subprocess.check_output(['git','-C',str(wg),'rev-parse','HEAD'],text=True).strip()
+        results['wg_dirty']=bool(subprocess.check_output(['git','-C',str(wg),'status','--porcelain'],text=True).strip())
     for platform in platforms:
         goos,arch=platform.split('/')
         for name in programs:
