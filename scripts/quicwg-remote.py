@@ -123,6 +123,7 @@ def main():
     p.add_argument("--declared-servers", default="", help="comma-separated test node labels declaring server; empty keeps both ordinary mesh")
     p.add_argument("--private-origins", action="store_true", help="use private .invalid origins and verify they are not sent as TLS SNI")
     p.add_argument("--auto-trust", action="store_true", help="test current H3 Noise node authentication without provisioned peer pins")
+    p.add_argument("--h3-controllers", default="bbr-v1", help="test-only ordered H3 controllers: bbr-v1,bbr-v3; no installed configuration changes")
     p.add_argument("--mib", type=int, default=8)
     p.add_argument("--parallel", type=int, default=1)
     p.add_argument("--rounds", type=int, default=1)
@@ -175,6 +176,11 @@ def main():
         raise RuntimeError(f"test interrupted by signal {signum}; cleaning owned resources")
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
+    controllers = args.h3_controllers.split(',')
+    if not controllers or len(controllers) > 3 or any(c not in ('bbr-v1', 'bbr-v3') for c in controllers):
+        p.error('invalid bounded H3 controller sequence')
+    if args.managed_cli and controllers != ['bbr-v1']:
+        p.error('controller comparison requires isolated environment profiles')
     variants = args.variants.split(",")
     if not variants or any(v not in ("native", "quic-ip-udp", "quic-ip-magicsock", "http3-ip-udp", "http3-ip-magicsock") for v in variants):
         p.error("invalid variants")
@@ -200,6 +206,7 @@ def main():
     result = {"run": ident, "linux_sha256": hashlib.sha256(args.linux_binary.read_bytes()).hexdigest(),
               "profile": args.profile, "force_derp": args.force_derp, "auto_trust": args.auto_trust,
               "declared_servers": sorted(declared_servers), "private_origins": args.private_origins,
+              "h3_controllers": controllers,
               "nodes": [{"name": args.a_name, "address": args.sg_address}, {"name": args.b_name, "address": args.zjg_address}],
               "source_commit": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
               "source_dirty": bool(run(["git", "status", "--porcelain"]).stdout.strip()),
@@ -292,7 +299,7 @@ def main():
                         remote(node, "systemctl stop " + shlex.quote(node["unit"]), check=False, timeout=20)
                         node["unit"] = None
 
-            def start(variant, index, profile):
+            def start(variant, index, profile, controller='bbr-v1'):
                 for i, node in enumerate(nodes):
                     env = ["TS_NO_LOGS_NO_SUPPORT=true", f"TS_DEBUG_ALWAYS_USE_DERP={'true' if args.force_derp else 'false'}"]
                     if args.managed_cli:
@@ -313,6 +320,7 @@ def main():
                         if h3:
                             origin_port = 42642 if io_mode == "udp" else 42641
                             config["http3"] = True
+                            config["bbr_v3"] = controller == 'bbr-v3'
                             config["server"] = node['name'] in declared_servers
                             peer_cfg["server"] = peer['name'] in declared_servers
                             suffix = 'invalid' if args.private_origins else 'test'
@@ -382,11 +390,12 @@ def main():
                 result["cli_setup"] = stage_managed(variants[0])
                 checkpoint()
             stop_current()
-            for index, variant in enumerate(variants):
-                print(f"START {variant}/{args.profile}", flush=True)
-                phase = {"variant": variant, "probes": [], "benchmarks": [], "passed": False}
+            phases = [(variant, controller) for variant in variants for controller in (controllers if variant.startswith('http3-ip-') else ['bbr-v1'])]
+            for index, (variant, controller) in enumerate(phases):
+                print(f"START {variant}/{args.profile}/{controller}", flush=True)
+                phase = {"variant": variant, "congestion_control": controller if variant != 'native' else 'wireguard', "probes": [], "benchmarks": [], "passed": False}
                 result["phases"].append(phase)
-                statuses = start(variant, index, args.profile)
+                statuses = start(variant, index, args.profile, controller)
                 if args.kernel_iperf:
                     kernel.configure(nodes, remote)
                 if args.managed_cli:
@@ -445,6 +454,8 @@ def main():
                         if not stats.get("identity_ok") or not stats.get("datagrams") or stats.get("tls_version") != 772 or not stats.get("sent_packets") or not stats.get("received_packets"):
                             raise RuntimeError("QUIC/TLS/data counters did not prove real QUIC transit")
                         if variant.startswith("http3-ip-"):
+                            if stats.get('connection_stats', {}).get('CongestionControl') != controller:
+                                raise RuntimeError('actual H3 controller differs from requested test controller')
                             expected_profile = "chromium-h3" if len(declared_servers) == 1 and node['name'] not in declared_servers else "none"
                             if stats.get('browser_fingerprint') != expected_profile:
                                 raise RuntimeError(f"{node['name']} profile mismatch: expected {expected_profile}, got {stats.get('browser_fingerprint')}")

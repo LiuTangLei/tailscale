@@ -38,6 +38,8 @@ def main() -> None:
     p.add_argument('--flows', default='4')
     p.add_argument('--mbps', type=int, default=500)
     p.add_argument('--variants', default='native,http3-ip-magicsock')
+    p.add_argument('--h3-controllers', default='bbr-v1')
+    p.add_argument('--declared-servers', default='')
     p.add_argument('--cpu-profile', action='store_true', help='diagnostic sample, not performance acceptance')
     a = p.parse_args()
     out = a.output.resolve()
@@ -85,7 +87,7 @@ def main() -> None:
             logpath=out/(name+'.log')
             command=[sys.executable,str(Path(__file__).with_name('quicwg-remote.py')),
                 '--local-binary',str(a.local_binary.resolve()),'--linux-binary',str(a.linux_binary.resolve()),
-                '--variants',a.variants,'--auto-trust','--private-stun','--private-origins','--kernel-iperf',
+                '--variants',a.variants,'--h3-controllers',a.h3_controllers,'--declared-servers',a.declared_servers,'--auto-trust','--private-stun','--private-origins','--kernel-iperf',
                 '--kernel-seconds',str(a.seconds),'--kernel-flows',a.flows,'--kernel-mbps',str(a.mbps),
                 '--rounds',str(a.rounds),'--kernel-idle','2','--latency-samples','3','--ipv6-proof','--output',str(result)]
             if a.cpu_profile: command.append('--kernel-cpu-profile')
@@ -109,7 +111,7 @@ def main() -> None:
             if result.exists():
                 d=json.loads(result.read_text());entry['passed']=bool(d.get('passed')) and not d.get('cleanup_errors')
                 entry['error']=d.get('error');entry['cleanup_errors']=d.get('cleanup_errors')
-                entry['samples']=[{'mode':phase['variant'],'direction':x['direction'],'flows':x['flows'],
+                entry['samples']=[{'mode':phase['variant'],'controller':phase.get('congestion_control'),'direction':x['direction'],'flows':x['flows'],
                     'round':x['round'],'mbps':x.get('receiver_mbps'),'session_reused':x.get('session_reused')}
                     for phase in d.get('phases',[]) for x in phase.get('kernel_iperf',[])]
             else: entry['passed']=False
