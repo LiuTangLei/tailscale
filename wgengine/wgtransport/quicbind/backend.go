@@ -29,33 +29,35 @@ var (
 const packetBudget = 8 << 20
 
 type Counters struct {
-	SentPackets         atomic.Uint64
-	ReceivedPackets     atomic.Uint64
-	SendQueueDrops      atomic.Uint64
-	SendErrors          atomic.Uint64
-	EnqueueWaits        atomic.Uint64
-	FastPackets         atomic.Uint64
-	ReceiveQueueDrops   atomic.Uint64
-	FragmentedPackets   atomic.Uint64
-	MalformedFrames     atomic.Uint64
-	Connections         atomic.Uint64
-	HandshakeErrors     atomic.Uint64
-	RawPacketsDropped   atomic.Uint64
-	RawBytesSent        atomic.Uint64
-	RawBytesReceived    atomic.Uint64
-	RawWriteBatches     atomic.Uint64
-	RawBatchPackets     atomic.Uint64
-	IPBatchCalls        atomic.Uint64
-	IPBatchPackets      atomic.Uint64
-	HTTP3Requests       atomic.Uint64
-	HTTP3PublicRequests atomic.Uint64
-	HTTP3PublicPages    atomic.Uint64
-	HTTP3Tunnels        atomic.Uint64
-	HTTP3Rejected       atomic.Uint64
-	HTTP3Datagrams      atomic.Uint64
-	TCPStreams          atomic.Uint64
-	TCPBytesSent        atomic.Uint64
-	TCPBytesReceived    atomic.Uint64
+	SentPackets              atomic.Uint64
+	ReceivedPackets          atomic.Uint64
+	SendQueueDrops           atomic.Uint64
+	SendErrors               atomic.Uint64
+	EnqueueWaits             atomic.Uint64
+	FastPackets              atomic.Uint64
+	ReceiveQueueDrops        atomic.Uint64
+	FragmentedPackets        atomic.Uint64
+	MalformedFrames          atomic.Uint64
+	Connections              atomic.Uint64
+	HandshakeErrors          atomic.Uint64
+	RawPacketsDropped        atomic.Uint64
+	RawBytesSent             atomic.Uint64
+	RawBytesReceived         atomic.Uint64
+	RawWriteBatches          atomic.Uint64
+	RawBatchPackets          atomic.Uint64
+	DirectReceiveConnections atomic.Uint64
+	DirectReceiveDatagrams   atomic.Uint64
+	IPBatchCalls             atomic.Uint64
+	IPBatchPackets           atomic.Uint64
+	HTTP3Requests            atomic.Uint64
+	HTTP3PublicRequests      atomic.Uint64
+	HTTP3PublicPages         atomic.Uint64
+	HTTP3Tunnels             atomic.Uint64
+	HTTP3Rejected            atomic.Uint64
+	HTTP3Datagrams           atomic.Uint64
+	TCPStreams               atomic.Uint64
+	TCPBytesSent             atomic.Uint64
+	TCPBytesReceived         atomic.Uint64
 }
 
 type Backend struct {
@@ -1016,6 +1018,9 @@ func (p *peer) receiveSession(s *session) {
 	}()
 	if capsules, ok := s.dgram.(interface{ StartCapsules(func([]byte)) }); ok {
 		capsules.StartCapsules(func(data []byte) { p.deliverFrame(s, data) })
+	}
+	if direct, ok := s.dgram.(interface{ StartDirectIPDatagrams(func([]byte)) bool }); ok {
+		direct.StartDirectIPDatagrams(func(data []byte) { p.queueDirectIP(s, data) })
 	}
 	for {
 		data, err := s.dgram.ReceiveDatagram(p.ctx)
