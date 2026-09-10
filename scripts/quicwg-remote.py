@@ -138,6 +138,7 @@ def main():
     p.add_argument("--kernel-flows", default="1,4")
     p.add_argument("--kernel-mbps", type=int, default=500, help="bounded aggregate offered load, at most 500 Mbps")
     p.add_argument("--kernel-udp", action="store_true", help="inner UDP offered-load test instead of kernel TCP")
+    p.add_argument("--kernel-qdisc", choices=('inherited', 'fq', 'cake-nosplit'), default='inherited', help="test namespace TUN qdisc only; applied equally to WG/H3, never production")
     p.add_argument("--kernel-cpu-profile", action="store_true", help="diagnostic-only bounded CPU profiles; throughput is profiling-affected")
     p.add_argument("--ipv6-proof", action="store_true", help="also verify inner IPv6 TSMP and file transfer")
     p.add_argument("--output", type=Path, required=True)
@@ -217,7 +218,7 @@ def main():
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     if args.kernel_iperf:
-        result['kernel_benchmark'] = {'seconds':args.kernel_seconds,'flows':args.kernel_flows,'aggregate_limit_mbps':args.kernel_mbps,'inner_protocol':'udp' if args.kernel_udp else 'tcp','scope':'same engine and isolated kernel TUN for every mode; no HTTP payload benchmark'}
+        result['kernel_benchmark'] = {'seconds':args.kernel_seconds,'flows':args.kernel_flows,'aggregate_limit_mbps':args.kernel_mbps,'inner_protocol':'udp' if args.kernel_udp else 'tcp','qdisc':args.kernel_qdisc,'scope':'same engine and isolated kernel TUN for every mode; no HTTP payload benchmark'}
         kernel_spec = importlib.util.spec_from_file_location('kernel_iperf', Path(__file__).with_name('kernel-iperf.py'))
         kernel = importlib.util.module_from_spec(kernel_spec)
         kernel_spec.loader.exec_module(kernel)
@@ -397,7 +398,7 @@ def main():
                 result["phases"].append(phase)
                 statuses = start(variant, index, args.profile, controller)
                 if args.kernel_iperf:
-                    kernel.configure(nodes, remote)
+                    kernel.configure(nodes, remote, args.kernel_qdisc)
                 if args.managed_cli:
                     phase["cli_status"] = {n["name"]: cli(n, "status", "--json", json_result=True) for n in nodes}
                     for value in phase["cli_status"].values():

@@ -22,7 +22,7 @@ def capture_profile(node, seconds, target):
     return {'file':str(target),'bytes':len(data)}
 
 
-def configure(nodes, remote):
+def configure(nodes, remote, qdisc='inherited'):
     for i, node in enumerate(nodes):
         ns = node['kernel_ns']
         commands = [
@@ -37,13 +37,17 @@ def configure(nodes, remote):
             ]
         for command in commands:
             remote(node, shlex.join(command))
+        if qdisc != 'inherited':
+            settings = ['fq'] if qdisc == 'fq' else ['cake', 'unlimited', 'no-split-gso']
+            remote(node, shlex.join(['ip', 'netns', 'exec', ns, 'tc', 'qdisc', 'replace', 'dev', 'qbench0', 'root'] + settings))
+        actual_qdisc = json.loads(remote(node, shlex.join(['ip', 'netns', 'exec', ns, 'tc', '-j', 'qdisc', 'show', 'dev', 'qbench0'])).stdout)
         # Namespace must have NO physical default route or inherited production
         # Tailscale device. A passing transfer cannot have bypassed the test TUN.
         route = remote(node, shlex.join(['ip', '-n', ns, 'route', 'get', nodes[i ^ 1]['test_ip']])).stdout
         links = json.loads(remote(node, shlex.join(['ip', '-n', ns, '-j', 'link', 'show'])).stdout)
         if 'dev qbench0' not in route or {x['ifname'] for x in links} != {'lo', 'qbench0'}:
             raise RuntimeError('kernel benchmark namespace has unexpected network paths')
-        node['kernel_path'] = {'route': route.strip(), 'interfaces': [x['ifname'] for x in links]}
+        node['kernel_path'] = {'route': route.strip(), 'interfaces': [x['ifname'] for x in links], 'qdisc_requested': qdisc, 'qdisc_actual': actual_qdisc}
 
 
 def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):

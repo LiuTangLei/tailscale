@@ -38,6 +38,7 @@ def main() -> None:
     p.add_argument('--flows', default='4')
     p.add_argument('--mbps', type=int, default=500)
     p.add_argument('--variants', default='native,http3-ip-magicsock')
+    p.add_argument('--qdisc', choices=('inherited', 'fq', 'cake-nosplit'), default='inherited', help='only the isolated TUN on both WG and H3')
     p.add_argument('--h3-controllers', default='bbr-v1')
     p.add_argument('--declared-servers', default='')
     p.add_argument('--cpu-profile', action='store_true', help='diagnostic sample, not performance acceptance')
@@ -88,7 +89,7 @@ def main() -> None:
             command=[sys.executable,str(Path(__file__).with_name('quicwg-remote.py')),
                 '--local-binary',str(a.local_binary.resolve()),'--linux-binary',str(a.linux_binary.resolve()),
                 '--variants',a.variants,'--h3-controllers',a.h3_controllers,'--declared-servers',a.declared_servers,'--auto-trust','--private-stun','--private-origins','--kernel-iperf',
-                '--kernel-seconds',str(a.seconds),'--kernel-flows',a.flows,'--kernel-mbps',str(a.mbps),
+                '--kernel-seconds',str(a.seconds),'--kernel-flows',a.flows,'--kernel-mbps',str(a.mbps),'--kernel-qdisc',a.qdisc,
                 '--rounds',str(a.rounds),'--kernel-idle','2','--latency-samples','3','--ipv6-proof','--output',str(result)]
             if a.cpu_profile: command.append('--kernel-cpu-profile')
             for prefix,node in [('a',left),('b',right)]:
