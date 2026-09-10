@@ -527,6 +527,11 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 			return errors.New("invalid WG packet length")
 		}
 	}
+	// Decouple the single-core TUN producer from QUIC wakeups. The bounded
+	// peer actor drains only packets already available, without a batching timer.
+	if ipBatchSupported && b.factory.cfg.HTTP3 && !b.factory.cfg.TCPStreams {
+		return p.enqueue(bufs, offset)
+	}
 	// Once authenticated, send directly from the borrowed WG batch. quic-go
 	// copies a datagram before returning, so an extra packet copy and actor
 	// queue are unnecessary. Its bounded queue supplies congestion backpressure.
@@ -536,14 +541,6 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 	p.mu.Unlock()
 	if s != nil && s.q.Context().Err() == nil && !p.disabled.Load() && !p.connectingPacket.Load() && len(p.tx) == 0 {
 		defer p.sendMu.Unlock()
-		if len(bufs) > 1 {
-			if handled, err := p.sendIPBatch(s, bufs, offset); handled {
-				if err != nil {
-					b.counters.SendErrors.Add(1)
-				}
-				return err
-			}
-		}
 		for _, buf := range bufs {
 			if err := p.sendPacket(s, buf[offset:], p.scratch[:]); err != nil {
 				b.counters.SendErrors.Add(1)
@@ -917,6 +914,10 @@ func (p *peer) run() {
 		case <-p.ctx.Done():
 			return
 		case packet := <-p.tx:
+			if ipBatchSupported && p.g.b.factory.cfg.HTTP3 && !p.g.b.factory.cfg.TCPStreams {
+				p.sendQueuedIPBatch(packet)
+				continue
+			}
 			p.connectingPacket.Store(true)
 			if p.stampValid(packet.stamp) {
 				s, err := p.getSession()

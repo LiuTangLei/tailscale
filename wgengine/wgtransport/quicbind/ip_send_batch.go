@@ -6,11 +6,19 @@ import (
 	"errors"
 
 	quic "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 )
 
 type datagramBatchSender interface {
 	SendDatagramsWithPrefix([]byte, [][]byte) (int, error)
 }
+
+// Published dependencies without the optional API keep their existing path.
+// Experimental builds report this capability explicitly in diagnostics.
+var ipBatchSupported = func() bool {
+	_, ok := any((*http3.Stream)(nil)).(datagramBatchSender)
+	return ok
+}()
 
 // sendIPBatch keeps the caller's ready TUN batch intact across the H3 queue
 // boundary. It applies only to native IP (not the embedded reliable-stream
