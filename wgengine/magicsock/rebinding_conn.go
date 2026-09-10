@@ -92,7 +92,11 @@ func (c *RebindingUDPConn) WriteWireGuardBatchTo(buffs [][]byte, addr epAddr, of
 	for {
 		pconn := *c.pconnAtomic.Load()
 		b, ok := pconn.(batching.Conn)
-		if !ok {
+		if !ok || len(buffs) == 1 {
+			// A singleton has nothing to coalesce. Avoid setting up/resetting a
+			// full sendmmsg/GSO vector (128 slots on Linux) for one datagram.
+			// Use the same connection and rebind retry path; Geneve headroom,
+			// deadlines and packet boundaries remain identical.
 			for _, buf := range buffs {
 				if gh.VNI.IsSet() {
 					gh.Encode(buf)
