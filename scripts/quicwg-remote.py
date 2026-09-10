@@ -5,6 +5,8 @@ All generated TLS keys stay on their host; only public SPKI pins are exchanged.
 from __future__ import annotations
 import argparse
 import base64
+import gzip
+import shutil
 import os
 import signal
 import fcntl
@@ -225,6 +227,9 @@ def main():
     checkpoint()
     with tempfile.TemporaryDirectory(prefix="quicwg-") as tmp:
         temp = Path(tmp)
+        archive = temp / 'lab.gz'
+        with args.linux_binary.open('rb') as source, gzip.open(archive, 'wb', compresslevel=1) as target:
+            shutil.copyfileobj(source, target)
         control_port, derp_port = free_port(), free_port()
         log = (temp / "control.log").open("w+")
         cmd = [str(args.local_binary.resolve()), "control", "--listen", f"127.0.0.1:{control_port}",
@@ -286,8 +291,13 @@ def main():
                     remote(node, shlex.join(['ip','netns','add',ns]))
                     node['kernel_ns'] = ns
                     remote(node, shlex.join(['ip','-n',ns,'link','set','lo','up']))
-                run(["scp", "-C", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}",
-                     str(args.linux_binary.resolve()), f"{host}:{node['dir']}/lab"], timeout=120)
+                run(["scp", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}",
+                     str(archive), f"{host}:{node['dir']}/lab.gz"], timeout=180)
+                remote(node, shlex.join(['gzip', '-d', node['dir'] + '/lab.gz']), timeout=30)
+                digest = remote(node, shlex.join(['sha256sum', node['dir'] + '/lab'])).stdout.split()[0]
+                if digest != result['linux_sha256']:
+                    raise RuntimeError('remote test binary checksum mismatch')
+                node['verified_binary_sha256'] = digest
                 remote(node, f"chmod 700 {node['dir']}/lab")
                 if args.managed_cli:
                     run(["scp", "-C", "-q", "-o", "BatchMode=yes", "-o", f"ControlPath={node['socket']}", str(args.managed_cli.resolve()), f"{host}:{node['dir']}/cli"], timeout=120)
