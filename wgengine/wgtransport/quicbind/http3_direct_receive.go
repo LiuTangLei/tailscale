@@ -4,8 +4,6 @@
 package quicbind
 
 import (
-	"bytes"
-
 	quic "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/quicvarint"
 )
@@ -75,14 +73,16 @@ func (p *peer) queueDirectIP(s *session, borrowed []byte) {
 		p.g.b.counters.ReceiveQueueDrops.Add(1)
 		return
 	}
-	owned := bytes.Clone(borrowed)
+	owned := acquirePacket(borrowed)
 	select {
-	case p.g.rx <- received{data: owned, ep: p.ep.Load(), peer: p, stamp: s.stamp}:
+	case p.g.rx <- received{data: owned.data, ep: p.ep.Load(), peer: p, stamp: s.stamp, owned: owned}:
 		p.g.b.counters.ReceivedPackets.Add(1)
+		return // ownership transfers to dequeue, including its discard paths
 	case <-p.g.ctx.Done():
-		p.g.rxBytes.Add(-int64(len(owned)))
+		p.g.rxBytes.Add(-int64(len(owned.data)))
 	default:
-		p.g.rxBytes.Add(-int64(len(owned)))
+		p.g.rxBytes.Add(-int64(len(owned.data)))
 		p.g.b.counters.ReceiveQueueDrops.Add(1)
 	}
+	releasePacket(owned)
 }

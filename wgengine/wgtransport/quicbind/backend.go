@@ -103,6 +103,7 @@ type received struct {
 	ep    *endpoint
 	peer  *peer
 	stamp lifecycleStamp
+	owned *packetBuffer // optional storage released after copy or discard
 }
 type packetBuffer struct {
 	small [2048]byte
@@ -478,6 +479,7 @@ func (b *Backend) stop(final bool) error {
 	g.peersMu.Lock()
 	g.peersMu.Unlock()
 	g.workers.Wait()
+	g.drainIPReceiveQueue()
 	return err
 }
 
@@ -1082,6 +1084,9 @@ func (g *generation) receivePackets(bufs [][]byte, sizes []int, eps []conn.Endpo
 		eps[i] = nil
 	}
 	take := func(i int, r received) {
+		if r.owned != nil {
+			defer releasePacket(r.owned)
+		}
 		g.rxBytes.Add(-int64(len(r.data)))
 		if grow && len(bufs[i]) < offset+len(r.data) {
 			bufs[i] = make([]byte, offset+len(r.data))
