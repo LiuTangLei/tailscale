@@ -45,6 +45,8 @@ type Counters struct {
 	RawBytesReceived    atomic.Uint64
 	RawWriteBatches     atomic.Uint64
 	RawBatchPackets     atomic.Uint64
+	IPBatchCalls        atomic.Uint64
+	IPBatchPackets      atomic.Uint64
 	HTTP3Requests       atomic.Uint64
 	HTTP3PublicRequests atomic.Uint64
 	HTTP3PublicPages    atomic.Uint64
@@ -147,7 +149,7 @@ type datagramChannel interface {
 }
 
 type session struct {
-	tcpActive atomic.Int64
+	tcpActive   atomic.Int64
 	nextRefresh atomic.Int64
 	created     time.Time
 	q           *quic.Conn
@@ -407,7 +409,9 @@ func (b *Backend) quicConfig() *quic.Config {
 	if b.factory.cfg.HTTP3 {
 		streams, uni = 16, 8
 	}
-	if b.factory.cfg.TCPStreams { streams = 256 }
+	if b.factory.cfg.TCPStreams {
+		streams = 256
+	}
 	cfg := &quic.Config{
 		EnableDatagrams: true, HandshakeIdleTimeout: 8 * time.Second, MaxIdleTimeout: 60 * time.Second,
 		KeepAlivePeriod: 20 * time.Second, InitialPacketSize: b.factory.cfg.InitialPacketSize,
@@ -448,13 +452,17 @@ func (b *Backend) stop(final bool) error {
 	// TCP stream readers waiting for the idle timeout instead of EOF/error.
 	g.peersMu.Lock()
 	peers := make([]*peer, 0, len(g.peers))
-	for _, p := range g.peers { peers = append(peers, p) }
+	for _, p := range g.peers {
+		peers = append(peers, p)
+	}
 	g.peersMu.Unlock()
 	for _, p := range peers {
 		p.mu.Lock()
 		s := p.session
 		p.mu.Unlock()
-		if s != nil { _ = s.q.CloseWithError(0, "transport stopped") }
+		if s != nil {
+			_ = s.q.CloseWithError(0, "transport stopped")
+		}
 	}
 	// Cancellation retires peer actors and may clear p.session. It must
 	// follow the close notification rather than racing the snapshot above.
@@ -528,6 +536,14 @@ func (c *carrierBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 	p.mu.Unlock()
 	if s != nil && s.q.Context().Err() == nil && !p.disabled.Load() && !p.connectingPacket.Load() && len(p.tx) == 0 {
 		defer p.sendMu.Unlock()
+		if len(bufs) > 1 {
+			if handled, err := p.sendIPBatch(s, bufs, offset); handled {
+				if err != nil {
+					b.counters.SendErrors.Add(1)
+				}
+				return err
+			}
+		}
 		for _, buf := range bufs {
 			if err := p.sendPacket(s, buf[offset:], p.scratch[:]); err != nil {
 				b.counters.SendErrors.Add(1)
@@ -736,7 +752,9 @@ func (g *generation) accept() {
 // key-based rule. This arbitrates already-established candidates; it never
 // starts or resets a healthy connection merely to change its fingerprint.
 func (p *peer) preferredOutgoing(hint uint32) bool {
-	if p.g.b.factory.cfg.TCPStreams { return !p.g.b.factory.cfg.Server }
+	if p.g.b.factory.cfg.TCPStreams {
+		return !p.g.b.factory.cfg.Server
+	}
 	if p.g.b.factory.cfg.HTTP3 && hint != serverUnknown && hint <= serverYes && p.g.b.factory.cfg.Server != (hint == serverYes) {
 		return !p.g.b.factory.cfg.Server
 	}
@@ -802,7 +820,9 @@ func (p *peer) getSessionReplacing(replace *session) (*session, error) {
 	return p.getSessionContext(p.ctx, replace)
 }
 func (p *peer) getSessionContext(parent context.Context, replace *session) (*session, error) {
-	if err := parent.Err(); err != nil { return nil, err }
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	if s := p.session; s != nil && s.q.Context().Err() == nil && (replace == nil || s != replace) {
 		p.mu.Unlock()

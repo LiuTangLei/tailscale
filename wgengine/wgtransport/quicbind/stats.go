@@ -64,6 +64,8 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["raw_bytes_received"] = c.RawBytesReceived.Load()
 	out["raw_write_batches"] = c.RawWriteBatches.Load()
 	out["raw_batch_packets"] = c.RawBatchPackets.Load()
+	out["ip_batch_calls"] = c.IPBatchCalls.Load()
+	out["ip_batch_packets"] = c.IPBatchPackets.Load()
 	out["identity_ok"] = b.identityOK.Load()
 	if g := b.active.Load(); g != nil {
 		out["tx_queued_bytes"] = g.txBytes.Load()
