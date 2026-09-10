@@ -83,6 +83,8 @@ github.com/LiuTangLei/quic-go v0.62.0-tailcat.1 h1:p+pQ9YsLZhVwK/GctYGPO0oGA4qWl
 github.com/LiuTangLei/quic-go v0.62.0-tailcat.1/go.mod h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U=
 github.com/LiuTangLei/quic-go v0.62.0-tailcat.2 h1:Z1i/ZfJVVfpf8HG6FF98NnjkNLYxflOWJyOCbkPzw6o=
 github.com/LiuTangLei/quic-go v0.62.0-tailcat.2/go.mod h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U=
+github.com/LiuTangLei/quic-go v0.62.0-tailcat.3 h1:J84dpaKcyCi9JJMPR7WbAwLfsHzlgeWbjVfdqaPsu9M=
+github.com/LiuTangLei/quic-go v0.62.0-tailcat.3/go.mod h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U=
 github.com/LiuTangLei/quic-go v0.62.0-tailscale.3 h1:uv1plj8fgBSukz/k/uodvVDdg1r3HTdhmzAie1IqouU=
 github.com/LiuTangLei/quic-go v0.62.0-tailscale.3/go.mod h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U=
 github.com/LiuTangLei/wireguard-go v0.0.32 h1:VA/W9TgliC3zOjsQSkW1Q7rDe0ymxAuD44GxGylRYQ8=

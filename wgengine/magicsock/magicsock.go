@@ -3601,10 +3601,13 @@ func (c *connBind) Close() error {
 	if c.closeDisco6 != nil {
 		c.closeDisco6.Close()
 	}
-	// Send an empty read result to unblock receiveDERP,
-	// which will then check connBind.Closed.
-	// connBind.Closed takes c.mu, but c.derpRecvCh is buffered.
-	c.derpRecvCh <- derpReadResult{}
+	// Wake receiveDERP, which checks isClosed before processing any result.
+	// A full queue already supplies that wakeup. Never wait here: a carrier
+	// may have stopped its reader, or the reader may be waiting on c.mu.
+	select {
+	case c.derpRecvCh <- derpReadResult{}:
+	default:
+	}
 	return nil
 }
 
