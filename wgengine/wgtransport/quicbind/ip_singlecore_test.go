@@ -13,9 +13,10 @@ import (
 	"github.com/LiuTangLei/wireguard-go/conn"
 )
 
-// Every producer delivery contains one packet. Batching must come from ready
-// queued work, not a sleep or an already-large OS TUN vector.
-func TestH3SingleCoreOnePacketProducerFormsBatches(t *testing.T) {
+// The fallback actor drains ready queued work without sleeps. This synthetic
+// queue test does not predict TUN arrival cadence or WAN throughput; the active
+// session fast path now preserves vectors from the actual TUN reader instead.
+func TestH3SingleCoreQueuedPacketsFormBatches(t *testing.T) {
 	previous := runtime.GOMAXPROCS(1)
 	defer runtime.GOMAXPROCS(previous)
 	pair := newTestPair(t, "http3-udp")
@@ -48,7 +49,7 @@ func TestH3SingleCoreOnePacketProducerFormsBatches(t *testing.T) {
 	startCalls, startPackets := b.counters.IPBatchCalls.Load(), b.counters.IPBatchPackets.Load()
 	for i := range count {
 		binary.BigEndian.PutUint16(packet[:2], uint16(i))
-		if err := b.Bind().Send([][]byte{packet}, ep, 0); err != nil {
+		if err := p.enqueue([][]byte{packet}, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
