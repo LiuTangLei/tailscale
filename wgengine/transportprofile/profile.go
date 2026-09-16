@@ -232,7 +232,10 @@ func (p Profile) Factory() (*quicbind.Factory, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := quicbind.Config{Version: 2, Payload: "ip", IO: "magicsock", LocalPublicKey: p.LocalKey, InitialPacketSize: 1400, QueuePackets: 256}
+	// Keep the managed QUIC carrier conservative on mixed mobile/NAT paths. A
+	// 1400-byte Initial can blackhole before the authenticated peer or path-MTU
+	// negotiation even though quic-go and the transport allow values up to 1400.
+	c := quicbind.Config{Version: 2, Payload: "ip", IO: "magicsock", LocalPublicKey: p.LocalKey, InitialPacketSize: 1200, QueuePackets: 256}
 	if p.Mode == "http3-ip" {
 		c.HTTP3 = true
 		c.Server = p.Server

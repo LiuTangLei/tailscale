@@ -11,9 +11,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/LiuTangLei/wireguard-go/conn"
 	"tailscale.com/ipn"
 	"tailscale.com/types/key"
 	"tailscale.com/wgengine/wgtransport"
+	"tailscale.com/wgengine/wgtransport/nodeauth"
+	"tailscale.com/wgengine/wgtransport/quicbind"
 )
 
 func newProfile(t *testing.T) (Profile, string) {
@@ -88,6 +91,32 @@ func TestProfileLifecycleAndPrivateExport(t *testing.T) {
 		}
 	}
 }
+func TestManagedProfileUsesConservativeQUICInitialPacketSize(t *testing.T) {
+	local, _ := newProfile(t)
+	peer, _ := newProfile(t)
+	for _, mode := range []string{"quic-ip", "http3-ip"} {
+		p := local
+		p.Mode = mode
+		p.AutoTrust = mode == "http3-ip"
+		p.Peers = []ipn.TransportPeer{*peer.Identity}
+		factory, err := p.Factory()
+		if err != nil {
+			t.Fatalf("mode=%s: %v", mode, err)
+		}
+		backend, err := factory.New(wgtransport.Host{Bind: conn.NewDefaultBind(), PeerAllowed: func([32]byte) bool { return true }, NodePublic: func() [32]byte { return [32]byte{1} }, NodeHandshake: func([32]byte, [32]byte, bool, []byte) (nodeauth.Handshake, error) { return nil, nil }})
+		if err != nil {
+			t.Fatalf("mode=%s: create backend: %v", mode, err)
+		}
+		got, ok := backend.(*quicbind.Backend).Snapshot()["initial_packet_size"]
+		if !ok {
+			t.Fatalf("mode=%s: missing initial_packet_size in snapshot", mode)
+		}
+		if got != uint16(1200) {
+			t.Fatalf("mode=%s: initial_packet_size=%v, want 1200", mode, got)
+		}
+	}
+}
+
 func TestH3AutoTrustModeGeneratesIdentityWithoutPrepare(t *testing.T) {
 	k := key.NewNode().Public().String()
 	want, err := canonicalKey(k)
