@@ -714,7 +714,17 @@ func (m *MaskedPrefs) Pretty() string {
 					sb.WriteString(" ")
 				}
 				first = false
-				f := mpv.Field(i - 1)
+				// Match by name: Prefs also contains unmasked fields (Persist).
+				// Never log the AWG header-protection key or packet signatures.
+				if name == "AmneziaWGSet" {
+					state := "configured"
+					if m.AmneziaWG.IsZero() {
+						state = "disabled"
+					}
+					fmt.Fprintf(&sb, "AmneziaWG=%s", state)
+					continue
+				}
+				f := mpv.FieldByName(strings.TrimSuffix(name, "Set"))
 				fmt.Fprintf(&sb, format(f),
 					strings.TrimSuffix(name, "Set"),
 					f.Interface())
@@ -723,7 +733,7 @@ func (m *MaskedPrefs) Pretty() string {
 			if mf.IsZero() {
 				continue
 			}
-			mpf := mpv.Field(i - 1)
+			mpf := mpv.FieldByName(strings.TrimSuffix(name, "Set"))
 			// This would be much simpler with reflect.MethodByName("Pretty"),
 			// but using MethodByName disables some linker optimizations and
 			// makes our binaries much larger. See
