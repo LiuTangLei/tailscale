@@ -45,20 +45,22 @@ func (v awgProfileVersion) String() string {
 
 func awgSetCommand() *ffcli.Command {
 	var yes bool
+	var noRestart bool
 	cmd := &ffcli.Command{
 		Name:       "set",
-		ShortUsage: "tailscale amnezia-wg set [--yes] [quic|json-string]",
+		ShortUsage: "tailscale amnezia-wg set [--yes] [--no-restart] [quic|json-string]",
 		ShortHelp:  "Configure AWG v3, AWG v2, or QUIC",
-		LongHelp:   "Choose AWG v3, AWG v2, or QUIC interactively. QUIC includes the built-in obfuscation and automatically clears the saved AWG profile after confirmation. Use 'set --yes quic' for noninteractive selection, or pass an AWG JSON object directly. Restart tailscaled to activate a transport change.",
+		LongHelp:   "Choose AWG v3, AWG v2, or QUIC interactively. QUIC includes the built-in obfuscation and automatically clears the saved AWG profile after confirmation. Use 'set --yes quic' for noninteractive selection, or pass an AWG JSON object directly. The daemon restarts automatically unless --no-restart is set.",
 		FlagSet:    flag.NewFlagSet("set", flag.ContinueOnError),
 	}
-	cmd.FlagSet.BoolVar(&yes, "yes", false, "confirm QUIC selection and automatic AWG reset (does not restart)")
+	cmd.FlagSet.BoolVar(&yes, "yes", false, "confirm the selection and restart the daemon to activate it")
+	cmd.FlagSet.BoolVar(&noRestart, "no-restart", false, "stage the change without restarting the local daemon")
 	cmd.Exec = func(ctx context.Context, args []string) error {
 		if yes {
-			_, err := configureAWGSet(ctx, &localClient, args, true, bufio.NewScanner(os.Stdin), os.Stdout)
+			_, err := configureAWGSetWithOptions(ctx, &localClient, args, true, noRestart, bufio.NewScanner(os.Stdin), os.Stdout)
 			return err
 		}
-		return runAmneziaWGSet(ctx, args)
+		return runAmneziaWGSetWithOptions(ctx, args, noRestart)
 	}
 	return cmd
 }
@@ -70,16 +72,24 @@ type awgSetupClient interface {
 }
 
 func runAmneziaWGSet(ctx context.Context, args []string) error {
-	changed, err := configureAWGSet(ctx, &localClient, args, false, bufio.NewScanner(os.Stdin), os.Stdout)
+	return runAmneziaWGSetWithOptions(ctx, args, false)
+}
+
+func runAmneziaWGSetWithOptions(ctx context.Context, args []string, noRestart bool) error {
+	changed, err := configureAWGSetWithOptions(ctx, &localClient, args, false, noRestart, bufio.NewScanner(os.Stdin), os.Stdout)
 	if err != nil || !changed {
 		return err
 	}
-	return restartTailscaledWithPrompt()
+	return nil
 }
 
 func configureAWGSet(ctx context.Context, client awgSetupClient, args []string, yes bool, scanner *bufio.Scanner, out io.Writer) (bool, error) {
+	return configureAWGSetWithOptions(ctx, client, args, yes, false, scanner, out)
+}
+
+func configureAWGSetWithOptions(ctx context.Context, client awgSetupClient, args []string, yes bool, noRestart bool, scanner *bufio.Scanner, out io.Writer) (bool, error) {
 	selectQUIC := func() (bool, error) {
-		return stageTransportSelection(ctx, client, "quic", yes, out, func(prompt string) (bool, error) {
+		return stageTransportSelectionWithOptions(ctx, client, "quic", yes, noRestart, out, func(prompt string) (bool, error) {
 			for {
 				fmt.Fprint(out, prompt)
 				if !scanner.Scan() {
@@ -124,7 +134,7 @@ func configureAWGSet(ctx context.Context, client awgSetupClient, args []string, 
 			return false, err
 		}
 	default:
-		return false, formatUsageError("tailscale awg set [--yes] [quic|json-string]")
+		return false, formatUsageError("tailscale awg set [--yes] [--no-restart] [quic|json-string]")
 	}
 	pending, err := applyAWGForClient(ctx, client, config)
 	if err != nil {
@@ -134,6 +144,11 @@ func configureAWGSet(ctx context.Context, client awgSetupClient, args []string, 
 		fmt.Fprintf(out, "%s saved. Native WG/AWG will activate after one daemon restart; the running QUIC connection is unchanged.\n", amneziaConfigVersion(config))
 	} else {
 		fmt.Fprintf(out, "%s configuration applied.\n", amneziaConfigVersion(config))
+	}
+	if err := applyAndRestartAfterMutation(ctx, noRestart, out, func(ctx context.Context) error {
+		return waitForAWGConfig(ctx, client, config)
+	}); err != nil {
+		return false, err
 	}
 	return true, nil
 }

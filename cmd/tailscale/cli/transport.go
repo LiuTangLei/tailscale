@@ -317,15 +317,23 @@ func transportModeRequest(status ipn.TransportControlStatus, mode string) ipn.Tr
 }
 
 func runAWGTransportMode(ctx context.Context, mode string, yes bool, in io.Reader, out io.Writer) error {
+	return runAWGTransportModeWithOptions(ctx, mode, yes, false, in, out)
+}
+
+func runAWGTransportModeWithOptions(ctx context.Context, mode string, yes bool, noRestart bool, in io.Reader, out io.Writer) error {
 	mode = canonicalTransportMode(mode)
 	if !transportModeIsValid(mode) {
 		return fmt.Errorf("invalid mode %q: supported values are native, quic", mode)
 	}
-	return stageTransportMode(ctx, &localClient, mode, yes, in, out)
+	return stageTransportModeWithOptions(ctx, &localClient, mode, yes, noRestart, in, out)
 }
 
 func stageTransportMode(ctx context.Context, client transportClient, mode string, yes bool, in io.Reader, out io.Writer) error {
-	_, err := stageTransportSelection(ctx, client, mode, yes, out, func(prompt string) (bool, error) {
+	return stageTransportModeWithOptions(ctx, client, mode, yes, false, in, out)
+}
+
+func stageTransportModeWithOptions(ctx context.Context, client transportClient, mode string, yes bool, noRestart bool, in io.Reader, out io.Writer) error {
+	_, err := stageTransportSelectionWithOptions(ctx, client, mode, yes, noRestart, out, func(prompt string) (bool, error) {
 		return confirmTransportAction(in, out, prompt)
 	})
 	return err
@@ -334,6 +342,10 @@ func stageTransportMode(ctx context.Context, client transportClient, mode string
 // A shared confirmation function lets the awg set menu reuse its Scanner,
 // without losing buffered input when switching to the QUIC confirmation.
 func stageTransportSelection(ctx context.Context, client transportClient, mode string, yes bool, out io.Writer, confirm func(string) (bool, error)) (bool, error) {
+	return stageTransportSelectionWithOptions(ctx, client, mode, yes, false, out, confirm)
+}
+
+func stageTransportSelectionWithOptions(ctx context.Context, client transportClient, mode string, yes bool, noRestart bool, out io.Writer, confirm func(string) (bool, error)) (bool, error) {
 	mode = canonicalTransportMode(mode)
 	if !transportModeIsValid(mode) {
 		return false, errors.New("invalid transport mode")
@@ -348,6 +360,10 @@ func stageTransportSelection(ctx context.Context, client transportClient, mode s
 	if status.Source == "environment" || status.Source == "embedded" {
 		return false, errors.New("transport is externally configured; remove that override before staging a managed mode")
 	}
+	if status.ActiveMode == mode && status.DesiredMode == mode && !status.PendingRestart {
+		fmt.Fprintf(out, "Transport mode is already %s; no changes applied.\n", transportModeLabel(mode))
+		return false, nil
+	}
 	if transportModeUsesQUIC(mode) && status.AWGConfigured {
 		fmt.Fprintln(out, "Selecting QUIC will clear the saved AWG profile automatically. Existing AWG connections may be interrupted; keep another administration path available.")
 	}
@@ -357,7 +373,7 @@ func stageTransportSelection(ctx context.Context, client transportClient, mode s
 			fmt.Fprintln(out, "The local QUIC identity and node-key trust will be configured automatically.")
 		}
 	}
-	fmt.Fprintf(out, "Active: %s; stage %s for the next daemon start. This command will NOT restart the daemon.\n", transportModeLabel(status.ActiveMode), transportModeLabel(mode))
+	fmt.Fprintf(out, "Active: %s; stage %s for the next daemon start.\n", transportModeLabel(status.ActiveMode), transportModeLabel(mode))
 	if !yes {
 		confirmed, err := confirm(fmt.Sprintf("Switch transport mode to %s? [y/N]: ", transportModeLabel(mode)))
 		if err != nil {
@@ -374,9 +390,21 @@ func stageTransportSelection(ctx context.Context, client transportClient, mode s
 		return false, err
 	}
 	if transportModeUsesQUIC(mode) && status.AWGConfigured {
-		fmt.Fprintln(out, "Saved AWG profile cleared. Restart tailscaled to activate QUIC.")
+		fmt.Fprintln(out, "Saved AWG profile cleared. Restarting tailscaled to activate QUIC.")
 	}
-	return true, renderTransportStatus(updated, out, false)
+	if noRestart {
+		return true, renderTransportStatus(updated, out, false)
+	}
+	if err := applyAndRestartAfterMutation(ctx, false, out, func(ctx context.Context) error {
+		return waitForManagedMode(ctx, client, mode)
+	}); err != nil {
+		return false, err
+	}
+	status, err = getTransportStatusForClient(ctx, client)
+	if err != nil {
+		return false, err
+	}
+	return true, renderTransportStatus(status, out, false)
 }
 
 func confirmTransportAction(in io.Reader, out io.Writer, prompt string) (bool, error) {
@@ -690,19 +718,21 @@ func transportStatusCommand() *ffcli.Command {
 
 func transportCommand() *ffcli.Command {
 	var yes bool
+	var noRestart bool
 	cmd := &ffcli.Command{
 		Name:       "transport",
-		ShortUsage: "tailscale amnezia-wg transport [native|quic]",
-		ShortHelp:  "Stage a transport mode change",
-		LongHelp:   "Choose native WG/AWG or QUIC with built-in obfuscation. Selecting QUIC automatically clears saved AWG settings after confirmation. Changes require a later daemon restart. The old http3-ip name remains an alias; quic-ip is accepted only for legacy raw-QUIC configurations.",
+		ShortUsage: "tailscale amnezia-wg transport [--yes] [--no-restart] [native|quic]",
+		ShortHelp:  "Apply a transport mode change",
+		LongHelp:   "Choose native WG/AWG or QUIC with built-in obfuscation. Selecting QUIC automatically clears saved AWG settings after confirmation. The daemon restarts automatically unless --no-restart is set. The old http3-ip name remains an alias; quic-ip is accepted only for legacy raw-QUIC configurations.",
 	}
 	cmd.FlagSet = flag.NewFlagSet("transport", flag.ContinueOnError)
-	cmd.FlagSet.BoolVar(&yes, "yes", false, "skip confirmation and stage the next-start mode (does not restart)")
+	cmd.FlagSet.BoolVar(&yes, "yes", false, "skip confirmation and apply the transport change")
+	cmd.FlagSet.BoolVar(&noRestart, "no-restart", false, "stage the transport mode without restarting the local daemon")
 	cmd.Exec = func(ctx context.Context, args []string) error {
 		if len(args) != 1 {
-			return formatUsageError("tailscale amnezia-wg transport [native|quic]")
+			return formatUsageError("tailscale amnezia-wg transport [--yes] [--no-restart] [native|quic]")
 		}
-		return runAWGTransportMode(ctx, args[0], yes, os.Stdin, os.Stdout)
+		return runAWGTransportModeWithOptions(ctx, args[0], yes, noRestart, os.Stdin, os.Stdout)
 	}
 	return cmd
 }

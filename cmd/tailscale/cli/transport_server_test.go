@@ -11,10 +11,11 @@ import (
 )
 
 func TestServerFlagCLIConfirmationAndCAS(t *testing.T) {
+	stubRestart(t)
 	for _, input := range []string{"", "\n", "n\n"} {
 		c := menuClient()
 		var out bytes.Buffer
-		if err := stageServerDeclaration(context.Background(), c, "on", false, strings.NewReader(input), &out); err != nil {
+		if err := stageServerDeclarationWithOptions(context.Background(), c, "on", false, true, strings.NewReader(input), &out); err != nil {
 			t.Fatal(err)
 		}
 		if len(c.writes) != 0 {
@@ -29,7 +30,7 @@ func TestServerFlagCLIConfirmationAndCAS(t *testing.T) {
 		if enabled {
 			value = "on"
 		}
-		if err := stageServerDeclaration(context.Background(), c, value, true, nil, &out); err != nil {
+		if err := stageServerDeclarationWithOptions(context.Background(), c, value, true, true, nil, &out); err != nil {
 			t.Fatal(err)
 		}
 		if len(c.writes) != 1 {
@@ -39,8 +40,8 @@ func TestServerFlagCLIConfirmationAndCAS(t *testing.T) {
 		if r.Action != "server" || r.Server == nil || *r.Server != enabled || r.ExpectedRevision != "revision-7" || r.PublicKey != "" || r.Peer != nil {
 			t.Fatalf("unexpected per-peer update: %+v", r)
 		}
-		if !strings.Contains(out.String(), "NOT restart") {
-			t.Fatal("missing restart notice")
+		if !strings.Contains(out.String(), "Stage server=") {
+			t.Fatal("missing staged declaration notice")
 		}
 	}
 }

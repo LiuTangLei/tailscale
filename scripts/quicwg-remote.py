@@ -380,7 +380,7 @@ def main():
                 evidence = {}
                 for node in nodes:
                     before = cli(node, "status", "--json", json_result=True)
-                    cli(node, "transport", "--yes", desired)
+                    cli(node, "transport", "--yes", "--no-restart", desired)
                     after = cli(node, "status", "--json", json_result=True)
                     if after["active_mode"] != before["active_mode"] or after["desired_mode"] != desired:
                         raise RuntimeError("CLI staging incorrectly claimed a live mode switch")

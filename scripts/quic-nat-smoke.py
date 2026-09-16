@@ -165,7 +165,7 @@ def main() -> None:
                 start(i)
             ready()
             for node in nodes:
-                cli(node, "awg", "transport", "--yes", "http3-ip")
+                cli(node, "awg", "transport", "--yes", "--no-restart", "http3-ip")
             for node in nodes:
                 stop(node["process"])
             for i in range(2):

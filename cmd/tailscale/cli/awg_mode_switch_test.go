@@ -14,6 +14,13 @@ import (
 	"tailscale.com/ipn"
 )
 
+func stubRestart(t *testing.T) {
+	t.Helper()
+	old := restartTailscaled
+	restartTailscaled = func() error { return nil }
+	t.Cleanup(func() { restartTailscaled = old })
+}
+
 type awgSetupFake struct {
 	*menuTransportClient
 	prefs ipn.Prefs
@@ -63,10 +70,11 @@ func TestAWGSetQUICSelectionAndCancellation(t *testing.T) {
 		{"old_alias", "", []string{"http3-ip"}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			stubRestart(t)
 			c := &awgSetupFake{menuTransportClient: menuClient(), prefs: ipn.Prefs{AmneziaWG: ipn.AmneziaWGPrefs{JC: 4}}}
 			c.state.AWGConfigured = true
 			var out bytes.Buffer
-			changed, err := configureAWGSet(context.Background(), c, tc.args, tc.yes, bufio.NewScanner(strings.NewReader(tc.input)), &out)
+			changed, err := configureAWGSetWithOptions(context.Background(), c, tc.args, tc.yes, true, bufio.NewScanner(strings.NewReader(tc.input)), &out)
 			if err != nil || changed != tc.changed {
 				t.Fatalf("changed=%v err=%v", changed, err)
 			}

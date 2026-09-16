@@ -122,7 +122,7 @@ def main() -> None:
                  'content_padding_addition': {'min': 5, 'max': 31}}
             ]
             for index, config in enumerate(configs):
-                cli('awg', 'set', json.dumps(config))
+                cli('awg', 'set', '--no-restart', json.dumps(config))
                 active = prefs().get('AmneziaWG')
                 if not active or active.get('JC') != 4:
                     raise RuntimeError('AWG set reported success but immediate preferences did not change')
@@ -133,13 +133,13 @@ def main() -> None:
                 if prefs().get('AmneziaWG') != active:
                     raise RuntimeError('AWG preferences changed across containerboot restart')
                 report['phases'].append(f'AWG v{index + 2} immediate read, disk write and restart')
-            cli('awg', 'reset')
+            cli('awg', 'reset', '--no-restart')
             restart()
             if prefs().get('AmneziaWG', {}).get('JC', 0):
                 raise RuntimeError('AWG reset did not survive restart')
             report['phases'].append('AWG reset persisted')
             if args.h3:
-                cli('awg', 'transport', '--yes', 'http3-ip')
+                cli('awg', 'transport', '--yes', '--no-restart', 'http3-ip')
                 staged = json.loads(cli('awg', 'status', '--json').stdout)
                 if staged['desired_mode'] != 'http3-ip' or not staged['pending_restart']:
                     raise RuntimeError('H3 mode was not staged')
@@ -154,7 +154,7 @@ def main() -> None:
                     raise RuntimeError('H3 identity changed across restart')
                 report['phases'].append('QUIC staged activation and identity persisted across two restarts')
                 for config in configs:
-                    cli('awg', 'set', '--yes', json.dumps(config))
+                    cli('awg', 'set', '--yes', '--no-restart', json.dumps(config))
                     pending = json.loads(cli('awg', 'status', '--json').stdout)
                     saved_awg = prefs().get('AmneziaWG')
                     if pending['active_mode'] != 'http3-ip' or pending['desired_mode'] != 'native' or not pending['awg_configured']:
@@ -165,7 +165,7 @@ def main() -> None:
                     active = json.loads(cli('awg', 'status', '--json').stdout)
                     if active['active_mode'] != 'native' or prefs().get('AmneziaWG') != saved_awg:
                         raise RuntimeError('AWG did not activate after one restart')
-                    cli('awg', 'set', '--yes', 'quic')
+                    cli('awg', 'set', '--yes', '--no-restart', 'quic')
                     if prefs().get('AmneziaWG', {}).get('JC', 0):
                         raise RuntimeError('selecting QUIC did not clear AWG automatically')
                     restart()

@@ -37,10 +37,11 @@ func menuClient() *menuTransportClient {
 	return &menuTransportClient{state: ipn.TransportControlStatus{ActiveMode: "native", DesiredMode: "native", Available: true, Source: "managed", Revision: "revision-7"}}
 }
 func TestStageTransportConfirmationAndCAS(t *testing.T) {
+	stubRestart(t)
 	for _, input := range []string{"", "\n", "n\n", "invalid\nn\n"} {
 		c := menuClient()
 		var out bytes.Buffer
-		if err := stageTransportMode(context.Background(), c, "quic-ip", false, strings.NewReader(input), &out); err != nil {
+		if err := stageTransportModeWithOptions(context.Background(), c, "quic-ip", false, true, strings.NewReader(input), &out); err != nil {
 			t.Fatal(err)
 		}
 		if len(c.writes) != 0 {
@@ -49,13 +50,13 @@ func TestStageTransportConfirmationAndCAS(t *testing.T) {
 	}
 	c := menuClient()
 	var out bytes.Buffer
-	if err := stageTransportMode(context.Background(), c, "http3-ip", false, strings.NewReader("y\n"), &out); err != nil {
+	if err := stageTransportModeWithOptions(context.Background(), c, "http3-ip", false, true, strings.NewReader("y\n"), &out); err != nil {
 		t.Fatal(err)
 	}
 	if len(c.writes) != 1 || c.writes[0].Action != "mode" || c.writes[0].Mode != "http3-ip" || c.writes[0].AutoTrust == nil || !*c.writes[0].AutoTrust || c.state.ActiveMode != "native" || !c.state.PendingRestart {
 		t.Fatalf("wrong staged request %+v", c)
 	}
-	if !strings.Contains(out.String(), "NOT restart") || !strings.Contains(out.String(), "compatible peers") {
+	if !strings.Contains(out.String(), "compatible peers") {
 		t.Fatal("missing safety preview")
 	}
 }

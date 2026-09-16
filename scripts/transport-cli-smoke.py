@@ -114,31 +114,31 @@ def main():
                     cli(n, "peer", "add", "--yes", json.dumps(cards[i ^ 1]))
                     cli(n, "doctor")
             else:
-                cli(nodes[1], "server", "--yes", "on")
+                cli(nodes[1], "server", "--yes", "--no-restart", "on")
             for i, n in enumerate(nodes):
                 no_tty = cli(n)
                 if "Usage: tailscale awg" not in no_tty.stdout:
                     raise RuntimeError("non-TTY root did not print usage")
                 before = cli(n, "status", "--json", json_result=True)
-                cli(n, "transport", "http3-ip" if args.auto_trust else "quic-ip", stdin="")
+                cli(n, "transport", "--no-restart", "http3-ip" if args.auto_trust else "quic-ip", stdin="")
                 if cli(n, "status", "--json", json_result=True)["revision"] != before["revision"]:
                     raise RuntimeError("EOF unexpectedly changed profile")
-                if cli(n, "transport", "--yes", "wg-over-quic", checked=False).returncode == 0:
+                if cli(n, "transport", "--yes", "--no-restart", "wg-over-quic", checked=False).returncode == 0:
                     raise RuntimeError("production CLI accepted WG-over-QUIC")
             awg_profile = json.dumps({"jc": 4, "jmin": 700, "jmax": 899, "s1": 19, "s2": 29, "s3": 15, "s4": 20,
                                       "h1": 773603178, "h2": 1713856760, "h3": 2188170348, "h4": 3015010040})
             if args.auto_trust:
                 for n in nodes:
-                    cli(n, "set", "--yes", awg_profile)
+                    cli(n, "set", "--yes", "--no-restart", awg_profile)
             modes = ("http3-ip", "native", "http3-ip", "native") if args.auto_trust else ("quic-ip", "http3-ip", "native")
             for mode in modes:
                 for n in nodes:
                     before = cli(n, "status", "--json", json_result=True)
                     pid = n["process"].pid
                     if args.auto_trust:
-                        cli(n, "set", "--yes", "quic" if mode == "http3-ip" else awg_profile)
+                        cli(n, "set", "--yes", "--no-restart", "quic" if mode == "http3-ip" else awg_profile)
                     else:
-                        cli(n, "transport", "--yes", mode)
+                        cli(n, "transport", "--yes", "--no-restart", mode)
                     after = cli(n, "status", "--json", json_result=True)
                     if after["active_mode"] != before["active_mode"] or after["desired_mode"] != mode or not after["pending_restart"] or n["process"].pid != pid:
                         raise RuntimeError("staging mislabeled running mode or restarted the daemon")

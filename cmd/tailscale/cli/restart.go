@@ -34,7 +34,7 @@ var (
 )
 
 // restartTailscaled attempts to restart the tailscaled service.
-func restartTailscaled() error {
+var restartTailscaled = func() error {
 	switch restartGOOS() {
 	case "linux":
 		if restartInContainer() {

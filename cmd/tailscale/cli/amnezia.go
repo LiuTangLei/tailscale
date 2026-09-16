@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/peterbourgon/ff/v3/ffcli"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/paths"
 	"tailscale.com/types/key"
 )
 
@@ -38,11 +40,12 @@ Selecting QUIC automatically clears the saved AWG profile after confirmation.
 The old http3-ip name remains accepted for scripts and saved configurations.
 
 Use status to distinguish the active mode from a staged next-start mode.
-transport changes never restart the daemon automatically. Environment or
-embedding overrides must be removed separately before using managed profiles.
+Transport changes restart automatically by default unless --no-restart is set.
+Environment or embedding overrides must be removed separately before using
+managed profiles.
 
 QUIC prepares its identity automatically and needs no AWG parameter sync.
-Use set --yes quic, restart deliberately and check status again.
+Use set --yes quic to apply and verify the selection immediately.
 All communicating nodes must enable compatible QUIC transport.
 Never copy the private daemon profile file to another node.
 
@@ -52,10 +55,18 @@ header-protection key. Existing awg sync continues to manage those parameters.`,
 	Subcommands: []*ffcli.Command{
 		{
 			Name:       "sync",
-			ShortUsage: "tailscale amnezia-wg sync",
+			ShortUsage: "tailscale amnezia-wg sync [--no-restart]",
 			ShortHelp:  "Sync Amnezia-WG config from online peers",
-			LongHelp:   `List all online peers with non-zero Amnezia-WG config, preview and sync config to local node.`,
-			Exec:       runAmneziaWGSync,
+			LongHelp:   `List all online peers with non-zero Amnezia-WG config, preview and sync config to local node. The daemon restarts automatically unless --no-restart is set.`,
+			Exec: func(ctx context.Context, args []string) error {
+				var noRestart bool
+				fs := flag.NewFlagSet("sync", flag.ContinueOnError)
+				fs.BoolVar(&noRestart, "no-restart", false, "stage the selected config without restarting the local daemon")
+				if err := fs.Parse(args); err != nil {
+					return err
+				}
+				return runAmneziaWGSyncWithOptions(ctx, fs.Args(), noRestart)
+			},
 		},
 		awgSetCommand(),
 		{
@@ -74,11 +85,19 @@ This helps identify potential connectivity issues before they occur.`,
 		},
 		{
 			Name:       "reset",
-			ShortUsage: "tailscale amnezia-wg reset",
-			ShortHelp:  "Reset to standard WireGuard with optional restart",
+			ShortUsage: "tailscale amnezia-wg reset [--no-restart]",
+			ShortHelp:  "Reset to standard WireGuard and restart by default",
 			LongHelp: `Reset all Amnezia-WG parameters to zero (standard WireGuard).
-After resetting, you will be prompted to restart tailscaled.`,
-			Exec: runAmneziaWGReset,
+The daemon restarts automatically unless --no-restart is set.`,
+			Exec: func(ctx context.Context, args []string) error {
+				var noRestart bool
+				fs := flag.NewFlagSet("reset", flag.ContinueOnError)
+				fs.BoolVar(&noRestart, "no-restart", false, "leave the daemon staged without a restart")
+				if err := fs.Parse(args); err != nil {
+					return err
+				}
+				return runAmneziaWGResetWithOptions(ctx, fs.Args(), noRestart)
+			},
 		},
 		transportStatusCommand(),
 		transportCommand(),
@@ -115,14 +134,148 @@ func cloneAWGSubcommands(cmds []*ffcli.Command) []*ffcli.Command {
 	return cloned
 }
 
+func ensureSafeLocalRestart() error {
+	if localClient.Socket == "" || localClient.Socket == paths.DefaultTailscaledSocket() {
+		return nil
+	}
+	return fmt.Errorf("refusing to restart the default tailscaled service with custom socket %q; restart that daemon separately", localClient.Socket)
+}
+
+func applyAndRestartAfterMutation(ctx context.Context, noRestart bool, out io.Writer, verify func(context.Context) error) error {
+	if noRestart {
+		if out != nil {
+			fmt.Fprintln(out, "Change saved; daemon restart skipped (--no-restart).")
+		}
+		return nil
+	}
+	if err := ensureSafeLocalRestart(); err != nil {
+		return err
+	}
+	if err := restartTailscaled(); err != nil {
+		return fmt.Errorf("change saved but daemon restart failed: %w", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	var lastErr error
+	for {
+		err := verify(ctx)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return fmt.Errorf("change saved but did not become active after restart: %v", lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+func waitForManagedMode(ctx context.Context, client transportClient, expectedMode string) error {
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		status, err := getTransportStatusForClient(ctx, client)
+		if err == nil {
+			if !status.PendingRestart && status.ActiveMode == expectedMode && status.DesiredMode == expectedMode {
+				return nil
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("active=%s desired=%s pending_restart=%t", status.ActiveMode, status.DesiredMode, status.PendingRestart)
+			}
+		} else if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+func waitForServerState(ctx context.Context, client transportClient, expected bool) error {
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		status, err := getTransportStatusForClient(ctx, client)
+		if err == nil {
+			if !status.PendingRestart && status.Server == expected {
+				return nil
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("server=%t pending_restart=%t", status.Server, status.PendingRestart)
+			}
+		} else if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+func waitForAWGConfig(ctx context.Context, client awgSetupClient, want ipn.AmneziaWGPrefs) error {
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		status, err := getTransportStatusForClient(ctx, client)
+		if err == nil && status.PendingRestart {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("active=%s desired=%s pending_restart=%t", status.ActiveMode, status.DesiredMode, status.PendingRestart)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
+			continue
+		}
+		prefs, err := client.GetPrefs(ctx)
+		if err == nil && prefs != nil && prefs.AmneziaWG == want {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return err
+			}
+			if status.PendingRestart {
+				return fmt.Errorf("active=%s desired=%s pending_restart=%t", status.ActiveMode, status.DesiredMode, status.PendingRestart)
+			}
+			return fmt.Errorf("AWG config not active after restart: got %#v want %#v", prefs.AmneziaWG, want)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 // applyAmneziaWGConfig is shared by set, sync and reset. Switching away from
 // QUIC saves both the native selection and AWG profile before a single restart.
 func applyAmneziaWGConfig(ctx context.Context, config ipn.AmneziaWGPrefs) error {
+	return applyAmneziaWGConfigWithRestart(ctx, config, false, nil)
+}
+
+func applyAmneziaWGConfigWithRestart(ctx context.Context, config ipn.AmneziaWGPrefs, noRestart bool, out io.Writer) error {
 	pending, err := applyAWGForClient(ctx, &localClient, config)
-	if err == nil && pending {
-		fmt.Println("AWG configuration saved; native WG/AWG will activate after restarting tailscaled. The running QUIC transport has not changed.")
+	if err != nil {
+		return err
 	}
-	return err
+	if pending && out != nil {
+		fmt.Fprintf(out, "%s saved; native WG/AWG will activate after restart. The running QUIC transport has not changed.\n", amneziaConfigVersion(config))
+	}
+	if noRestart {
+		if out != nil {
+			fmt.Fprintf(out, "%s configuration staged for a later daemon restart (--no-restart).\n", amneziaConfigVersion(config))
+		}
+		return nil
+	}
+	return applyAndRestartAfterMutation(ctx, false, out, func(ctx context.Context) error {
+		return waitForAWGConfig(ctx, &localClient, config)
+	})
 }
 
 func applyAWGForClient(ctx context.Context, client awgSetupClient, config ipn.AmneziaWGPrefs) (bool, error) {
@@ -347,18 +500,20 @@ func formatConfigAsJSON(config ipn.AmneziaWGPrefs) (string, error) {
 }
 
 func runAmneziaWGReset(ctx context.Context, args []string) error {
+	return runAmneziaWGResetWithOptions(ctx, args, false)
+}
+
+func runAmneziaWGResetWithOptions(ctx context.Context, args []string, noRestart bool) error {
 	if len(args) != 0 {
-		return formatUsageError("tailscale awg reset")
+		return formatUsageError("tailscale awg reset [--no-restart]")
 	}
 
-	// Reset to all zeros (standard WireGuard)
-	config := ipn.AmneziaWGPrefs{} // All zero values
-	if err := applyAmneziaWGConfig(ctx, config); err != nil {
+	config := ipn.AmneziaWGPrefs{}
+	if err := applyAmneziaWGConfigWithRestart(ctx, config, noRestart, os.Stdout); err != nil {
 		return err
 	}
-
 	fmt.Println("Amnezia-WG configuration reset to standard WireGuard.")
-	return restartTailscaledWithPrompt()
+	return nil
 }
 
 func runAmneziaWGValidate(ctx context.Context, args []string) error {
@@ -442,8 +597,12 @@ func formatEnabled(enabled bool) string {
 
 // runAmneziaWGSync implements the sync logic using disco protocol to request AWG configs from peers.
 func runAmneziaWGSync(ctx context.Context, args []string) error {
+	return runAmneziaWGSyncWithOptions(ctx, args, false)
+}
+
+func runAmneziaWGSyncWithOptions(ctx context.Context, args []string, noRestart bool) error {
 	if len(args) != 0 {
-		return formatUsageError("tailscale awg sync")
+		return formatUsageError("tailscale awg sync [--no-restart]")
 	}
 	st, err := localClient.Status(ctx)
 	if err != nil {
@@ -458,7 +617,6 @@ func runAmneziaWGSync(ctx context.Context, args []string) error {
 
 	fmt.Printf("Found %d online peers. Requesting AWG configurations via disco protocol...\n\n", len(peers))
 
-	// Request AWG configs from all online peers (with structured output & stats)
 	peerConfigs, stats, err := requestAWGConfigsFromPeers(ctx, peers)
 	if err != nil {
 		return fmt.Errorf("failed to request AWG configs: %w", err)
@@ -472,7 +630,6 @@ func runAmneziaWGSync(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	// Display found configurations and let user choose (compact list)
 	fmt.Printf("Found AWG configurations on %d peer(s):\n\n", len(peerConfigs))
 	for i, pc := range peerConfigs {
 		fmt.Printf("[%d] %s (%s)\n", i+1, pc.PeerName, pc.PeerIP)
@@ -480,8 +637,7 @@ func runAmneziaWGSync(ctx context.Context, args []string) error {
 		fmt.Println()
 	}
 
-	// Interactive selection and sync
-	return handleInteractiveConfigSync(ctx, peerConfigs)
+	return handleInteractiveConfigSyncWithOptions(ctx, peerConfigs, noRestart)
 }
 
 // collectOnlinePeersForDiscoSync collects all online peers for potential disco-based sync
@@ -783,6 +939,10 @@ func printCompactAWGConfig(config ipn.AmneziaWGPrefs) {
 
 // handleInteractiveConfigSync handles interactive selection and syncing of AWG configs
 func handleInteractiveConfigSync(ctx context.Context, peerConfigs []peerAWGConfig) error {
+	return handleInteractiveConfigSyncWithOptions(ctx, peerConfigs, false)
+}
+
+func handleInteractiveConfigSyncWithOptions(ctx context.Context, peerConfigs []peerAWGConfig, noRestart bool) error {
 	scanner := bufio.NewScanner(os.Stdin)
 
 selectionLoop:
@@ -794,7 +954,7 @@ selectionLoop:
 		}
 
 		fmt.Print("\nChoice [0]: ")
-		if !scanner.Scan() { // EOF or error -> treat as cancel
+		if !scanner.Scan() {
 			fmt.Println("\nCancelled.")
 			return nil
 		}
@@ -813,7 +973,6 @@ selectionLoop:
 		fmt.Printf("\nSelected configuration from %s:\n", selected.PeerName)
 		printAmneziaWGConfig(selected.Config)
 
-		// Confirm/apply loop
 		for {
 			fmt.Print("\nApply this configuration? [Y/n=return to list]: ")
 			if !scanner.Scan() {
@@ -821,18 +980,18 @@ selectionLoop:
 				return nil
 			}
 			ansRaw := strings.TrimSpace(scanner.Text())
-			if ansRaw == "" { // default yes
+			if ansRaw == "" {
 				ansRaw = "y"
 			}
 			ans := strings.ToLower(ansRaw)
 
 			switch ans {
 			case "y", "yes":
-				if err := applyAmneziaWGConfig(ctx, selected.Config); err != nil {
+				if err := applyAmneziaWGConfigWithRestart(ctx, selected.Config, noRestart, os.Stdout); err != nil {
 					return fmt.Errorf("failed to apply configuration: %w", err)
 				}
 				fmt.Printf("✓ AWG configuration synced from %s\n", selected.PeerName)
-				return restartTailscaledWithPrompt()
+				return nil
 			case "n", "no":
 				fmt.Println("Not applied. Returning to list.")
 				continue selectionLoop
@@ -843,28 +1002,17 @@ selectionLoop:
 	}
 }
 
-// restartTailscaledWithPrompt asks user if they want to restart tailscaled and handles the restart.
+// restartTailscaledWithPrompt performs an automatic restart without a second prompt.
 func restartTailscaledWithPrompt() error {
 	if !canRestartTailscaledAutomatically() {
 		fmt.Println(tailscaledManualRestartHint())
 		return nil
 	}
-
-	fmt.Print("Restart Tailscale now to apply changes? [Y/n]: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		fmt.Printf("\nSkipped restart because no interactive input is available. %s\n", tailscaledManualRestartHint())
-		return nil
+	if err := ensureSafeLocalRestart(); err != nil {
+		return err
 	}
-	response := strings.TrimSpace(strings.ToLower(scanner.Text()))
-	if response == "" || response == "y" || response == "yes" {
-		fmt.Println("Restarting Tailscale...")
-		if err := restartTailscaled(); err != nil {
-			return fmt.Errorf("failed to restart Tailscale: %w\n%s", err, tailscaledManualRestartHint())
-		}
-		fmt.Println("Tailscale restarted successfully.")
-	} else {
-		fmt.Printf("Skipped restart. %s\n", tailscaledManualRestartHint())
+	if err := restartTailscaled(); err != nil {
+		return fmt.Errorf("failed to restart Tailscale: %w\n%s", err, tailscaledManualRestartHint())
 	}
 	return nil
 }
