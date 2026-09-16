@@ -63,7 +63,7 @@ func run() error {
 	cliSocket := fs.String("localapi-socket", "", "optional private Unix socket inside --dir for actual CLI tests")
 	hostname := fs.String("hostname", "wgcompat-lab", "test node hostname")
 	port := fs.Uint("port", 42641, "test node UDP port, separate from production")
-	profileName := fs.String("profile", "standard", "standard|awg2|awg3|awg31")
+	profileName := fs.String("profile", "standard", "standard|awg2|awg3|awg31|keep (preserve saved CLI profile)")
 	kernelNamespace := fs.String("kernel-netns", "", "Linux test-only qbench-* namespace containing the kernel TUN; outer sockets remain on host")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		return err
@@ -140,8 +140,10 @@ func run() error {
 	}
 	startup, startupCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer startupCancel()
-	if _, err := lc.EditPrefs(startup, &ipn.MaskedPrefs{Prefs: ipn.Prefs{AmneziaWG: p}, AmneziaWGSet: true}); err != nil {
-		return err
+	if *profileName != "keep" {
+		if _, err := lc.EditPrefs(startup, &ipn.MaskedPrefs{Prefs: ipn.Prefs{AmneziaWG: p}, AmneziaWGSet: true}); err != nil {
+			return err
+		}
 	}
 	if _, err := s.Up(startup); err != nil {
 		return fmt.Errorf("bring up test node: %w", err)
@@ -232,7 +234,7 @@ func serve(ctx context.Context, addr string, h http.Handler) error {
 }
 
 func profile(name string) (ipn.AmneziaWGPrefs, error) {
-	if name == "standard" {
+	if name == "standard" || name == "keep" {
 		return ipn.AmneziaWGPrefs{}, nil
 	}
 	p := ipn.AmneziaWGPrefs{JC: 2, JMin: 64, JMax: 128, S1: 20, S2: 24, S3: 16,

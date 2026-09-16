@@ -2205,9 +2205,20 @@ func (h *Handler) serveAWGSyncApply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "peer returned invalid Amnezia-WG config: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	// Apply via MaskedPrefs
-	mp := &ipn.MaskedPrefs{Prefs: ipn.Prefs{AmneziaWG: cfg}, AmneziaWGSet: true}
-	if _, err := h.b.EditPrefsAs(mp, h.Actor); err != nil {
+	// A sync from a native peer may be used to switch this node back from
+	// QUIC. Save the native selection and AWG profile before a single restart.
+	status, statusErr := h.b.TransportStatus()
+	if statusErr != nil {
+		http.Error(w, "failed to read transport: "+statusErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if status.ActiveMode == "http3-ip" || status.ActiveMode == "quic-ip" || status.DesiredMode == "http3-ip" || status.DesiredMode == "quic-ip" {
+		_, err = h.b.ConfigureTransport(ctx, ipn.TransportControlRequest{Action: "awg", ExpectedRevision: status.Revision, AWG: &cfg})
+	} else {
+		mp := &ipn.MaskedPrefs{Prefs: ipn.Prefs{AmneziaWG: cfg}, AmneziaWGSet: true}
+		_, err = h.b.EditPrefsAs(mp, h.Actor)
+	}
+	if err != nil {
 		http.Error(w, "failed to apply config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

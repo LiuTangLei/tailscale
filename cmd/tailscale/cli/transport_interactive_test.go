@@ -55,12 +55,12 @@ func TestStageTransportConfirmationAndCAS(t *testing.T) {
 	if len(c.writes) != 1 || c.writes[0].Action != "mode" || c.writes[0].Mode != "http3-ip" || c.writes[0].AutoTrust == nil || !*c.writes[0].AutoTrust || c.state.ActiveMode != "native" || !c.state.PendingRestart {
 		t.Fatalf("wrong staged request %+v", c)
 	}
-	if !strings.Contains(out.String(), "NOT restart") || !strings.Contains(out.String(), "experimental") {
+	if !strings.Contains(out.String(), "NOT restart") || !strings.Contains(out.String(), "compatible peers") {
 		t.Fatal("missing safety preview")
 	}
 }
 func TestStageTransportRejectsBeforeWrite(t *testing.T) {
-	for _, setup := range []func(*menuTransportClient){func(c *menuTransportClient) { c.state.Source = "environment" }, func(c *menuTransportClient) { c.state.Available = false }, func(c *menuTransportClient) { c.state.AWGConfigured = true }} {
+	for _, setup := range []func(*menuTransportClient){func(c *menuTransportClient) { c.state.Source = "environment" }, func(c *menuTransportClient) { c.state.Available = false }} {
 		c := menuClient()
 		setup(c)
 		if err := stageTransportMode(context.Background(), c, "quic-ip", true, strings.NewReader(""), &bytes.Buffer{}); err == nil {

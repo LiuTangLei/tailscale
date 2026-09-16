@@ -98,7 +98,7 @@ def main() -> None:
                    '-e', 'TS_STATE_DIR=/state', '-e', 'TS_SOCKET=' + sock,
                    '-e', 'TS_USERSPACE=' + ('false' if args.kernel else 'true'),
                    '-e', 'TS_AUTH_ONCE=false', '-e', 'TS_NO_LOGS_NO_SUPPORT=true',
-                   '-e', 'TS_AUTHKEY=tskey-auth-isolated-test-only',
+                   '-e', 'TS_AUTHKEY=isolated-test-placeholder-not-a-credential',
                    '-e', 'TS_HOSTNAME=issue18-env-test',
                    '-e', 'TS_EXTRA_ARGS=--login-server=' + url + ' --accept-routes']
             if args.kernel:
@@ -152,7 +152,26 @@ def main() -> None:
                 again = json.loads(cli('awg', 'status', '--json').stdout)
                 if again['active_mode'] != 'http3-ip' or again['identity'] != identity:
                     raise RuntimeError('H3 identity changed across restart')
-                report['phases'].append('H3 staged activation and identity persisted across two restarts')
+                report['phases'].append('QUIC staged activation and identity persisted across two restarts')
+                for config in configs:
+                    cli('awg', 'set', '--yes', json.dumps(config))
+                    pending = json.loads(cli('awg', 'status', '--json').stdout)
+                    saved_awg = prefs().get('AmneziaWG')
+                    if pending['active_mode'] != 'http3-ip' or pending['desired_mode'] != 'native' or not pending['awg_configured']:
+                        raise RuntimeError('selecting AWG did not stage native with saved parameters')
+                    if not any(p.get('AmneziaWG') == saved_awg for p in disk_profiles(state)):
+                        raise RuntimeError('staged AWG did not reach disk')
+                    restart()
+                    active = json.loads(cli('awg', 'status', '--json').stdout)
+                    if active['active_mode'] != 'native' or prefs().get('AmneziaWG') != saved_awg:
+                        raise RuntimeError('AWG did not activate after one restart')
+                    cli('awg', 'set', '--yes', 'quic')
+                    if prefs().get('AmneziaWG', {}).get('JC', 0):
+                        raise RuntimeError('selecting QUIC did not clear AWG automatically')
+                    restart()
+                    if json.loads(cli('awg', 'status', '--json').stdout)['active_mode'] != 'http3-ip':
+                        raise RuntimeError('QUIC did not activate after automatic AWG clearing')
+                report['phases'].append('QUIC to AWG v2/v3 to QUIC without manual reset or repeated configuration')
             report['passed'] = True
     except Exception as exc:
         report['error'] = str(exc)

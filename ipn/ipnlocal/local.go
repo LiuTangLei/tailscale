@@ -6140,7 +6140,7 @@ func (b *LocalBackend) authReconfigLocked() {
 	// The config carries no peers; wireguard-go gets those from the
 	// live per-peer config source installed via
 	// [wgengine.Engine.SetPeerConfigFunc], fed by the route manager.
-	awgConfig := prefs.AmneziaWG()
+	awgConfig := awgForRunningTransport(b.packetTransportMode, prefs.AmneziaWG())
 	if effective, err := wgcfg.EffectiveAmneziaConfig(awgConfig); err != nil {
 		// Keep the previous sync provider installed and let Reconfig report
 		// the same validation error without advertising a profile the device

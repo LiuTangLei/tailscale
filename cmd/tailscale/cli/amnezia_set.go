@@ -11,21 +11,25 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/peterbourgon/ff/v3/ffcli"
 	"tailscale.com/ipn"
 )
 
 var errAWGSetupCancelled = errors.New("AmneziaWG setup cancelled")
+var errQUICSetupSelected = errors.New("QUIC selected")
 
 type awgProfileVersion uint8
 
 const (
-	awgProfileV2 awgProfileVersion = 2
-	awgProfileV3 awgProfileVersion = 3
+	awgProfileV2   awgProfileVersion = 2
+	awgProfileV3   awgProfileVersion = 3
+	awgProfileQUIC awgProfileVersion = 4
 )
 
 func (v awgProfileVersion) String() string {
@@ -39,66 +43,128 @@ func (v awgProfileVersion) String() string {
 	}
 }
 
+func awgSetCommand() *ffcli.Command {
+	var yes bool
+	cmd := &ffcli.Command{
+		Name:       "set",
+		ShortUsage: "tailscale amnezia-wg set [--yes] [quic|json-string]",
+		ShortHelp:  "Configure AWG v3, AWG v2, or QUIC",
+		LongHelp:   "Choose AWG v3, AWG v2, or QUIC interactively. QUIC includes the built-in obfuscation and automatically clears the saved AWG profile after confirmation. Use 'set --yes quic' for noninteractive selection, or pass an AWG JSON object directly. Restart tailscaled to activate a transport change.",
+		FlagSet:    flag.NewFlagSet("set", flag.ContinueOnError),
+	}
+	cmd.FlagSet.BoolVar(&yes, "yes", false, "confirm QUIC selection and automatic AWG reset (does not restart)")
+	cmd.Exec = func(ctx context.Context, args []string) error {
+		if yes {
+			_, err := configureAWGSet(ctx, &localClient, args, true, bufio.NewScanner(os.Stdin), os.Stdout)
+			return err
+		}
+		return runAmneziaWGSet(ctx, args)
+	}
+	return cmd
+}
+
+type awgSetupClient interface {
+	transportClient
+	GetPrefs(context.Context) (*ipn.Prefs, error)
+	EditPrefs(context.Context, *ipn.MaskedPrefs) (*ipn.Prefs, error)
+}
+
 func runAmneziaWGSet(ctx context.Context, args []string) error {
-	config, err := parseConfigFromArgs(ctx, args)
-	if errors.Is(err, errAWGSetupCancelled) {
-		fmt.Println("No changes applied.")
-		return nil
-	}
-	if err != nil {
+	changed, err := configureAWGSet(ctx, &localClient, args, false, bufio.NewScanner(os.Stdin), os.Stdout)
+	if err != nil || !changed {
 		return err
 	}
-
-	if err := applyAmneziaWGConfig(ctx, config); err != nil {
-		return err
-	}
-
-	fmt.Printf("%s configuration applied.\n", amneziaConfigVersion(config))
 	return restartTailscaledWithPrompt()
 }
 
-// parseConfigFromArgs accepts one explicit JSON profile, or starts the concise
-// profile generator when no argument is provided. JSON mode remains the
-// advanced path for hand-authored fields and automation.
-func parseConfigFromArgs(ctx context.Context, args []string) (ipn.AmneziaWGPrefs, error) {
+func configureAWGSet(ctx context.Context, client awgSetupClient, args []string, yes bool, scanner *bufio.Scanner, out io.Writer) (bool, error) {
+	selectQUIC := func() (bool, error) {
+		return stageTransportSelection(ctx, client, "quic", yes, out, func(prompt string) (bool, error) {
+			for {
+				fmt.Fprint(out, prompt)
+				if !scanner.Scan() {
+					return false, scanner.Err()
+				}
+				switch strings.ToLower(strings.TrimSpace(scanner.Text())) {
+				case "y", "yes":
+					return true, nil
+				case "", "n", "no", "q", "quit", "cancel":
+					return false, nil
+				default:
+					fmt.Fprintln(out, "Enter y to apply or n to cancel.")
+				}
+			}
+		})
+	}
 	var config ipn.AmneziaWGPrefs
 	switch len(args) {
 	case 1:
-		if err := json.Unmarshal([]byte(args[0]), &config); err != nil {
-			return config, fmt.Errorf("invalid JSON: %w", err)
+		if canonicalTransportMode(args[0]) == "http3-ip" {
+			return selectQUIC()
 		}
-		return config, nil
+		var err error
+		config, err = parseConfigFromArgs(ctx, args)
+		if err != nil {
+			return false, err
+		}
 	case 0:
-		return promptInteractiveConfig(ctx)
+		prefs, err := client.GetPrefs(ctx)
+		if err != nil {
+			return false, err
+		}
+		config, err = promptAWGProfile(scanner, out, cryptorand.Reader, prefs.AmneziaWG)
+		if errors.Is(err, errQUICSetupSelected) {
+			return selectQUIC()
+		}
+		if errors.Is(err, errAWGSetupCancelled) {
+			fmt.Fprintln(out, "No changes applied.")
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
 	default:
-		return config, formatUsageError("tailscale awg set [json-string]")
+		return false, formatUsageError("tailscale awg set [--yes] [quic|json-string]")
 	}
+	pending, err := applyAWGForClient(ctx, client, config)
+	if err != nil {
+		return false, err
+	}
+	if pending {
+		fmt.Fprintf(out, "%s saved. Native WG/AWG will activate after one daemon restart; the running QUIC connection is unchanged.\n", amneziaConfigVersion(config))
+	} else {
+		fmt.Fprintf(out, "%s configuration applied.\n", amneziaConfigVersion(config))
+	}
+	return true, nil
 }
 
-func promptInteractiveConfig(ctx context.Context) (ipn.AmneziaWGPrefs, error) {
-	curPrefs, err := localClient.GetPrefs(ctx)
-	if err != nil {
-		return ipn.AmneziaWGPrefs{}, err
+// JSON remains the advanced AWG path and retains historical field aliases.
+func parseConfigFromArgs(_ context.Context, args []string) (ipn.AmneziaWGPrefs, error) {
+	var config ipn.AmneziaWGPrefs
+	if len(args) != 1 {
+		return config, formatUsageError("tailscale awg set [--yes] [quic|json-string]")
 	}
-	return promptAWGProfile(
-		bufio.NewScanner(os.Stdin),
-		os.Stdout,
-		cryptorand.Reader,
-		curPrefs.AmneziaWG,
-	)
+	if err := json.Unmarshal([]byte(args[0]), &config); err != nil {
+		return config, fmt.Errorf("invalid JSON or mode: use 'quic' or an AWG JSON object: %w", err)
+	}
+	return config, nil
 }
 
 func promptAWGProfile(scanner *bufio.Scanner, out io.Writer, rng io.Reader, current ipn.AmneziaWGPrefs) (ipn.AmneziaWGPrefs, error) {
-	fmt.Fprintf(out, "AmneziaWG profile generator\nCurrent profile: %s\n\n", amneziaConfigVersion(current))
-	fmt.Fprintln(out, "Select a profile to generate:")
+	fmt.Fprintf(out, "Tailscale AWG / QUIC setup\nCurrent profile: %s\n\n", amneziaConfigVersion(current))
+	fmt.Fprintln(out, "Select a mode:")
 	fmt.Fprintln(out, "  1) AWG v3 (recommended, default)")
 	fmt.Fprintln(out, "  2) AWG v2 (legacy compatibility)")
+	fmt.Fprintln(out, "  3) QUIC (built-in obfuscation; clears AWG settings)")
 	fmt.Fprintln(out, "  q) Cancel")
 	fmt.Fprintln(out, "For custom fields, pass a JSON object directly to 'tailscale awg set'.")
 
 	version, err := promptAWGProfileVersion(scanner, out)
 	if err != nil {
 		return ipn.AmneziaWGPrefs{}, err
+	}
+	if version == awgProfileQUIC {
+		return ipn.AmneziaWGPrefs{}, errQUICSetupSelected
 	}
 	config, err := generateAWGProfile(version, rng)
 	if err != nil {
@@ -132,10 +198,12 @@ func promptAWGProfileVersion(scanner *bufio.Scanner, out io.Writer) (awgProfileV
 			return awgProfileV3, nil
 		case "2", "v2", "awg2", "awg-v2":
 			return awgProfileV2, nil
+		case "3", "quic", "http3-ip", "http3", "h3":
+			return awgProfileQUIC, nil
 		case "q", "quit", "cancel":
 			return 0, errAWGSetupCancelled
 		default:
-			fmt.Fprintln(out, "Enter 1 for AWG v3, 2 for AWG v2, or q to cancel.")
+			fmt.Fprintln(out, "Enter 1 for AWG v3, 2 for AWG v2, 3 for QUIC, or q to cancel.")
 		}
 	}
 }

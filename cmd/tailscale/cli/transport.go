@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -44,9 +43,9 @@ func runAWGRootMenu(ctx context.Context, in io.Reader, out io.Writer, tty bool, 
 		fmt.Fprintln(out, "Tailscale AWG")
 		fmt.Fprintln(out, "  1) Status")
 		fmt.Fprintln(out, "  2) Native WG / preserve AWG profile")
-		fmt.Fprintln(out, "  3) AWG profile actions")
-		fmt.Fprintln(out, "  4) HTTP/3 transport (experimental)")
-		fmt.Fprintln(out, "  5) Declare this node an H3 server (on/off)")
+		fmt.Fprintln(out, "  3) Configure AWG / QUIC")
+		fmt.Fprintln(out, "  4) QUIC transport")
+		fmt.Fprintln(out, "  5) Declare this node a QUIC server (on/off)")
 		fmt.Fprintln(out, "  6) Public identity init/export")
 		fmt.Fprintln(out, "  7) Trust peer import/remove")
 		fmt.Fprintln(out, "  8) Validate / doctor")
@@ -75,12 +74,12 @@ func runAWGRootMenu(ctx context.Context, in io.Reader, out io.Writer, tty bool, 
 			// its read-ahead cannot consume a subsequent root-menu command.
 			fmt.Fprintln(out, "Generate an AWG profile here; use 'awg sync', 'get', or 'reset' for existing profile operations.")
 			return runInteractiveAWGProfile(ctx, reader, stdOut)
-		case "quic-ip", "quic":
-			fmt.Fprintln(out, "Advanced compatibility mode: raw quic-ip. New deployments should select HTTP/3.")
+		case "quic-ip":
+			fmt.Fprintln(out, "Legacy raw QUIC compatibility mode.")
 			if err := runAWGTransportMode(ctx, "quic-ip", false, reader, stdOut); err != nil {
 				fmt.Fprintf(out, "quic-ip: %v\n", err)
 			}
-		case "4", "http3-ip", "http3":
+		case "4", "quic", "http3-ip", "http3", "h3":
 			if err := runAWGTransportMode(ctx, "http3-ip", false, reader, stdOut); err != nil {
 				fmt.Fprintf(out, "http3-ip: %v\n", err)
 			}
@@ -146,8 +145,31 @@ func isTTY(r io.Reader) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
+// User-facing QUIC always selects the existing HTTP/3 data plane. Keep old
+// serialized names unchanged so existing profiles and scripts still work.
+func canonicalTransportMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "quic", "http3", "h3":
+		return "http3-ip"
+	default:
+		return mode
+	}
+}
+
+func transportModeLabel(mode string) string {
+	switch canonicalTransportMode(mode) {
+	case "http3-ip":
+		return "QUIC"
+	case "quic-ip":
+		return "QUIC (legacy raw)"
+	default:
+		return mode
+	}
+}
+
 func transportModeIsValid(mode string) bool {
-	switch strings.ToLower(mode) {
+	switch canonicalTransportMode(mode) {
 	case "native", "quic-ip", "http3-ip":
 		return true
 	default:
@@ -156,7 +178,7 @@ func transportModeIsValid(mode string) bool {
 }
 
 func transportModeUsesQUIC(mode string) bool {
-	switch strings.ToLower(mode) {
+	switch canonicalTransportMode(mode) {
 	case "quic-ip", "http3-ip":
 		return true
 	default:
@@ -227,13 +249,13 @@ func renderTransportStatus(status ipn.TransportControlStatus, out io.Writer, jso
 		status.Source = "default"
 	}
 	fmt.Fprintf(out, "Transport status\n")
-	fmt.Fprintf(out, "  Active mode: %s\n", status.ActiveMode)
-	fmt.Fprintf(out, "  Desired mode: %s\n", status.DesiredMode)
-	fmt.Fprintf(out, "  H3 server declaration (next start): %t\n", status.Server)
+	fmt.Fprintf(out, "  Active mode: %s\n", transportModeLabel(status.ActiveMode))
+	fmt.Fprintf(out, "  Desired mode: %s\n", transportModeLabel(status.DesiredMode))
+	fmt.Fprintf(out, "  QUIC server declaration (next start): %t\n", status.Server)
 	if status.PendingRestart {
 		fmt.Fprintln(out, "  Pending restart: yes")
 		if status.ActiveMode != status.DesiredMode {
-			fmt.Fprintf(out, "  Restart required to activate %s.\n", status.DesiredMode)
+			fmt.Fprintf(out, "  Restart required to activate %s.\n", transportModeLabel(status.DesiredMode))
 		}
 	} else {
 		fmt.Fprintln(out, "  Pending restart: no")
@@ -260,8 +282,10 @@ func renderTransportStatus(status ipn.TransportControlStatus, out io.Writer, jso
 	}
 	if status.AWGConfigured {
 		fmt.Fprintln(out, "  AWG configured: yes")
-		if transportModeUsesQUIC(status.DesiredMode) || transportModeUsesQUIC(status.ActiveMode) {
-			fmt.Fprintln(out, "  Warning: QUIC transport does not use AWG. Reset AWG explicitly before using quic-ip or http3-ip.")
+		if status.DesiredMode == "native" && transportModeUsesQUIC(status.ActiveMode) {
+			fmt.Fprintln(out, "  AWG is saved for the next native start; the running QUIC connection is unchanged.")
+		} else if transportModeUsesQUIC(status.DesiredMode) {
+			fmt.Fprintln(out, "  Warning: selecting QUIC clears the saved AWG profile automatically; restart the daemon to activate QUIC.")
 		}
 	} else {
 		fmt.Fprintln(out, "  AWG configured: no")
@@ -277,12 +301,13 @@ func renderTransportStatus(status ipn.TransportControlStatus, out io.Writer, jso
 
 func runAWGTransport(ctx context.Context, args []string) error {
 	if len(args) != 1 {
-		return formatUsageError("tailscale awg transport [native|quic-ip|http3-ip]")
+		return formatUsageError("tailscale awg transport [native|quic]")
 	}
 	return runAWGTransportMode(ctx, args[0], false, os.Stdin, os.Stdout)
 }
 
 func transportModeRequest(status ipn.TransportControlStatus, mode string) ipn.TransportControlRequest {
+	mode = canonicalTransportMode(mode)
 	req := ipn.TransportControlRequest{Action: "mode", ExpectedRevision: status.Revision, Mode: mode}
 	if mode == "http3-ip" {
 		autoTrust := true
@@ -292,53 +317,66 @@ func transportModeRequest(status ipn.TransportControlStatus, mode string) ipn.Tr
 }
 
 func runAWGTransportMode(ctx context.Context, mode string, yes bool, in io.Reader, out io.Writer) error {
-	mode = strings.TrimSpace(strings.ToLower(mode))
+	mode = canonicalTransportMode(mode)
 	if !transportModeIsValid(mode) {
-		return fmt.Errorf("invalid mode %q: supported values are native, quic-ip, http3-ip", mode)
+		return fmt.Errorf("invalid mode %q: supported values are native, quic", mode)
 	}
 	return stageTransportMode(ctx, &localClient, mode, yes, in, out)
 }
 
 func stageTransportMode(ctx context.Context, client transportClient, mode string, yes bool, in io.Reader, out io.Writer) error {
+	_, err := stageTransportSelection(ctx, client, mode, yes, out, func(prompt string) (bool, error) {
+		return confirmTransportAction(in, out, prompt)
+	})
+	return err
+}
+
+// A shared confirmation function lets the awg set menu reuse its Scanner,
+// without losing buffered input when switching to the QUIC confirmation.
+func stageTransportSelection(ctx context.Context, client transportClient, mode string, yes bool, out io.Writer, confirm func(string) (bool, error)) (bool, error) {
+	mode = canonicalTransportMode(mode)
 	if !transportModeIsValid(mode) {
-		return errors.New("invalid transport mode")
+		return false, errors.New("invalid transport mode")
 	}
 	status, err := getTransportStatusForClient(ctx, client)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !status.Available {
-		return errTransportUnavailable
+		return false, errTransportUnavailable
 	}
 	if status.Source == "environment" || status.Source == "embedded" {
-		return errors.New("transport is externally configured; remove that override before staging a managed mode")
+		return false, errors.New("transport is externally configured; remove that override before staging a managed mode")
 	}
 	if transportModeUsesQUIC(mode) && status.AWGConfigured {
-		return errors.New("Reset AWG explicitly before staging QUIC-IP/HTTP3-IP; existing AWG links may be interrupted")
+		fmt.Fprintln(out, "Selecting QUIC will clear the saved AWG profile automatically. Existing AWG connections may be interrupted; keep another administration path available.")
 	}
 	if mode == "http3-ip" {
-		fmt.Fprintln(out, "HTTP/3 is experimental, not a Chrome fingerprint clone; performance depends on the path.")
+		fmt.Fprintln(out, "QUIC uses the built-in obfuscation and requires compatible peers; performance depends on the path.")
 		if status.Identity == nil {
-			fmt.Fprintln(out, "No local HTTP/3 identity is staged yet. The next mode change will generate one automatically and enable node-key auto-trust.")
+			fmt.Fprintln(out, "The local QUIC identity and node-key trust will be configured automatically.")
 		}
 	}
-	fmt.Fprintf(out, "Active: %s; stage %s for the next daemon start. This command will NOT restart the daemon.\n", status.ActiveMode, mode)
+	fmt.Fprintf(out, "Active: %s; stage %s for the next daemon start. This command will NOT restart the daemon.\n", transportModeLabel(status.ActiveMode), transportModeLabel(mode))
 	if !yes {
-		confirmed, err := confirmTransportAction(in, out, fmt.Sprintf("Switch transport mode to %s? [y/N]: ", mode))
+		confirmed, err := confirm(fmt.Sprintf("Switch transport mode to %s? [y/N]: ", transportModeLabel(mode)))
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !confirmed {
 			fmt.Fprintln(out, "No changes applied.")
-			return nil
+			return false, nil
 		}
 	}
 	req := transportModeRequest(status, mode)
 	updated, err := configureTransportForClient(ctx, client, req)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return renderTransportStatus(updated, out, false)
+	if transportModeUsesQUIC(mode) && status.AWGConfigured {
+		fmt.Fprintln(out, "Saved AWG profile cleared. Restart tailscaled to activate QUIC.")
+	}
+	return true, renderTransportStatus(updated, out, false)
 }
 
 func confirmTransportAction(in io.Reader, out io.Writer, prompt string) (bool, error) {
@@ -400,8 +438,8 @@ func runAWGDoctor(ctx context.Context, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if status.AWGConfigured && transportModeUsesQUIC(status.ActiveMode) {
-		fmt.Fprintln(out, "Warning: active QUIC transport does not use AWG. Reset the AWG profile to return to WG/native operation.")
+	if status.AWGConfigured && transportModeUsesQUIC(status.ActiveMode) && status.DesiredMode == "native" {
+		fmt.Fprintln(out, "AWG is saved. Restart tailscaled once to activate native WG/AWG.")
 	}
 	for _, warn := range status.Warnings {
 		fmt.Fprintf(out, "Warning: %s\n", warn)
@@ -432,7 +470,7 @@ func runAWGPeerList(ctx context.Context, out io.Writer) error {
 		if status.AutoTrust {
 			fmt.Fprintln(out, "Peers authenticate automatically using authorized Tailnet node keys; no explicit certificate pins are configured.")
 		} else {
-			fmt.Fprintln(out, "No explicit peer pins configured. Selecting HTTP/3 enables automatic Tailnet node authentication.")
+			fmt.Fprintln(out, "No explicit peer pins configured. Selecting QUIC enables automatic Tailnet node authentication.")
 		}
 		return nil
 	}
@@ -449,21 +487,8 @@ func runInteractiveAWGProfile(ctx context.Context, in io.Reader, out io.Writer) 
 	if out == nil {
 		out = os.Stdout
 	}
-	curPrefs, err := localClient.GetPrefs(ctx)
-	if err != nil {
-		return err
-	}
-	scanner := bufio.NewScanner(in)
-	config, err := promptAWGProfile(scanner, out, rand.Reader, curPrefs.AmneziaWG)
-	if err != nil {
-		return err
-	}
-	if err := applyAmneziaWGConfig(ctx, config); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "%s configuration applied.\n", amneziaConfigVersion(config))
-	fmt.Fprintln(out, "The AWG preferences were updated; the daemon was not restarted.")
-	return nil
+	_, err := configureAWGSet(ctx, &localClient, nil, false, bufio.NewScanner(in), out)
+	return err
 }
 
 func readTransportPeerJSON(input string) ([]byte, error) {
@@ -667,15 +692,15 @@ func transportCommand() *ffcli.Command {
 	var yes bool
 	cmd := &ffcli.Command{
 		Name:       "transport",
-		ShortUsage: "tailscale amnezia-wg transport [native|quic-ip|http3-ip]",
+		ShortUsage: "tailscale amnezia-wg transport [native|quic]",
 		ShortHelp:  "Stage a transport mode change",
-		LongHelp:   "Choose native WG/AWG or http3-ip. Raw quic-ip remains accepted for old prerelease configurations and explicit performance comparison; it is never silently converted. Changes are staged and require a later daemon restart.",
+		LongHelp:   "Choose native WG/AWG or QUIC with built-in obfuscation. Selecting QUIC automatically clears saved AWG settings after confirmation. Changes require a later daemon restart. The old http3-ip name remains an alias; quic-ip is accepted only for legacy raw-QUIC configurations.",
 	}
 	cmd.FlagSet = flag.NewFlagSet("transport", flag.ContinueOnError)
 	cmd.FlagSet.BoolVar(&yes, "yes", false, "skip confirmation and stage the next-start mode (does not restart)")
 	cmd.Exec = func(ctx context.Context, args []string) error {
 		if len(args) != 1 {
-			return formatUsageError("tailscale amnezia-wg transport [native|quic-ip|http3-ip]")
+			return formatUsageError("tailscale amnezia-wg transport [native|quic]")
 		}
 		return runAWGTransportMode(ctx, args[0], yes, os.Stdin, os.Stdout)
 	}

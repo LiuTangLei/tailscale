@@ -87,7 +87,7 @@ func (b *LocalBackend) transportStatusLocked() (ipn.TransportControlStatus, erro
 		if p.Mode == "quic-ip" {
 			s.Warnings = append(s.Warnings, "The legacy raw QUIC profile requires explicit public identity pins.")
 		} else {
-			s.Warnings = append(s.Warnings, "Selecting HTTP/3 prepares a local TLS identity automatically; no peer-card export/import or AWG synchronization is required.")
+			s.Warnings = append(s.Warnings, "Selecting QUIC prepares its identity automatically and clears saved AWG settings; no peer-card export/import or AWG synchronization is required.")
 		}
 	}
 	if p.Identity != nil && p.LocalKey != "" && "nodekey:"+p.LocalKey != s.LocalPublicKey && !p.AutoTrust {
@@ -95,7 +95,7 @@ func (b *LocalBackend) transportStatusLocked() (ipn.TransportControlStatus, erro
 	}
 	if p.Mode != "native" || (s.ActiveMode != "native" && s.ActiveMode != "unknown") {
 		if p.AutoTrust {
-			s.Warnings = append(s.Warnings, "HTTP/3 auto-trust authenticates by the current authorized Tailnet node key; explicit manual pins remain additional constraints.")
+			s.Warnings = append(s.Warnings, "QUIC auto-trust authenticates by the current authorized Tailnet node key; explicit manual pins remain additional constraints.")
 		} else {
 			s.Warnings = append(s.Warnings, "QUIC is a node-wide data plane in this build; native communication with old peers does not run concurrently. A trusted identity card is not evidence that the peer enabled the same protocol.")
 			if len(s.UnconfiguredPeers) != 0 {
@@ -105,9 +105,9 @@ func (b *LocalBackend) transportStatusLocked() (ipn.TransportControlStatus, erro
 	}
 	if p.Mode == "http3-ip" {
 		if p.AutoTrust {
-			s.Warnings = append(s.Warnings, "HTTP/3 is experimental, not a Chrome fingerprint clone. The generated .invalid authority is private and authenticated by the current authorized Tailnet node key, not a public domain certificate.")
+			s.Warnings = append(s.Warnings, "QUIC obfuscation is not a Chrome fingerprint clone. Its private authority is authenticated by the current authorized Tailnet node key, not a public domain certificate.")
 		} else {
-			s.Warnings = append(s.Warnings, "HTTP/3 is experimental, not a Chrome fingerprint clone. The generated .invalid authority is private and authenticated by a pinned key, not a public domain certificate.")
+			s.Warnings = append(s.Warnings, "QUIC obfuscation is not a Chrome fingerprint clone. Its private authority is authenticated by a pinned key, not a public domain certificate.")
 		}
 	}
 	return s, nil
@@ -115,7 +115,9 @@ func (b *LocalBackend) transportStatusLocked() (ipn.TransportControlStatus, erro
 
 // ConfigureTransport only stages a next-start profile. Restart is deliberately
 // external: automatically restarting over this connection could lock out the
-// administrator. The normal AWG preferences and production socket stay intact.
+// administrator. Selecting QUIC also clears the separately persisted AWG
+// profile, after transport validation and saving have succeeded. Selecting AWG
+// stages native mode and saves its profile without changing the running QUIC engine.
 func (b *LocalBackend) ConfigureTransport(ctx context.Context, req ipn.TransportControlRequest) (ipn.TransportControlStatus, error) {
 	b.transportProfileMu.Lock()
 	defer b.transportProfileMu.Unlock()
@@ -135,8 +137,32 @@ func (b *LocalBackend) ConfigureTransport(ctx context.Context, req ipn.Transport
 	if req.Action != "validate" && (s.Source == "environment" || s.Source == "embedded") {
 		return s, errors.New("transport is externally configured; no managed changes were saved")
 	}
-	if req.Action == "mode" && req.Mode != "native" && s.AWGConfigured {
-		return s, errors.New("QUIC-IP does not use AWG; explicitly reset AWG preferences before selecting it (this can interrupt native AWG peers)")
+	if req.Action == "mode" && req.Mode == "quic" {
+		req.Mode = "http3-ip"
+		autoTrust := true
+		req.AutoTrust = &autoTrust
+	}
+	var awgUpdate *ipn.AmneziaWGPrefs
+	if req.Action == "awg" {
+		if req.AWG == nil {
+			return s, errors.New("AWG configuration is required; no settings were changed")
+		}
+		if _, err := wgcfg.EffectiveAmneziaConfig(*req.AWG); err != nil {
+			return s, fmt.Errorf("invalid AWG configuration: %w", err)
+		}
+		config := *req.AWG
+		awgUpdate = &config
+		req.Action, req.Mode = "mode", "native"
+	}
+	resetAWG := req.Action == "mode" && (req.Mode == "http3-ip" || req.Mode == "quic-ip")
+	if resetAWG {
+		awgUpdate = new(ipn.AmneziaWGPrefs)
+		// Stored preferences can be cleared here, but process environment
+		// overrides cannot. Reject those before changing either state file.
+		effective, err := wgcfg.EffectiveAmneziaConfig(ipn.AmneziaWGPrefs{})
+		if err != nil || !effective.IsZero() {
+			return s, errors.New("remove TS_AMNEZIA_* environment overrides before selecting QUIC; no settings were changed")
+		}
 	}
 	if req.Action == "add-peer" && req.Peer != nil {
 		var pk key.NodePublic
@@ -155,6 +181,7 @@ func (b *LocalBackend) ConfigureTransport(ctx context.Context, req ipn.Transport
 	if err != nil {
 		return s, err
 	}
+	previous := p
 	p, err = transportprofile.Apply(p, req, s.LocalPublicKey)
 	if err != nil {
 		return s, err
@@ -168,8 +195,63 @@ func (b *LocalBackend) ConfigureTransport(ctx context.Context, req ipn.Transport
 	if err := ctx.Err(); err != nil {
 		return s, err
 	}
-	if _, err := transportprofile.Save(b.TailscaleVarRoot(), p, s.Revision); err != nil {
-		return s, fmt.Errorf("stage transport: %w", err)
+	if err := b.saveTransportSelection(p, previous, s, awgUpdate); err != nil {
+		return s, err
 	}
 	return b.transportStatusLocked()
+}
+
+// saveTransportSelection serializes the AWG update with transport changes.
+// Persist before updating in-memory preferences: the ordinary EditPrefs path
+// only logs store errors. A running QUIC engine does not consume saved AWG
+// parameters; they become active when the staged native engine starts.
+func (b *LocalBackend) saveTransportSelection(next, previous transportprofile.Profile, status ipn.TransportControlStatus, awgUpdate *ipn.AmneziaWGPrefs) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if awgUpdate != nil {
+		self := b.currentNode().Self()
+		if !self.Valid() || self.Key().String() != status.LocalPublicKey {
+			return transportprofile.ErrConflict
+		}
+	}
+	prefs := b.pm.CurrentPrefs()
+	var update func() error
+	if awgUpdate != nil && prefs.Valid() && prefs.AmneziaWG() != *awgUpdate {
+		updated := prefs.AsStruct()
+		updated.AmneziaWG = *awgUpdate
+		// Only the AWG field changes, and it was validated for the next
+		// engine above. Do not validate it against the still-running QUIC
+		// engine or apply it to that engine before the deliberate restart.
+		stateKey := b.pm.CurrentProfile().Key()
+		if stateKey == "" {
+			return errors.New("log in before switching transport; no settings were changed")
+		}
+		update = func() error {
+			if err := b.pm.writePrefsToStore(stateKey, updated.View()); err != nil {
+				return err
+			}
+			b.setPrefsLocked(updated)
+			return nil
+		}
+	}
+	return saveTransportWithAWGUpdate(b.TailscaleVarRoot(), previous, next, status.Revision, update)
+}
+
+// Do not change AWG if transport saving fails. If the AWG store rejects the
+// write, restore the previous transport selection and report either failure.
+func saveTransportWithAWGUpdate(root string, previous, next transportprofile.Profile, revision string, update func() error) error {
+	savedRevision, err := transportprofile.Save(root, next, revision)
+	if err != nil {
+		return fmt.Errorf("stage transport: %w", err)
+	}
+	if update != nil {
+		if err := update(); err != nil {
+			_, rollbackErr := transportprofile.Save(root, previous, savedRevision)
+			if rollbackErr != nil {
+				return errors.Join(fmt.Errorf("save AWG: %w", err), fmt.Errorf("restore transport: %w", rollbackErr))
+			}
+			return fmt.Errorf("save AWG (transport selection restored): %w", err)
+		}
+	}
+	return nil
 }

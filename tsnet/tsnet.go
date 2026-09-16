@@ -966,6 +966,11 @@ func (s *Server) start() (reterr error) {
 	}
 	closePool.addFunc(func() { s.lb.Shutdown() })
 	prefs := ipn.NewPrefs()
+	// Like tailscale up, an embedded restart must preserve the independently
+	// managed AWG profile, including one staged for a native transport start.
+	if previous := lb.Prefs(); previous.Valid() {
+		prefs.AmneziaWG = previous.AmneziaWG()
+	}
 	prefs.Hostname = s.hostname
 	prefs.WantRunning = true
 	prefs.ControlURL = s.getControlURL()

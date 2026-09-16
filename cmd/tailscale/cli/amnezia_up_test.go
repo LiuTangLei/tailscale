@@ -26,10 +26,10 @@ func TestUpPreservesAWGProfile(t *testing.T) {
 			flags       []string
 			fullStart   bool
 		}{
-			{"container_authkey", "Running", []string{"--auth-key=tskey-auth-test-only", "--accept-dns=false", "--accept-routes", "--login-server=http://127.0.0.1:18440"}, true},
+			{"container_authkey", "Running", []string{"--auth-key=test-placeholder-not-a-credential", "--accept-dns=false", "--accept-routes", "--login-server=http://127.0.0.1:18440"}, true},
 			{"container_starting", "Starting", []string{"--accept-dns=false", "--accept-routes"}, true},
 			{"reauth", "Running", []string{"--force-reauth"}, true},
-			{"reset_up_flags", "Running", []string{"--reset", "--auth-key=tskey-auth-test-only"}, true},
+			{"reset_up_flags", "Running", []string{"--reset", "--auth-key=test-placeholder-not-a-credential"}, true},
 			{"edit_running", "Running", []string{"--accept-routes"}, false},
 		} {
 			t.Run(name+"/"+tc.name, func(t *testing.T) {
