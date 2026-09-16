@@ -32,7 +32,9 @@ Focused validation was run in the CLI package:
 
 - `go test ./cmd/tailscale/cli -count=1`
 
-This passed successfully.
+This passed successfully. Parent review additionally ran the CLI race suite and real isolated two-node AWG/QUIC/sync smoke checks. Regression coverage now includes default --yes activation, idempotent QUIC selection, cancellation and EOF without mutation, custom-socket/container preflight, explicit --no-restart staging, restart failure, verification deadline, active-native checks for AWG, redacted mismatch errors, and ffcli flag parsing for sync/reset.
+
+Verification uses a shared context deadline so a blocked LocalAPI request cannot bypass the timeout. Service-manager invocations are bounded and macOS sudo is noninteractive. Unsupported/custom-socket automatic restarts are rejected before configuration changes, rather than silently leaving a staged selection. The script's late sync-phase commands explicitly opt into --no-restart too.
 
 ## Limitations
 

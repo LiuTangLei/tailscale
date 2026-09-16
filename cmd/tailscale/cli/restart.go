@@ -4,12 +4,14 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"tailscale.com/hostinfo"
 	"tailscale.com/version/distro"
@@ -29,7 +31,11 @@ var (
 	restartDistro      = distro.Get
 	restartInContainer = defaultRestartInContainer
 	restartCommand     = func(name string, args ...string) ([]byte, error) {
-		return exec.Command(name, args...).CombinedOutput()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.WaitDelay = 2 * time.Second
+		return cmd.CombinedOutput()
 	}
 )
 
@@ -54,7 +60,7 @@ var restartTailscaled = func() error {
 		})
 	case "darwin":
 		// On macOS, try launchctl
-		if out, err := restartCommand("sudo", "launchctl", "kickstart", "-k", "system/com.tailscale.tailscaled"); err != nil {
+		if out, err := restartCommand("sudo", "-n", "launchctl", "kickstart", "-k", "system/com.tailscale.tailscaled"); err != nil {
 			return fmt.Errorf("failed to restart tailscaled on macOS: %v\nOutput: %s", err, out)
 		}
 		return nil

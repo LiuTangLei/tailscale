@@ -175,13 +175,13 @@ def main():
                 # Sync uses the shared set/apply path while the receiver is
                 # still QUIC and the source has already restarted into AWG.
                 for n in nodes:
-                    cli(n, 'set', '--yes', 'quic')
+                    cli(n, 'set', '--yes', '--no-restart', 'quic')
                 stop_nodes()
                 start_nodes()
-                cli(nodes[0], 'set', '--yes', awg_profile)
+                cli(nodes[0], 'set', '--yes', '--no-restart', awg_profile)
                 stop_nodes()
                 start_nodes()
-                sync_result = cli(nodes[1], 'sync', stdin='1\ny\nn\n')
+                sync_result = cli(nodes[1], 'sync', '--no-restart', stdin='1\ny\n')
                 result['sync_output'] = sync_result.stdout + sync_result.stderr
                 staged = cli(nodes[1], 'status', '--json', json_result=True)
                 result['sync_staged_status'] = staged

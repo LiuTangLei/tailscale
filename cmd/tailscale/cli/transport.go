@@ -384,13 +384,18 @@ func stageTransportSelectionWithOptions(ctx context.Context, client transportCli
 			return false, nil
 		}
 	}
+	if !noRestart {
+		if err := ensureSafeLocalRestart(); err != nil {
+			return false, err
+		}
+	}
 	req := transportModeRequest(status, mode)
 	updated, err := configureTransportForClient(ctx, client, req)
 	if err != nil {
 		return false, err
 	}
 	if transportModeUsesQUIC(mode) && status.AWGConfigured {
-		fmt.Fprintln(out, "Saved AWG profile cleared. Restarting tailscaled to activate QUIC.")
+		fmt.Fprintln(out, "Saved AWG profile cleared.")
 	}
 	if noRestart {
 		return true, renderTransportStatus(updated, out, false)

@@ -136,6 +136,11 @@ func configureAWGSetWithOptions(ctx context.Context, client awgSetupClient, args
 	default:
 		return false, formatUsageError("tailscale awg set [--yes] [--no-restart] [quic|json-string]")
 	}
+	if !noRestart {
+		if err := ensureSafeLocalRestart(); err != nil {
+			return false, err
+		}
+	}
 	pending, err := applyAWGForClient(ctx, client, config)
 	if err != nil {
 		return false, err
@@ -143,12 +148,15 @@ func configureAWGSetWithOptions(ctx context.Context, client awgSetupClient, args
 	if pending {
 		fmt.Fprintf(out, "%s saved. Native WG/AWG will activate after one daemon restart; the running QUIC connection is unchanged.\n", amneziaConfigVersion(config))
 	} else {
-		fmt.Fprintf(out, "%s configuration applied.\n", amneziaConfigVersion(config))
+		fmt.Fprintf(out, "%s configuration saved.\n", amneziaConfigVersion(config))
 	}
 	if err := applyAndRestartAfterMutation(ctx, noRestart, out, func(ctx context.Context) error {
 		return waitForAWGConfig(ctx, client, config)
 	}); err != nil {
 		return false, err
+	}
+	if !noRestart {
+		fmt.Fprintf(out, "%s is active.\n", amneziaConfigVersion(config))
 	}
 	return true, nil
 }

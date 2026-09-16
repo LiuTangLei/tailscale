@@ -63,7 +63,7 @@ func stageServerDeclarationWithOptions(ctx context.Context, client transportClie
 	if status.Source == "environment" || status.Source == "embedded" {
 		return errors.New("transport is externally configured; change its node-wide server option there")
 	}
-	if status.Server == enabled {
+	if status.Server == enabled && !status.PendingRestart {
 		fmt.Fprintln(out, "Server declaration is already configured; no changes applied.")
 		return renderTransportStatus(status, out, false)
 	}
@@ -78,11 +78,16 @@ func stageServerDeclarationWithOptions(ctx context.Context, client transportClie
 			return nil
 		}
 	}
+	if !noRestart {
+		if err := ensureSafeLocalRestart(); err != nil {
+			return err
+		}
+	}
 	updated, err := configureTransportForClient(ctx, client, ipn.TransportControlRequest{Action: "server", ExpectedRevision: status.Revision, Server: &enabled})
 	if err != nil {
 		return err
 	}
-	if noRestart {
+	if noRestart || !updated.PendingRestart {
 		return renderTransportStatus(updated, out, false)
 	}
 	if err := applyAndRestartAfterMutation(ctx, false, out, func(ctx context.Context) error {
