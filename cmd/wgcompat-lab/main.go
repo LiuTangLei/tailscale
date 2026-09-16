@@ -432,29 +432,34 @@ func (n *node) probe(w http.ResponseWriter, r *http.Request) {
 	}
 	result := probeResult{Target: ip.String(), Profile: n.profile}
 	started := time.Now()
-	// Discovery may be used to select a path, but is never the data-plane proof.
-	for i := 0; i < 4; i++ {
-		pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
-		result.Disco, _ = n.lc.Ping(pingCtx, ip, tailcfg.PingDisco)
-		pingCancel()
-		if result.Disco != nil && result.Disco.Err == "" && result.Disco.Endpoint != "" {
-			break
+	// Application-only probes exercise a cold TCP connection without warming
+	// discovery or making a single unreliable TSMP packet a prerequisite.
+	// The default retains the existing separate encrypted-TSMP check.
+	if r.URL.Query().Get("application-only") != "true" {
+		// Discovery may be used to select a path, but is never the data-plane proof.
+		for i := 0; i < 4; i++ {
+			pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+			result.Disco, _ = n.lc.Ping(pingCtx, ip, tailcfg.PingDisco)
+			pingCancel()
+			if result.Disco != nil && result.Disco.Err == "" && result.Disco.Endpoint != "" {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				http.Error(w, ctx.Err().Error(), 504)
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
 		}
-		select {
-		case <-ctx.Done():
-			http.Error(w, ctx.Err().Error(), 504)
+		result.TSMP, err = n.lc.Ping(ctx, ip, tailcfg.PingTSMP)
+		if err != nil {
+			http.Error(w, "encrypted TSMP: "+err.Error(), 504)
 			return
-		case <-time.After(250 * time.Millisecond):
 		}
-	}
-	result.TSMP, err = n.lc.Ping(ctx, ip, tailcfg.PingTSMP)
-	if err != nil {
-		http.Error(w, "encrypted TSMP: "+err.Error(), 504)
-		return
-	}
-	if result.TSMP == nil || result.TSMP.Err != "" {
-		http.Error(w, fmt.Sprintf("encrypted TSMP failed: %+v", result.TSMP), 504)
-		return
+		if result.TSMP == nil || result.TSMP.Err != "" {
+			http.Error(w, fmt.Sprintf("encrypted TSMP failed: %+v", result.TSMP), 504)
+			return
+		}
 	}
 	tr := &http.Transport{DialContext: n.server.Dial, DisableKeepAlives: true, Proxy: nil, ResponseHeaderTimeout: 30 * time.Second}
 	defer tr.CloseIdleConnections()

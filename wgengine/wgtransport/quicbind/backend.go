@@ -140,6 +140,7 @@ type peer struct {
 	tx               chan *packetBuffer
 	mu               sync.Mutex
 	session          *session
+	draining         *session // at most one authenticated crossed-dial loser
 	dialing          chan struct{}
 	disabled         atomic.Bool
 	retired          atomic.Bool   // actor was evicted; it can never be revived
@@ -275,9 +276,12 @@ func (p *peer) resetSession(reason string, disable bool) {
 		p.disabled.Store(true)
 	}
 	p.epoch.Add(1) // queued packets belong to the pre-reset peer, even if re-added
-	s := p.session
-	p.session = nil
+	s, draining := p.session, p.draining
+	p.session, p.draining = nil, nil
 	p.mu.Unlock()
+	if draining != nil {
+		draining.q.CloseWithError(0, reason)
+	}
 	if s != nil {
 		s.q.CloseWithError(0, reason)
 		p.publishState(wgtransport.SessionExpired)
@@ -802,9 +806,28 @@ func (p *peer) installBoundChannel(q *quic.Conn, outgoing bool, channel datagram
 	// the old one (remote restart/rebind). Rejecting it until idle timeout can
 	// produce an endless successful-TLS-but-no-data reconnect loop.
 	if old != nil && old.q.Context().Err() == nil && old.outgoing == preferredOutgoing && !preferred {
+		if !p.g.b.factory.cfg.HTTP3 || p.g.b.factory.cfg.TCPStreams {
+			p.mu.Unlock()
+			q.CloseWithError(0, "duplicate connection")
+			return old
+		}
+		// The remote may have already selected this fully authenticated
+		// candidate and queued its first IP packet before learning which
+		// crossed dial won. Keep the winner for subsequent sends, but let
+		// this candidate drain under the existing bounded overlap policy.
+		// Returning ns also keeps its authenticated CONNECT stream alive.
+		previousDrain := p.draining
+		p.draining = ns
+		p.g.workers.Add(1)
 		p.mu.Unlock()
-		q.CloseWithError(0, "duplicate connection")
-		return old
+		if previousDrain != nil {
+			previousDrain.q.CloseWithError(0, "overlap candidate replaced")
+		}
+		releaseAdmission(q)
+		p.g.b.counters.Connections.Add(1)
+		go p.receiveSession(ns)
+		time.AfterFunc(p.g.b.timing.overlap, func() { q.CloseWithError(0, "duplicate overlap complete") })
+		return ns
 	}
 	p.session = ns
 	p.g.workers.Add(1)
@@ -1012,6 +1035,9 @@ func (p *peer) receiveSession(s *session) {
 		current := p.session == s
 		if current {
 			p.session = nil
+		}
+		if p.draining == s {
+			p.draining = nil
 		}
 		p.mu.Unlock()
 		if current {

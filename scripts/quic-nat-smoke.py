@@ -33,6 +33,7 @@ def main() -> None:
     parser.add_argument("--cli", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--force-derp", action="store_true")
+    parser.add_argument("--application-only", action="store_true", help="independent TCP payload check without a single TSMP packet prerequisite")
     parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument("--idle-seconds", type=float, default=65)
     parser.add_argument("--bytes", type=int, default=262144)
@@ -44,8 +45,9 @@ def main() -> None:
     args.lab = args.lab.resolve(strict=True)
     args.cli = args.cli.resolve(strict=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith("TS_")}
-    env.update(TS_NO_LOGS_NO_SUPPORT="true", TS_DEBUG_ALWAYS_USE_DERP=str(args.force_derp).lower())
-    report = {"passed": False, "force_derp": args.force_derp, "rounds": args.rounds,
+    env.update(TS_NO_LOGS_NO_SUPPORT="true", TS_DISABLE_PORTMAPPER="true",
+               TS_DEBUG_ALWAYS_USE_DERP=str(args.force_derp).lower())
+    report = {"passed": False, "force_derp": args.force_derp, "application_only": args.application_only, "rounds": args.rounds,
               "idle_seconds": args.idle_seconds, "payload_bytes": args.bytes,
               "scope": "fresh loopback test control + DERP and two isolated tsnet processes",
               "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
@@ -127,7 +129,7 @@ def main() -> None:
             phase = {"name": name, "passed": False}
             report["phases"].append(phase)
             with ThreadPoolExecutor(max_workers=2) as pool:
-                futures = [pool.submit(http, node, f"/probe?target={nodes[index ^ 1]['ip']}&size={args.bytes}", "POST")
+                futures = [pool.submit(http, node, f"/probe?target={nodes[index ^ 1]['ip']}&size={args.bytes}&application-only={str(args.application_only).lower()}", "POST")
                            for index, node in enumerate(nodes)]
                 proofs = [future.result() for future in futures]
             for proof in proofs:
@@ -178,6 +180,17 @@ def main() -> None:
             start(1)
             ready()
             probe_phase("after-peer-restart")
+            # A power loss or NAT path loss cannot deliver CONNECTION_CLOSE.
+            # Exercise both key-order roles rather than only graceful restart.
+            for index in range(2):
+                nodes[index]["process"].kill()
+                nodes[index]["process"].wait(timeout=4)
+                # The lab's optional Unix CLI listener has no daemon-style
+                # stale-socket cleanup after SIGKILL; remove only our own path.
+                (nodes[index]["state"] / "localapi.sock").unlink(missing_ok=True)
+                start(index)
+                ready()
+                probe_phase(f"after-peer-crash-{index}")
             for node in nodes:
                 stop(node["process"])
             for i in range(2):
@@ -187,10 +200,21 @@ def main() -> None:
             report["passed"] = True
         except Exception as error:
             report["error"] = str(error)
+            report["failure_diagnostics"] = []
+            for node in nodes:
+                try:
+                    report["failure_diagnostics"].append(http(node, "/quic"))
+                except Exception as diagnostic_error:
+                    report["failure_diagnostics"].append({"error": str(diagnostic_error)})
             log.flush()
             log.seek(0)
             report["log_tail"] = log.read()[-16000:]
             print("FAIL", error, flush=True)
+            # Public numerical diagnostics are useful even if log inspection is
+            # unavailable. Never print private identities or authentication data.
+            for index, diagnostic in enumerate(report["failure_diagnostics"]):
+                keys = ("active_connections", "connections", "handshake_errors", "sent_packets", "received_packets", "send_errors", "send_drops", "receive_drops", "raw_drops", "http3_tunnels", "http3_rejected")
+                print("FAILURE_COUNTERS", index, json.dumps({key: diagnostic.get(key) for key in keys}), flush=True)
         finally:
             for proc in reversed(processes):
                 try:
