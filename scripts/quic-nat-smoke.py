@@ -34,10 +34,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--force-derp", action="store_true")
     parser.add_argument("--application-only", action="store_true", help="independent TCP payload check without a single TSMP packet prerequisite")
+    parser.add_argument("--require-direct", action="store_true", help="reject a direct-path test if it stayed on DERP")
     parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument("--idle-seconds", type=float, default=65)
     parser.add_argument("--bytes", type=int, default=262144)
     args = parser.parse_args()
+    if args.require_direct and args.force_derp:
+        parser.error("require-direct and force-derp are mutually exclusive")
     if not 1 <= args.rounds <= 30 or not 0 <= args.idle_seconds <= 90:
         parser.error("rounds must be 1..30 and idle-seconds 0..90")
     if not 1 <= args.bytes <= 4 * 1024 * 1024:
@@ -47,7 +50,7 @@ def main() -> None:
     env = {k: v for k, v in os.environ.items() if not k.startswith("TS_")}
     env.update(TS_NO_LOGS_NO_SUPPORT="true", TS_DISABLE_PORTMAPPER="true",
                TS_DEBUG_ALWAYS_USE_DERP=str(args.force_derp).lower())
-    report = {"passed": False, "force_derp": args.force_derp, "application_only": args.application_only, "rounds": args.rounds,
+    report = {"passed": False, "force_derp": args.force_derp, "application_only": args.application_only, "require_direct": args.require_direct, "rounds": args.rounds,
               "idle_seconds": args.idle_seconds, "payload_bytes": args.bytes,
               "scope": "fresh loopback test control + DERP and two isolated tsnet processes",
               "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
@@ -140,6 +143,10 @@ def main() -> None:
                     peers = proof["status"]["peers"]
                     if not peers or any(peer.get("direct") for peer in peers):
                         raise RuntimeError(f"{name}: forced-DERP test escaped onto a direct path")
+                if args.require_direct:
+                    peers = proof["status"]["peers"]
+                    if not peers or any(not peer.get("direct") for peer in peers):
+                        raise RuntimeError(f"{name}: direct-path test stayed on DERP")
             phase.update(passed=True, seconds=round(time.monotonic() - started, 3), proofs=proofs,
                          diagnostics=[http(node, "/quic") for node in nodes])
             print("PASS", name, phase["seconds"], flush=True)
