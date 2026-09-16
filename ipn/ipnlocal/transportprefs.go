@@ -18,5 +18,14 @@ func validateAWGForTransport(mode string, current ipn.PrefsView, proposed *ipn.P
 	if proposed.AmneziaWG.IsZero() || (current.Valid() && current.AmneziaWG() == proposed.AmneziaWG) {
 		return nil
 	}
-	return errors.New("AWG set/sync is not available while native QUIC-IP or HTTP/3-IP is active; stage native, restart deliberately, then configure AWG")
+	return errors.New("a running QUIC engine cannot apply AWG directly; use a matching updated CLI and daemon to select AWG and restart once")
+}
+
+// Saved AWG can describe the staged next-start native engine. Never apply it
+// to, or advertise it from, the current QUIC engine before that restart.
+func awgForRunningTransport(mode string, saved ipn.AmneziaWGPrefs) ipn.AmneziaWGPrefs {
+	if mode == "quic-ip" || mode == "http3-ip" {
+		return ipn.AmneziaWGPrefs{}
+	}
+	return saved
 }

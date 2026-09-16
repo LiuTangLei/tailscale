@@ -78,7 +78,7 @@ def main():
 
         def start_nodes():
             for i, node in enumerate(nodes):
-                cmd = [str(args.lab), "node", "--dir", str(node["state"]), "--hostname", f"cli-smoke-{i}", "--listen", f"127.0.0.1:{node['admin']}", "--control", f"http://127.0.0.1:{control_port}", "--port", str(node["udp"]), "--localapi-socket", str(node["state"] / "localapi.sock")]
+                cmd = [str(args.lab), "node", "--profile", "keep", "--dir", str(node["state"]), "--hostname", f"cli-smoke-{i}", "--listen", f"127.0.0.1:{node['admin']}", "--control", f"http://127.0.0.1:{control_port}", "--port", str(node["udp"]), "--localapi-socket", str(node["state"] / "localapi.sock")]
                 if i == 0:
                     cmd += ["--stun-listen", f"127.0.0.1:{stun_port}"]
                 node["process"] = subprocess.Popen(cmd, env=env, stdout=log, stderr=log)
@@ -123,24 +123,43 @@ def main():
                 cli(n, "transport", "http3-ip" if args.auto_trust else "quic-ip", stdin="")
                 if cli(n, "status", "--json", json_result=True)["revision"] != before["revision"]:
                     raise RuntimeError("EOF unexpectedly changed profile")
-                if cli(n, "transport", "--yes", "quic", checked=False).returncode == 0:
+                if cli(n, "transport", "--yes", "wg-over-quic", checked=False).returncode == 0:
                     raise RuntimeError("production CLI accepted WG-over-QUIC")
+            awg_profile = json.dumps({"jc": 4, "jmin": 700, "jmax": 899, "s1": 19, "s2": 29, "s3": 15, "s4": 20,
+                                      "h1": 773603178, "h2": 1713856760, "h3": 2188170348, "h4": 3015010040})
+            if args.auto_trust:
+                for n in nodes:
+                    cli(n, "set", "--yes", awg_profile)
             modes = ("http3-ip", "native", "http3-ip", "native") if args.auto_trust else ("quic-ip", "http3-ip", "native")
             for mode in modes:
                 for n in nodes:
                     before = cli(n, "status", "--json", json_result=True)
                     pid = n["process"].pid
-                    cli(n, "transport", "--yes", mode)
+                    if args.auto_trust:
+                        cli(n, "set", "--yes", "quic" if mode == "http3-ip" else awg_profile)
+                    else:
+                        cli(n, "transport", "--yes", mode)
                     after = cli(n, "status", "--json", json_result=True)
                     if after["active_mode"] != before["active_mode"] or after["desired_mode"] != mode or not after["pending_restart"] or n["process"].pid != pid:
                         raise RuntimeError("staging mislabeled running mode or restarted the daemon")
+                    if args.auto_trust and after['awg_configured'] != (mode == 'native'):
+                        raise RuntimeError('AWG was not automatically cleared or saved with the selected mode')
+                pending_probes = []
+                if args.auto_trust and mode == 'native':
+                    for i, n in enumerate(nodes):
+                        proof = http(n, f"/probe?target={nodes[i ^ 1]['ip']}&size=262144", "POST")
+                        if proof['upload']['bytes'] != 262144 or proof['download']['bytes'] != 262144:
+                            raise RuntimeError('saving AWG broke the still-running QUIC connection')
+                        pending_probes.append(proof)
                 stop_nodes()
                 start_nodes()
-                phase = {"mode": mode, "status": [], "probes": []}
+                phase = {"mode": mode, "status": [], "probes": [], "before_restart_probes": pending_probes}
                 for i, n in enumerate(nodes):
                     status = cli(n, "status", "--json", json_result=True)
                     if status["active_mode"] != mode or status["pending_restart"] or status["source"] != "managed":
                         raise RuntimeError("CLI profile did not activate after restart")
+                    if args.auto_trust and status['awg_configured'] != (mode == 'native'):
+                        raise RuntimeError('restart did not preserve the selected AWG configuration')
                     if args.auto_trust and mode == "http3-ip":
                         if status.get("authentication") != "node-key" or status.get("peers") or not status.get("identity"):
                             raise RuntimeError("fresh H3 still depends on manual identity cards")
@@ -152,6 +171,33 @@ def main():
                     phase["probes"].append(proof)
                 result["phases"].append(phase)
                 print("PASS real CLI + restart + bidirectional data:", mode, flush=True)
+            if args.auto_trust:
+                # Sync uses the shared set/apply path while the receiver is
+                # still QUIC and the source has already restarted into AWG.
+                for n in nodes:
+                    cli(n, 'set', '--yes', 'quic')
+                stop_nodes()
+                start_nodes()
+                cli(nodes[0], 'set', '--yes', awg_profile)
+                stop_nodes()
+                start_nodes()
+                sync_result = cli(nodes[1], 'sync', stdin='1\ny\nn\n')
+                result['sync_output'] = sync_result.stdout + sync_result.stderr
+                staged = cli(nodes[1], 'status', '--json', json_result=True)
+                result['sync_staged_status'] = staged
+                if staged['active_mode'] != 'http3-ip' or staged['desired_mode'] != 'native' or not staged['awg_configured']:
+                    raise RuntimeError('sync did not save AWG with a native selection')
+                stop_nodes()
+                start_nodes()
+                phase = {'mode': 'sync-quic-to-awg', 'status': [], 'probes': []}
+                for i, n in enumerate(nodes):
+                    phase['status'].append(cli(n, 'status', '--json', json_result=True))
+                    proof = http(n, f"/probe?target={nodes[i ^ 1]['ip']}&size=262144", 'POST')
+                    if proof['upload']['bytes'] != 262144 or proof['download']['bytes'] != 262144:
+                        raise RuntimeError('synced AWG did not carry application data after restart')
+                    phase['probes'].append(proof)
+                result['phases'].append(phase)
+                print('PASS real CLI sync from QUIC to AWG + restart + bidirectional data', flush=True)
             result["passed"] = True
         except Exception as exc:
             result["error"] = str(exc)

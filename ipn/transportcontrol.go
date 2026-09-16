@@ -49,11 +49,13 @@ type TransportControlStatus struct {
 // TransportControlRequest is an explicit local mutation. ExpectedRevision is
 // required for every action and prevents stale interactive prompts overwriting
 // a concurrent administrator's changes. Actions: prepare, add-peer, remove-peer,
-// mode, server, validate. validate is read-only and needs no revision.
+// mode, awg, server, validate. validate is read-only and needs no revision.
+// awg stages native mode and saves its AWG profile in one coordinated operation.
 type TransportControlRequest struct {
-	Action           string `json:"action"`
-	ExpectedRevision string `json:"expected_revision,omitempty"`
-	Mode             string `json:"mode,omitempty"`
+	Action           string          `json:"action"`
+	ExpectedRevision string          `json:"expected_revision,omitempty"`
+	Mode             string          `json:"mode,omitempty"`
+	AWG              *AmneziaWGPrefs `json:"awg,omitempty"`
 	// Pointer distinguishes an explicit false from a missing update.
 	Server    *bool          `json:"server,omitempty"`
 	AutoTrust *bool          `json:"auto_trust,omitempty"`

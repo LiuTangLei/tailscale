@@ -31,7 +31,7 @@ func TestAWGNoTTYHelp(t *testing.T) {
 
 func TestAWGTransportModeRejectsInvalidMode(t *testing.T) {
 	var out bytes.Buffer
-	err := runAWGTransportMode(context.Background(), "quic", false, strings.NewReader("y\n"), &out)
+	err := runAWGTransportMode(context.Background(), "invalid-transport", false, strings.NewReader("y\n"), &out)
 	if err == nil || !strings.Contains(err.Error(), "supported values are native") {
 		t.Fatalf("runAWGTransportMode error = %v, want invalid mode message", err)
 	}
@@ -53,11 +53,11 @@ func TestAWGTransportStatusRenderPendingNotActive(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"Active mode: native",
-		"Desired mode: quic-ip",
+		"Desired mode: QUIC (legacy raw)",
 		"Pending restart: yes",
 		"Source: environment",
 		"HTTP3 is experimental",
-		"Reset AWG explicitly",
+		"clears the saved AWG profile automatically",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("render output = %q, missing %q", got, want)

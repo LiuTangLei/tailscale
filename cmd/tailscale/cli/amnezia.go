@@ -26,24 +26,24 @@ import (
 var amneziaCmd = &ffcli.Command{
 	Name:       "amnezia-wg",
 	ShortUsage: "tailscale amnezia-wg [subcommand]",
-	ShortHelp:  "Manage native WG/AWG and experimental QUIC transports",
+	ShortHelp:  "Manage native WG/AWG and QUIC transport",
 	LongHelp: `"tailscale awg" opens an interactive transport menu in a terminal.
 Without a terminal it prints usage. "tailscale amnezia-wg" remains an alias,
-and existing set/get/sync/reset/validate commands keep their AWG meaning.
+and "tailscale awg set" offers AWG v3, AWG v2, or QUIC in one menu.
 
-Production modes:
+Modes:
   native    Existing WG/AWG. Zero AWG parameters mean standard WireGuard.
-  quic-ip   Native IP over QUIC; no inner WireGuard or AWG parameters.
-  http3-ip  Experimental native IP over HTTP/3; not a Chrome fingerprint clone.
-WG-over-QUIC is development-only and is not offered by this command.
+  quic      QUIC with built-in obfuscation and automatic node-key trust.
+Selecting QUIC automatically clears the saved AWG profile after confirmation.
+The old http3-ip name remains accepted for scripts and saved configurations.
 
 Use status to distinguish the active mode from a staged next-start mode.
 transport changes never restart the daemon automatically. Environment or
 embedding overrides must be removed separately before using managed profiles.
 
-QUIC needs no client IP certificate and no AWG parameter sync, but peers still
-need trusted PUBLIC identity cards. Use identity --init, identity, peer add,
-then transport --yes quic-ip; restart deliberately and check status again.
+QUIC prepares its identity automatically and needs no AWG parameter sync.
+Use set --yes quic, restart deliberately and check status again.
+All communicating nodes must enable compatible QUIC transport.
 Never copy the private daemon profile file to another node.
 
 For native AWG only, communicating nodes must agree on H1-H4, S1-S4 and the
@@ -57,29 +57,7 @@ header-protection key. Existing awg sync continues to manage those parameters.`,
 			LongHelp:   `List all online peers with non-zero Amnezia-WG config, preview and sync config to local node.`,
 			Exec:       runAmneziaWGSync,
 		},
-		{
-			Name:       "set",
-			ShortUsage: "tailscale amnezia-wg set [json-string]",
-			ShortHelp:  "Generate or apply an AWG v2/v3 profile",
-			LongHelp: `Generate or apply an AmneziaWG profile.
-
-With no JSON argument, the concise generator offers:
-  1) AWG v3 (recommended and selected by default)
-  2) AWG v2 (for legacy peers)
-
-The generated JSON is printed before confirmation. Copy that exact JSON to
-every peer that must communicate with this node. S1-S4, H1-H4 and, for v3,
-HeaderProtectionKey must match.
-
-For Docker, scripts, desktop automation, or advanced fields, pass JSON directly:
-  tailscale awg set '{"jc":5,"jmin":500,"jmax":1000,"s1":15,"s2":18,"s3":20,"s4":25,"h1":123456,"h2":67543,"h3":123123,"h4":32345}'
-
-Historical v2 JSON remains accepted, except for the retired <c> CPS packet
-counter tag removed by AmneziaWG 2.0. Remove <c> while keeping the other CPS
-tags. A v2 profile clears all v3-only device state. After applying a profile,
-restart tailscaled or restart the container.`,
-			Exec: runAmneziaWGSet,
-		},
+		awgSetCommand(),
 		{
 			Name:       "get",
 			ShortUsage: "tailscale amnezia-wg get",
@@ -137,14 +115,39 @@ func cloneAWGSubcommands(cmds []*ffcli.Command) []*ffcli.Command {
 	return cloned
 }
 
-// applyAmneziaWGConfig applies the Amnezia-WG configuration.
+// applyAmneziaWGConfig is shared by set, sync and reset. Switching away from
+// QUIC saves both the native selection and AWG profile before a single restart.
 func applyAmneziaWGConfig(ctx context.Context, config ipn.AmneziaWGPrefs) error {
-	if err := validateAmneziaWGConfig(config); err != nil {
-		return err
+	pending, err := applyAWGForClient(ctx, &localClient, config)
+	if err == nil && pending {
+		fmt.Println("AWG configuration saved; native WG/AWG will activate after restarting tailscaled. The running QUIC transport has not changed.")
 	}
-	maskedPrefs := createMaskedPrefs(config)
-	_, err := localClient.EditPrefs(ctx, maskedPrefs)
 	return err
+}
+
+func applyAWGForClient(ctx context.Context, client awgSetupClient, config ipn.AmneziaWGPrefs) (bool, error) {
+	if err := validateAmneziaWGConfig(config); err != nil {
+		return false, err
+	}
+	status, err := getTransportStatusForClient(ctx, client)
+	if err != nil && !errors.Is(err, errTransportUnavailable) {
+		return false, err
+	}
+	if err == nil && (transportModeUsesQUIC(status.ActiveMode) || transportModeUsesQUIC(status.DesiredMode)) {
+		if !status.Available || status.Source == "environment" || status.Source == "embedded" {
+			return false, errors.New("transport is externally configured; remove that override before selecting AWG")
+		}
+		updated, err := configureTransportForClient(ctx, client, ipn.TransportControlRequest{
+			Action: "awg", ExpectedRevision: status.Revision, AWG: &config,
+		})
+		if err != nil {
+			return false, fmt.Errorf("select AWG (matching updated CLI and daemon required): %w", err)
+		}
+		return updated.PendingRestart, nil
+	}
+	// Native and older AWG-only daemons retain their ordinary LocalAPI path.
+	_, err = client.EditPrefs(ctx, createMaskedPrefs(config))
+	return false, err
 }
 
 func validateAmneziaWGConfig(config ipn.AmneziaWGPrefs) error {

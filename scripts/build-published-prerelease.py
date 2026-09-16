@@ -51,7 +51,7 @@ def digest(path: Path) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', required=True, type=Path)
-    p.add_argument('--tag', default='v1.102.4')
+    p.add_argument('--tag', default='v1.102.4-r1')
     p.add_argument('--jobs', type=int, default=2)
     a = p.parse_args()
     if not 1 <= a.jobs <= 4:
