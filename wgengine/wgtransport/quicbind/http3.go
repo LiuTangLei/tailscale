@@ -140,10 +140,6 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		g.servePublic(w, r)
 		return
 	}
-	if r.Proto == "HTTP/3.0" && r.ProtoMajor == 3 && g.b.factory.cfg.TCPStreams {
-		g.handleTCPStream(w, r)
-		return
-	}
 	deny := func(code int) { g.b.counters.HTTP3Rejected.Add(1); http.Error(w, http.StatusText(code), code) }
 	u := g.b.factory.http3URL
 	matches := sameHTTP3Target(r, u)
@@ -250,7 +246,6 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(nodeAuthReply, proof)
 	}
 	w.Header().Set(http3.CapsuleProtocolHeader, "?1")
-	if g.b.factory.cfg.TCPStreams { w.Header().Set(tcpStreamsHeader, "1") }
 	// Only authenticated CONNECT replies advertise this metadata, never
 	// public pages or unauthenticated discovery responses.
 	w.Header().Set(serverHintHeader, serverHintValue(g.b.factory.cfg.Server))
@@ -386,7 +381,6 @@ func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, attempts .
 	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1
 	channel := newHTTP3Channel(p.g, q, stream, stream, fragments)
 	channel.client = client
-	channel.tcpStreams = response.Header.Get(tcpStreamsHeader) == "1" && len(response.Header.Values(tcpStreamsHeader)) == 1
 	session := p.installBoundChannel(q, true, channel, &attempt, peerServerHint)
 	if session == nil {
 		return nil, net.ErrClosed

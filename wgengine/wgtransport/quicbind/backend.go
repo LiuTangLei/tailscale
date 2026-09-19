@@ -55,9 +55,6 @@ type Counters struct {
 	HTTP3Tunnels             atomic.Uint64
 	HTTP3Rejected            atomic.Uint64
 	HTTP3Datagrams           atomic.Uint64
-	TCPStreams               atomic.Uint64
-	TCPBytesSent             atomic.Uint64
-	TCPBytesReceived         atomic.Uint64
 }
 
 type Backend struct {
@@ -74,7 +71,6 @@ type Backend struct {
 	networkUp     atomic.Bool
 	counters      Counters
 	timing        sessionTiming
-	tcpStreams    sync.Map // *tcpStreamConn -> struct{}; retained until FIN acknowledgment
 	serverHintsMu sync.RWMutex
 	serverHints   map[[32]byte]*atomic.Uint32
 }
@@ -153,7 +149,6 @@ type datagramChannel interface {
 }
 
 type session struct {
-	tcpActive   atomic.Int64
 	nextRefresh atomic.Int64
 	created     time.Time
 	q           *quic.Conn
@@ -416,23 +411,11 @@ func (b *Backend) quicConfig() *quic.Config {
 	if b.factory.cfg.HTTP3 {
 		streams, uni = 16, 8
 	}
-	if b.factory.cfg.TCPStreams {
-		streams = 256
-	}
 	cfg := &quic.Config{
 		EnableDatagrams: true, HandshakeIdleTimeout: 8 * time.Second, MaxIdleTimeout: 60 * time.Second,
 		KeepAlivePeriod: 20 * time.Second, InitialPacketSize: b.factory.cfg.InitialPacketSize,
 		MaxIncomingStreams: streams, MaxIncomingUniStreams: uni, Allow0RTT: false,
 		MaxStreamReceiveWindow: 128 << 10, MaxConnectionReceiveWindow: 1 << 20,
-	}
-	if b.factory.cfg.TCPStreams {
-		// TCP payload is carried by reliable QUIC streams, not by the inner
-		// TCP stack. Receive windows must cover a real WAN bandwidth-delay
-		// product; credit is bounded and allocated only as streams consume it.
-		cfg.InitialStreamReceiveWindow = 1 << 20
-		cfg.MaxStreamReceiveWindow = 16 << 20
-		cfg.InitialConnectionReceiveWindow = 4 << 20
-		cfg.MaxConnectionReceiveWindow = 32 << 20
 	}
 	// The released dependency is required at compile time. Never silently
 	// ship Reno when the advertised application-limited BBR fixes are absent.
@@ -761,9 +744,6 @@ func (g *generation) accept() {
 // key-based rule. This arbitrates already-established candidates; it never
 // starts or resets a healthy connection merely to change its fingerprint.
 func (p *peer) preferredOutgoing(hint uint32) bool {
-	if p.g.b.factory.cfg.TCPStreams {
-		return !p.g.b.factory.cfg.Server
-	}
 	if p.g.b.factory.cfg.HTTP3 && hint != serverUnknown && hint <= serverYes && p.g.b.factory.cfg.Server != (hint == serverYes) {
 		return !p.g.b.factory.cfg.Server
 	}
@@ -806,7 +786,7 @@ func (p *peer) installBoundChannel(q *quic.Conn, outgoing bool, channel datagram
 	// the old one (remote restart/rebind). Rejecting it until idle timeout can
 	// produce an endless successful-TLS-but-no-data reconnect loop.
 	if old != nil && old.q.Context().Err() == nil && old.outgoing == preferredOutgoing && !preferred {
-		if !p.g.b.factory.cfg.HTTP3 || p.g.b.factory.cfg.TCPStreams {
+		if !p.g.b.factory.cfg.HTTP3 {
 			p.mu.Unlock()
 			q.CloseWithError(0, "duplicate connection")
 			return old
@@ -945,7 +925,7 @@ func (p *peer) run() {
 		case <-p.ctx.Done():
 			return
 		case packet := <-p.tx:
-			if ipBatchSupported && p.g.b.factory.cfg.HTTP3 && !p.g.b.factory.cfg.TCPStreams {
+			if ipBatchSupported && p.g.b.factory.cfg.HTTP3 {
 				p.sendQueuedIPBatch(packet)
 				continue
 			}
@@ -988,7 +968,6 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 	if len(packet)+1 <= len(scratch) {
 		scratch[0] = frameRaw
 		copy(scratch[1:], packet)
-		clampTCPMSS(scratch[1:len(packet)+1], p.g.b.factory.cfg.TCPMSS)
 		err := s.dgram.SendDatagram(scratch[:len(packet)+1])
 		if err == nil {
 			p.g.b.counters.SentPackets.Add(1)

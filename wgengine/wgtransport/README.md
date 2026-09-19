@@ -49,6 +49,10 @@ a claim of indistinguishable browser traffic. STUN/disco are still managed by
 the host outside this packet backend. Throughput must be measured; HTTP/3 is
 experimental and not the default.
 
+Tailcat's reliable TCP stream and application credential extensions are
+maintained in the separate `LiuTangLei/tailcat-tailscale` dependency repository.
+This packet backend serves the Tailscale IP data plane.
+
 See `../../docs/http3-ip-experimental.md` relative to the repository docs area
 (`docs/http3-ip-experimental.md`), `docs/quic-platforms.md`, and
 `docs/quic-ip-experimental.md` for configuration, security scope and evidence.
