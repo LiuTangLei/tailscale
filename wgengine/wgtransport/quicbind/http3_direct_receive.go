@@ -17,9 +17,6 @@ type datagramReceiveSetter interface {
 // Fragments, capsules and other HTTP streams retain their existing receiver.
 // The callback borrows payload bytes and must not block the QUIC event loop.
 func (c *http3Channel) StartDirectIPDatagrams(receive func([]byte)) bool {
-	if c.g.b.factory.cfg.TCPStreams {
-		return false
-	}
 	setter, ok := any(c.q).(datagramReceiveSetter)
 	if !ok {
 		return false

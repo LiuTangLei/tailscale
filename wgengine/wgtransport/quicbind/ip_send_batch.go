@@ -21,13 +21,13 @@ var ipBatchSupported = func() bool {
 }()
 
 // sendIPBatch keeps the caller's ready TUN batch intact across the H3 queue
-// boundary. It applies only to native IP (not the embedded reliable-stream
-// transport), never waits to form a batch, and never changes wire framing.
+// boundary. It applies only to native IP, never waits to form a batch, and
+// never changes wire framing.
 // Caller owns sendMu. Each bounded group rechecks current authorization before
 // enqueue; all actual data is copied into QUIC-owned buffers before return.
 func (p *peer) sendIPBatch(s *session, bufs [][]byte, offset int) (handled bool, err error) {
 	h3, ok := s.dgram.(*http3Channel)
-	if !ok || p.g.b.factory.cfg.TCPStreams || p.g.b.factory.cfg.TCPMSS != 0 {
+	if !ok {
 		return false, nil
 	}
 	sender, ok := h3.stream.(datagramBatchSender)

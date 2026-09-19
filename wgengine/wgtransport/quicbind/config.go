@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -55,21 +54,6 @@ type Config struct {
 	// BBRv3 selects the independent userspace v3 controller on every QUIC
 	// connection. The default preserves the existing Tailscale release policy.
 	BBRv3 bool `json:"bbr_v3,omitempty"`
-	// TCPMSS optionally caps existing TCP SYN MSS options without changing the
-	// IPv6 IP MTU or UDP semantics. Embedded stacks can avoid fragmenting every
-	// bulk TCP packet on a 1200-byte QUIC carrier. Zero preserves peer MSS.
-	TCPMSS uint16 `json:"tcp_mss,omitempty"`
-	// TCPStreams enables authenticated HTTP/3 CONNECT streams for an embedded
-	// point-to-point proxy. UDP remains on CONNECT-IP DATAGRAM. Authentication
-	// and revocation belong to the same QUIC session; no alternate transport.
-	TCPStreams bool `json:"tcp_streams,omitempty"`
-	TCPHandler func([32]byte, netip.AddrPort) func(net.Conn) `json:"-"`
-	TCPNodeAddress func([32]byte) netip.Addr `json:"-"`
-	// AuthenticationSecret optionally binds node authentication to an embedded
-	// application's additional connection credential. It is never serialized
-	// in a profile or sent on the wire. A zero value preserves Tailnet auth.
-	// Both endpoints of a session must use the same 256-bit random secret.
-	AuthenticationSecret [32]byte `json:"-"`
 	// AutoTrust binds each TLS session to the already-authorized Tailnet node
 	// keys. It is H3/magicsock only and never learns trust from a certificate.
 	AutoTrust bool `json:"auto_trust,omitempty"`
@@ -208,9 +192,6 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	if c.IO != "magicsock" && c.IO != "udp" {
 		return nil, errors.New("QUIC io must be magicsock or udp")
 	}
-	if c.AuthenticationSecret != ([32]byte{}) && !c.AutoTrust {
-		return nil, errors.New("an application authentication secret requires automatic H3 node trust")
-	}
 	if c.AutoTrust && (!c.HTTP3 || c.IO != "magicsock") {
 		return nil, errors.New("automatic node trust requires HTTP/3 native IP over magicsock")
 	}
@@ -219,12 +200,6 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	}
 	if c.HTTP3TCPListen != "" && !supportsIndependentUDP(runtime.GOOS) {
 		return nil, fmt.Errorf("public HTTPS listening is not supported inside the %s VPN client", runtime.GOOS)
-	}
-	if c.TCPStreams && (!c.AutoTrust || !c.HTTP3 || c.TCPNodeAddress == nil) {
-		return nil, errors.New("TCP streams require H3 node authentication and embedded node addressing")
-	}
-	if c.TCPMSS != 0 && (c.TCPMSS < 536 || c.TCPMSS > 1220) {
-		return nil, errors.New("tcp_mss must be zero or 536..1220")
 	}
 	if c.QueuePackets == 0 {
 		c.QueuePackets = 256
