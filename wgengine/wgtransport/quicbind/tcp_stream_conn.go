@@ -66,6 +66,11 @@ func (b *Backend) newTCPConn(p *peer, s *session, stream reliableStream, local, 
 	return c
 }
 
+// Done reports full connection closure, including shutdown of its QUIC session.
+// Adapters handing a connection to net.Listener.Accept can retain the callback
+// lifetime until its new owner closes it, without polling or leaking a waiter.
+func (c *tcpStreamConn) Done() <-chan struct{} { return c.closeSignal }
+
 func (c *tcpStreamConn) authorized() bool { return c.p.stampValid(c.s.stamp) }
 func (c *tcpStreamConn) changedLocked()   { close(c.wake); c.wake = make(chan struct{}) }
 
