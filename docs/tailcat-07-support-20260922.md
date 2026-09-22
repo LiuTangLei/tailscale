@@ -34,6 +34,28 @@ Returning directly from the old callback would trigger the backend's deferred
 Close and prematurely close the newly accepted connection. This change adds no
 payload framing, authentication exception or unbounded queue.
 
+## Bounded normal-close receive drain
+
+The first Tailcat 0.7 release gate reproduced an SSH close race: a server's
+full Close immediately sent STOP_SENDING before the client could finish its
+protocol disconnect and FIN. The client's strict acknowledged-write drain
+correctly reported a reset instead of clean completion. The fix does not
+ignore that error or redefine resets as successful delivery.
+
+Full Close now closes application I/O immediately but lets the existing read
+pump consume the peer's final frames until EOF, bounded by an absolute
+five-second deadline and one MiB of additional payload. It uses its existing
+32-KiB buffer, adds no reader goroutine and preserves current authorization.
+Explicit CloseRead still aborts immediately. Timeout, malformed input, exhausted
+budget and errors cancel the receive stream; FIN and all send bytes must still
+be acknowledged for a successful write drain.
+
+Real H3 tests cover final response integrity, peer trailers after response EOF,
+explicit cancellation remaining an error, silent peers reaching the deadline,
+and continuing peers exhausting the byte budget. The previously failing SSH
+forced-command test passed 40 repetitions; broader SSH/exec/probe race tests
+passed three repetitions in the consuming application.
+
 ## Verification
 
 Netstack and network-monitor short tests, the H3 transport suite, targeted

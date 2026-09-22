@@ -77,6 +77,9 @@ func (c *tcpStreamConn) changedLocked()   { close(c.wake); c.wake = make(chan st
 func (c *tcpStreamConn) readPump() {
 	defer close(c.readerDone)
 	defer close(c.readQ)
+	// CancelRead is a no-op after QUIC EOF. On a close-drain deadline or
+	// malformed frame it releases the receive side instead of retaining it.
+	defer c.stream.CancelRead(0)
 	for {
 		buf := make([]byte, 32<<10)
 		n, err := c.stream.Read(buf)
@@ -88,6 +91,9 @@ func (c *tcpStreamConn) readPump() {
 			select {
 			case c.readQ <- tcpReadResult{buf[:n], err}:
 			case <-c.readStop:
+				if err == nil {
+					c.drainClosedRead(buf)
+				}
 				return
 			case <-c.p.ctx.Done():
 				return
@@ -274,19 +280,59 @@ func (c *tcpStreamConn) CloseWrite() error {
 	}
 	return nil
 }
-func (c *tcpStreamConn) CloseRead() error {
+
+const (
+	// Normal connection Close must not race STOP_SENDING against a peer's
+	// final SSH disconnect/FIN. Bound post-close receive work independently
+	// of the sender's acknowledged-write drain. Explicit CloseRead still
+	// aborts immediately; neither path reports a reset as successful delivery.
+	closedReadGrace = 5 * time.Second
+	closedReadLimit = 1 << 20
+)
+
+func (c *tcpStreamConn) closeRead(graceful bool) {
 	c.mu.Lock()
 	if !c.readClosed {
+		if graceful {
+			// Application read deadlines are only wrapper-level; after full
+			// Close this underlying deadline bounds the existing read pump.
+			_ = c.stream.SetReadDeadline(time.Now().Add(closedReadGrace))
+		}
 		c.readClosed = true
 		close(c.readStop)
 		c.changedLocked()
 	}
 	c.mu.Unlock()
+	if !graceful {
+		c.stream.CancelRead(0)
+	}
+}
+
+// drainClosedRead discards only data addressed to this already authenticated,
+// locally closed connection. This permits the peer's final bytes and FIN to
+// reach QUIC acknowledgement, without keeping an application Read alive or
+// allocating another goroutine. An uncooperative peer is cut off by both the
+// byte budget and closeRead's absolute deadline; revocation remains immediate.
+func (c *tcpStreamConn) drainClosedRead(buf []byte) {
+	for remaining := closedReadLimit; remaining > 0 && c.authorized(); {
+		n, err := c.stream.Read(buf[:min(len(buf), remaining)])
+		remaining -= n
+		if err == io.EOF {
+			return
+		}
+		if err != nil || n == 0 {
+			break
+		}
+	}
 	c.stream.CancelRead(0)
+}
+
+func (c *tcpStreamConn) CloseRead() error {
+	c.closeRead(false)
 	return nil
 }
 func (c *tcpStreamConn) Close() error {
-	c.closeOnce.Do(func() { _ = c.CloseWrite(); _ = c.CloseRead(); close(c.closeSignal) })
+	c.closeOnce.Do(func() { _ = c.CloseWrite(); c.closeRead(true); close(c.closeSignal) })
 	return nil
 }
 func (c *tcpStreamConn) LocalAddr() net.Addr  { return c.local }
