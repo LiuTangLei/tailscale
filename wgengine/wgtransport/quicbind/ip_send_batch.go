@@ -34,6 +34,16 @@ func (p *peer) sendIPBatch(s *session, bufs [][]byte, offset int) (handled bool,
 	if !ok {
 		return false, nil
 	}
+	// SYN packets need a private, checksummed MSS rewrite. Fall back BEFORE
+	// accepting any prefix of this batch; only these infrequent handshake
+	// batches use scratch copies. Ordinary data retains the batch fast path.
+	if p.g.b.factory.cfg.tcpMSSLimit(4) != 0 {
+		for _, buf := range bufs {
+			if isTCPSYN(buf[offset:]) {
+				return false, nil
+			}
+		}
+	}
 	var payloads [32][]byte
 	for len(bufs) > 0 {
 		count := min(len(bufs), len(payloads))

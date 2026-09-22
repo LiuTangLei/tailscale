@@ -37,6 +37,7 @@ type Counters struct {
 	FastPackets              atomic.Uint64
 	ReceiveQueueDrops        atomic.Uint64
 	FragmentedPackets        atomic.Uint64
+	TCPMSSClamps             atomic.Uint64
 	MalformedFrames          atomic.Uint64
 	Connections              atomic.Uint64
 	HandshakeErrors          atomic.Uint64
@@ -988,7 +989,7 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 	if len(packet)+1 <= len(scratch) {
 		scratch[0] = frameRaw
 		copy(scratch[1:], packet)
-		clampTCPMSS(scratch[1:len(packet)+1], p.g.b.factory.cfg.TCPMSS)
+		p.clampPacketTCPMSS(scratch[1 : len(packet)+1])
 		err := s.dgram.SendDatagram(scratch[:len(packet)+1])
 		if err == nil {
 			p.g.b.counters.SentPackets.Add(1)

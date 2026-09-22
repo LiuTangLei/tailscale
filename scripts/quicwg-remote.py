@@ -13,6 +13,7 @@ import fcntl
 import re
 from urllib.parse import urlsplit
 import urllib.request
+import urllib.error
 import datetime as dt
 import hashlib
 import importlib.util
@@ -39,6 +40,10 @@ def api(node, path, *, method='GET', check=True, timeout=10):
     try:
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout) as response:
             return json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(4096).decode('utf-8', errors='replace').strip()
+        if check: raise RuntimeError(f"{node['name']} {path}: HTTP {exc.code}: {detail}") from exc
+        return None
     except Exception as exc:
         if check: raise RuntimeError(f"{node['name']} {path}: {exc}") from exc
         return None
@@ -126,6 +131,7 @@ def main():
     p.add_argument("--private-origins", action="store_true", help="use private .invalid origins and verify they are not sent as TLS SNI")
     p.add_argument("--auto-trust", action="store_true", help="test current H3 Noise node authentication without provisioned peer pins")
     p.add_argument("--h3-controllers", default="bbr-v1", help="test-only ordered H3 controllers: bbr-v1,bbr-v3; no installed configuration changes")
+    p.add_argument("--initial-packet-size", type=int, default=1200, help="QUIC UDP payload size (1200..1400); default matches the managed release, not the historical 1400-byte lab setting")
     p.add_argument("--mib", type=int, default=8)
     p.add_argument("--parallel", type=int, default=1)
     p.add_argument("--rounds", type=int, default=1)
@@ -205,6 +211,8 @@ def main():
         if args.proof_only: p.error('kernel-iperf conflicts with proof-only')
         if args.kernel_seconds * len(args.kernel_flows) * args.rounds * 2 > 360:
             p.error('kernel benchmark exceeds per-mode bounded runtime')
+    if not 1200 <= args.initial_packet_size <= 1400:
+        p.error('initial-packet-size must be between 1200 and 1400')
     ident = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
     result = {"run": ident, "linux_sha256": hashlib.sha256(args.linux_binary.read_bytes()).hexdigest(),
               "profile": args.profile, "force_derp": args.force_derp, "auto_trust": args.auto_trust,
@@ -213,7 +221,8 @@ def main():
               "nodes": [{"name": args.a_name, "address": args.sg_address}, {"name": args.b_name, "address": args.zjg_address}],
               "source_commit": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
               "source_dirty": bool(run(["git", "status", "--porcelain"]).stdout.strip()),
-              "settings": {"mib_per_stream": args.mib, "parallel": args.parallel, "rounds": args.rounds},
+              "settings": {"mib_per_stream": args.mib, "parallel": args.parallel, "rounds": args.rounds,
+                           "initial_packet_size": args.initial_packet_size},
               "phases": [], "passed": False, "cleanup_errors": []}
     nodes, units, processes = [], [], []
     def checkpoint():
@@ -324,7 +333,7 @@ def main():
                         peer_cfg = {"public_key": peer["public_key"], "spki_sha256": peer["identity"]["spki_sha256"]}
                         config = {"version": 2, "payload": "ip", "io": io_mode, "local_public_key": node["public_key"],
                                   "certificate": node["identity"]["certificate"], "private_key": node["identity"]["private_key"],
-                                  "initial_packet_size": 1400, "queue_packets": 2048, "peers": [peer_cfg]}
+                                  "initial_packet_size": args.initial_packet_size, "queue_packets": 2048, "peers": [peer_cfg]}
                         if io_mode == "udp":
                             config["listen"] = "0.0.0.0:42642"
                             peer_cfg["endpoint"] = f"{peer['address']}:42642"
