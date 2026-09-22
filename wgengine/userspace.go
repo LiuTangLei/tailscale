@@ -81,6 +81,7 @@ type userspaceEngine struct {
 	waitCh            chan struct{} // chan is closed when first Close call completes; contrast with closing bool
 	timeNow           func() mono.Time
 	tundev            *tstun.Wrapper
+	tunReadBatching   bool // true only when the actual device accepted the opt-in
 	packet            packetEngine
 	packetPolicy      atomic.Pointer[packetPolicy]
 	packetIdentity    atomic.Pointer[key.NodePublic]
@@ -381,8 +382,10 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	// H3's IP pipeline benefits from draining records already queued on a
 	// virtio TUN before handing them to filtering/transport. This opt-in API
 	// never changes the host qdisc or WireGuard/AWG's default reader.
+	tunReadBatching := false
 	if !conf.IsTAP && transportConfig.Mode == wgtransport.HTTP3IP {
 		if reader, ok := conf.Tun.(interface{ SetReadBatching(bool) bool }); ok && reader.SetReadBatching(true) {
+			tunReadBatching = true
 			logf("wgengine: ready-record TUN batching enabled for H3")
 		}
 	}
@@ -433,6 +436,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		waitCh:            make(chan struct{}),
 		sessionDisco:      make(chan key.NodePublic, 64),
 		tundev:            tsTUNDev,
+		tunReadBatching:   tunReadBatching,
 		router:            rtr,
 		dialer:            conf.Dialer,
 		confListenPort:    conf.ListenPort,

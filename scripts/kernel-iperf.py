@@ -22,6 +22,17 @@ def capture_profile(node, seconds, target):
     return {'file':str(target),'bytes':len(data)}
 
 
+def capture_loaded_latency(node, target, api):
+    # Begin after iperf has started; the existing endpoint uses authenticated
+    # TSMP over the actual data path, not the public management SSH channel.
+    time.sleep(1)
+    started = time.monotonic()
+    result = api(node, f'/latency?target={target}&samples=30', method='POST', timeout=45)
+    result['probe_start_monotonic'] = started
+    result['probe_end_monotonic'] = time.monotonic()
+    return result
+
+
 def configure(nodes, remote, qdisc='inherited'):
     for i, node in enumerate(nodes):
         ns = node['kernel_ns']
@@ -84,8 +95,12 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                     if reverse: cmd.append('-R')
                     if args.kernel_udp: cmd += ['-u','-l','1100']
                     profile_results = {}
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as profiles:
+                    loaded_latency = None
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as profiles:
                         pending = {}
+                        latency_future = None
+                        if getattr(args, 'kernel_loaded_latency', False):
+                            latency_future = profiles.submit(capture_loaded_latency, client, server['test_ip'], api)
                         if getattr(args, 'kernel_cpu_profile', False):
                             for n in nodes:
                                 target = args.output.with_name(args.output.stem + f'-{index}-{round_no}-{int(reverse)}-{flows}-{n["name"]}.cpu.prof')
@@ -96,6 +111,11 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                         elapsed = time.monotonic() - started
                         for name, future in pending.items():
                             profile_results[name] = future.result(timeout=15)
+                        if latency_future is not None:
+                            loaded_latency = latency_future.result(timeout=45)
+                            loaded_latency['within_client_command_window'] = (
+                                loaded_latency['probe_start_monotonic'] >= started and
+                                loaded_latency['probe_end_monotonic'] <= started + elapsed)
                     try: doc = json.loads(p.stdout)
                     except ValueError: raise RuntimeError('iperf returned invalid JSON: '+p.stderr[-500:])
                     if p.returncode or doc.get('error'):
@@ -117,7 +137,8 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                             'omitted_seconds':args.kernel_omit, 'idle_before_seconds':args.kernel_idle,
                             'receiver_wall_lower_bound_mbps':receiver['bytes']*8/elapsed/1_000_000,
                             'wall_seconds':elapsed,'before':before,'after':after,'iperf':doc,
-                            'profiling_affected':bool(profile_results), 'cpu_profiles':profile_results}
+                            'profiling_affected':bool(profile_results), 'cpu_profiles':profile_results,
+                            'loaded_latency':loaded_latency}
                     if phase['variant'] != 'native':
                         item['session_reused'] = all(
                             before[n['name']]['quic'].get('connections') == after[n['name']]['quic'].get('connections')
@@ -127,6 +148,8 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                     checkpoint()
                     cpu = {n['name']: round(after[n['name']]['process']['cpu_total_seconds'] - before[n['name']]['process']['cpu_total_seconds'],3) for n in nodes}
                     print(f"KERNEL {phase['variant']} {direction} P={flows} round={round_no}: receiver={mbps:.2f} Mbps CPU={cpu}",flush=True)
+                    if loaded_latency is not None:
+                        print('LOADED_RTT', direction, 'P='+str(flows), json.dumps({k: loaded_latency.get(k) for k in ('median_ms','p95_ms','max_ms','failed','within_client_command_window')}), flush=True)
     finally:
         # Preserve the original benchmark exception; outer cleanup also owns
         # this exact unit if management is temporarily slow under CPU load.

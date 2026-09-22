@@ -8,5 +8,9 @@ package wgengine
 // without carrier diagnostics must report unavailable instead of false native
 // status. This method does not read or mutate persistent transport profiles.
 func (e *userspaceEngine) PacketTransportDiagnostics() map[string]any {
-	return e.transport.Snapshot()
+	stats := e.transport.Snapshot()
+	// Report accepted capability, not merely a compiled call site. Older
+	// TUN modules and non-Linux devices must not claim this optimization.
+	stats["tun_ready_read_batching"] = e.tunReadBatching
+	return stats
 }

@@ -148,6 +148,7 @@ def main():
     p.add_argument("--kernel-udp", action="store_true", help="inner UDP offered-load test instead of kernel TCP")
     p.add_argument("--kernel-qdisc", choices=('inherited', 'fq', 'cake-nosplit'), default='inherited', help="test namespace TUN qdisc only; applied equally to WG/H3, never production")
     p.add_argument("--kernel-cpu-profile", action="store_true", help="diagnostic-only bounded CPU profiles; throughput is profiling-affected")
+    p.add_argument("--kernel-loaded-latency", action="store_true", help="sample 30 authenticated data-plane RTTs during each kernel transfer; no extra throughput flows")
     p.add_argument("--ipv6-proof", action="store_true", help="also verify inner IPv6 TSMP and file transfer")
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
@@ -203,6 +204,8 @@ def main():
         p.error("native QUIC IP rejects AWG profiles; use --profile=standard")
     if args.managed_cli and (not args.managed_cli.is_file() or args.profile != "standard" or any(v not in ("native", "quic-ip-magicsock", "http3-ip-magicsock") for v in variants)):
         p.error("managed CLI tests require a real CLI binary, standard profile and native/magicsock modes")
+    if args.kernel_loaded_latency and not args.kernel_iperf:
+        p.error('kernel-loaded-latency requires kernel-iperf')
     if args.kernel_iperf:
         try: args.kernel_flows = [int(v) for v in args.kernel_flows.split(',')]
         except ValueError: p.error('kernel-flows must be comma-separated integers')

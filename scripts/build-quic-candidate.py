@@ -8,7 +8,7 @@ import argparse, hashlib, json, os, pathlib, shlex, shutil, subprocess
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--quic-root',type=pathlib.Path,required=True)
+    p.add_argument('--quic-root',type=pathlib.Path,help='optional local QUIC module; omitted preserves the published go.mod dependency')
     p.add_argument('--wg-root',type=pathlib.Path,help='optional isolated WG/TUN development module; native protocol unchanged')
     p.add_argument('--output',type=pathlib.Path,required=True)
     p.add_argument('--platforms',default='darwin/arm64,linux/amd64')
@@ -22,11 +22,12 @@ def main():
     if not platforms or any(n not in ('linux/amd64','linux/arm64','darwin/amd64','darwin/arm64','windows/amd64','windows/arm64') for n in platforms):
         p.error('unsupported candidate platform')
     root=pathlib.Path.cwd();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
-    quic=a.quic_root.resolve()
-    if not (quic/'go.mod').is_file():raise SystemExit('missing QUIC module')
+    quic=a.quic_root.resolve() if a.quic_root else None
+    if quic and not (quic/'go.mod').is_file():raise SystemExit('missing QUIC module')
     mod=out/'candidate.mod'
     shutil.copyfile(root/'go.mod',mod);shutil.copyfile(root/'go.sum',out/'candidate.sum')
-    subprocess.run(['go','mod','edit','-modfile='+str(mod),'-replace=github.com/quic-go/quic-go='+str(quic)],check=True)
+    if quic:
+        subprocess.run(['go','mod','edit','-modfile='+str(mod),'-replace=github.com/quic-go/quic-go='+str(quic)],check=True)
     wg = a.wg_root.resolve() if a.wg_root else None
     if wg:
         if not (wg/'go.mod').is_file():raise SystemExit('missing WG/TUN module')
@@ -41,9 +42,14 @@ def main():
     flags='-X tailscale.com/version.longStamp='+vals['VERSION_LONG']+' -X tailscale.com/version.shortStamp='+vals['VERSION_SHORT']
     results={'source':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
              'source_dirty':bool(subprocess.check_output(['git','status','--porcelain'],text=True).strip()),
-             'release_ready':False, 'dependency_source':'local test-only modfile; GitHub release and fixed version still required',
-             'quic_source':subprocess.check_output(['git','-C',str(quic),'rev-parse','HEAD'],text=True).strip(),
-             'quic_dirty':bool(subprocess.check_output(['git','-C',str(quic),'status','--porcelain'],text=True).strip()),'files':{}}
+             'release_ready':False, 'dependency_source':(
+                 'local test-only module override; not a released dependency set'
+                 if quic or wg else 'published dependencies pinned by go.mod; test-only build'),
+             'quic_source':subprocess.check_output(['git','-C',str(quic),'rev-parse','HEAD'],text=True).strip() if quic else 'published go.mod dependency',
+             'quic_dirty':bool(subprocess.check_output(['git','-C',str(quic),'status','--porcelain'],text=True).strip()) if quic else False,'files':{}}
+    results['selected_modules'] = {name: json.loads(subprocess.check_output(
+        ['go','list','-m','-json','-modfile='+str(mod),name],text=True))
+        for name in ('github.com/quic-go/quic-go','github.com/LiuTangLei/wireguard-go')}
     if wg:
         results['wg_source']=subprocess.check_output(['git','-C',str(wg),'rev-parse','HEAD'],text=True).strip()
         results['wg_dirty']=bool(subprocess.check_output(['git','-C',str(wg),'status','--porcelain'],text=True).strip())
