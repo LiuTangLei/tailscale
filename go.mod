@@ -97,7 +97,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.69.0
 	github.com/prometheus/prometheus v0.49.2-0.20240125131847-c3b8ef1694ff
-	github.com/quic-go/quic-go v0.62.0
+	github.com/quic-go/quic-go v0.63.0
 	github.com/robert-nix/ansihtml v1.0.1
 	github.com/safchain/ethtool v0.3.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
@@ -534,6 +534,6 @@ require (
 
 // Published fork: preserve upstream import paths, but never depend on a local
 // directory or a build-time overlay for the prerelease's QUIC fixes.
-replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.62.0-tailscale.4
+replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.63.0-tailscale.1
 
 tool github.com/stacklok/frizbee
