@@ -76,6 +76,7 @@ type Backend struct {
 	counters      Counters
 	timing        sessionTiming
 	tcpStreams    sync.Map // *tcpStreamConn -> struct{}; retained until FIN acknowledgment
+	readBuffers   tcpReadBufferPool
 	serverHintsMu sync.RWMutex
 	serverHints   map[[32]byte]*atomic.Uint32
 }

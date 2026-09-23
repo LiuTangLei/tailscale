@@ -9,8 +9,8 @@ import (
 )
 
 type tcpReadResult struct {
-	data []byte
-	err  error
+	buffer *tcpReadBuffer
+	err    error
 }
 
 // Framing is owned by two bounded pumps. Application deadlines must NOT
@@ -35,9 +35,10 @@ type tcpStreamConn struct {
 	closeOnce                                   sync.Once
 	closeSignal                                 chan struct{}
 	drained                                     chan struct{}
-	drainErr                                    error  // published by closing drained
-	current                                     []byte // guarded by readMu
-	readErr                                     error  // guarded by readMu
+	drainErr                                    error          // published by closing drained
+	current                                     *tcpReadBuffer // guarded by readMu
+	readOffset                                  int            // guarded by readMu
+	readErr                                     error          // guarded by readMu
 }
 
 func (b *Backend) newTCPConn(p *peer, s *session, stream reliableStream, local, remote net.Addr) *tcpStreamConn {
@@ -75,27 +76,56 @@ func (c *tcpStreamConn) authorized() bool { return c.p.stampValid(c.s.stamp) }
 func (c *tcpStreamConn) changedLocked()   { close(c.wake); c.wake = make(chan struct{}) }
 
 func (c *tcpStreamConn) readPump() {
-	defer close(c.readerDone)
-	defer close(c.readQ)
+	defer func() {
+		close(c.readQ)
+		// Publish completion atomically with the close-state check. Either
+		// this pump or closeRead must reclaim queued/current storage even
+		// when EOF and Close race. releaseReadBuffers is idempotent.
+		c.mu.Lock()
+		closed := c.readClosed
+		close(c.readerDone)
+		c.mu.Unlock()
+		if closed {
+			c.releaseReadBuffers()
+		}
+	}()
 	// CancelRead is a no-op after QUIC EOF. On a close-drain deadline or
 	// malformed frame it releases the receive side instead of retaining it.
 	defer c.stream.CancelRead(0)
+	pool := &c.p.g.b.readBuffers
 	for {
-		buf := make([]byte, 32<<10)
-		n, err := c.stream.Read(buf)
+		block := pool.get()
+		n, err := c.stream.Read(block.data[:])
+		if n < 0 || n > len(block.data) {
+			block.n = len(block.data)
+			pool.put(block)
+			block, n, err = nil, 0, io.ErrShortBuffer
+		} else {
+			block.n = n
+		}
 		if n > 0 {
 			c.p.touch()
 			c.p.g.b.counters.TCPBytesReceived.Add(uint64(n))
+		} else if block != nil {
+			pool.put(block)
+			block = nil
 		}
 		if n > 0 || err != nil {
 			select {
-			case c.readQ <- tcpReadResult{buf[:n], err}:
+			case c.readQ <- tcpReadResult{block, err}:
+				// Ownership passes to the queue and then the application Read.
 			case <-c.readStop:
 				if err == nil {
-					c.drainClosedRead(buf)
+					if block == nil {
+						block = pool.get()
+					}
+					c.drainClosedRead(block.data[:])
+					block.n = len(block.data)
 				}
+				pool.put(block)
 				return
 			case <-c.p.ctx.Done():
+				pool.put(block)
 				return
 			}
 		}
@@ -184,43 +214,86 @@ func deadlineTimer(deadline time.Time) (<-chan time.Time, func()) {
 func (c *tcpStreamConn) Read(buf []byte) (int, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
+	total := 0
 	for {
 		if !c.authorized() {
-			return 0, net.ErrClosed
+			return total, net.ErrClosed
 		}
 		c.mu.Lock()
 		closed, deadline, wake := c.readClosed, c.readDeadline, c.wake
 		c.mu.Unlock()
 		if closed {
-			return 0, net.ErrClosed
+			return total, net.ErrClosed
 		}
 		if !deadline.IsZero() && !time.Now().Before(deadline) {
-			return 0, os.ErrDeadlineExceeded
+			return total, os.ErrDeadlineExceeded
 		}
-		if len(buf) == 0 {
-			return 0, nil
+		if total == len(buf) {
+			return total, nil
 		}
-		if len(c.current) > 0 {
-			n := copy(buf, c.current)
-			c.current = c.current[n:]
-			return n, nil
+		if c.current != nil {
+			n := copy(buf[total:], c.current.data[c.readOffset:c.current.n])
+			c.readOffset += n
+			total += n
+			if c.readOffset == c.current.n {
+				c.releaseCurrentReadBuffer()
+			}
+			if total == len(buf) {
+				return total, nil
+			}
 		}
 		if c.readErr != nil {
+			if total > 0 {
+				return total, nil // deliver trailing data before its terminal error
+			}
 			return 0, c.readErr
+		}
+		if total > 0 {
+			// Coalesce only already-ready chunks. Never wait for a larger
+			// batch after obtaining bytes, preserving interactive latency.
+			select {
+			case result, ok := <-c.readQ:
+				c.acceptReadResult(result, ok)
+				continue
+			default:
+				return total, nil
+			}
 		}
 		timer, stop := deadlineTimer(deadline)
 		select {
 		case result, ok := <-c.readQ:
-			if !ok {
-				c.readErr = io.EOF
-			} else {
-				c.current, c.readErr = result.data, result.err
-			}
+			c.acceptReadResult(result, ok)
 		case <-timer:
 		case <-wake:
 		case <-c.readStop:
 		}
 		stop()
+	}
+}
+
+// All three helpers below serialize application ownership with readMu.
+func (c *tcpStreamConn) acceptReadResult(result tcpReadResult, ok bool) {
+	if !ok {
+		c.readErr = io.EOF
+		return
+	}
+	c.current, c.readErr, c.readOffset = result.buffer, result.err, 0
+}
+
+func (c *tcpStreamConn) releaseCurrentReadBuffer() {
+	if c.current != nil {
+		c.p.g.b.readBuffers.put(c.current)
+		c.current, c.readOffset = nil, 0
+	}
+}
+
+// Called only after readQ is closed; never race a final enqueue.
+func (c *tcpStreamConn) releaseReadBuffers() {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	c.releaseCurrentReadBuffer()
+	for result := range c.readQ {
+		c.p.g.b.readBuffers.put(result.buffer)
 	}
 }
 func (c *tcpStreamConn) Write(buf []byte) (int, error) {
@@ -305,6 +378,16 @@ func (c *tcpStreamConn) closeRead(graceful bool) {
 	c.mu.Unlock()
 	if !graceful {
 		c.stream.CancelRead(0)
+		if c.readerDone != nil {
+			<-c.readerDone
+		}
+	}
+	select {
+	case <-c.readerDone:
+		c.releaseReadBuffers()
+	default:
+		// A graceful Close stays nonblocking. The existing pump reclaims
+		// storage when its bounded EOF/close drain completes; no new worker.
 	}
 }
 
