@@ -426,6 +426,11 @@ func netfilterModeFromFlag(v string) (_ preftype.NetfilterMode, warning string, 
 // sign that it's doing too much. Consider refactoring this so it's just
 // telling the caller what to do next, but not changing anything itself.
 func updatePrefs(prefs, curPrefs *ipn.Prefs, env upCheckEnv) (simpleUp bool, justEditMP *ipn.MaskedPrefs, err error) {
+	// AWG is managed by its own commands, not by any "up" flag. In
+	// particular containerboot runs "up" again on restart and can take the
+	// full Start(UpdatePrefs) path when an auth key is present. Preserve the
+	// profile there too; use "tailscale awg reset" to disable AWG explicitly.
+	prefs.AmneziaWG = curPrefs.AmneziaWG
 	if !env.upArgs.reset {
 		applyImplicitPrefs(prefs, curPrefs, env)
 
@@ -930,6 +935,8 @@ func init() {
 	addPrefFlagMapping("relay-server-port", "RelayServerPort")
 	addPrefFlagMapping("sync", "Sync")
 	addPrefFlagMapping("relay-server-static-endpoints", "RelayServerStaticEndpoints")
+	addPrefFlagMapping("amnezia-wg", "AmneziaWG")
+	addPrefFlagMapping("amnezia-wg-config", "AmneziaWG")
 }
 
 func addPrefFlagMapping(flagName string, prefNames ...string) {
@@ -952,7 +959,7 @@ func addPrefFlagMapping(flagName string, prefNames ...string) {
 // correspond to an ipn.Pref.
 func preflessFlag(flagName string) bool {
 	switch flagName {
-	case "auth-key", "force-reauth", "reset", "qr", "qr-format", "json", "timeout", "accept-risk", "host-routes", "client-id", "audience", "client-secret", "id-token":
+	case "auth-key", "force-reauth", "reset", "qr", "qr-format", "json", "timeout", "accept-risk", "host-routes", "client-id", "audience", "client-secret", "id-token", "amnezia-wg-config":
 		return true
 	}
 	return false

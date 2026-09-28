@@ -801,6 +801,74 @@ func TestPeerAllowedIPs(t *testing.T) {
 	wantAllowed()
 }
 
+func wantSourceAllowed(t *testing.T, rm *RouteManager, peer key.NodePublic, addr string, want bool) {
+	t.Helper()
+	got := rm.SourceAllowed(peer, netip.MustParseAddr(addr))
+	if got != want {
+		t.Fatalf("SourceAllowed(%s, %s) = %v; want %v", peer.ShortString(), addr, got, want)
+	}
+}
+
+func TestSourceAllowedShadowing(t *testing.T) {
+	rm := New(t.Logf)
+	p1 := peer1()
+	p2 := peerView{ID: 2, Key: k2, Routes: []netip.Prefix{pfx("0.0.0.0/0")}}
+	p3 := peerView{ID: 3, Key: k3, Routes: []netip.Prefix{pfx("10.0.0.0/8")}}
+	commit(rm, func(m *Mutation) {
+		m.upsertPeer(p1)
+		m.upsertPeer(p2)
+		m.upsertPeer(p3)
+		m.SetPrefs(Prefs{RouteAll: true, ExitNodeID: 2, ExitNodeSelected: true})
+	})
+
+	wantSourceAllowed(t, rm, k2, "8.8.8.8", true)
+	wantSourceAllowed(t, rm, k1, "8.8.8.8", false)
+	wantSourceAllowed(t, rm, k3, "10.0.0.5", true)
+	wantSourceAllowed(t, rm, k2, "10.0.0.5", false)
+}
+
+func TestSourceAllowedHAAndPrefs(t *testing.T) {
+	rm := New(t.Logf)
+	p1 := peer1()
+	p1.Routes = []netip.Prefix{pfx("10.0.0.0/24")}
+	p2 := peer2()
+	p2.Routes = []netip.Prefix{pfx("10.0.0.0/24")}
+	commit(rm, func(m *Mutation) {
+		m.upsertPeer(p1)
+		m.upsertPeer(p2)
+		m.SetPrefs(Prefs{RouteAll: true})
+	})
+	wantSourceAllowed(t, rm, k1, "10.0.0.5", true)
+	wantSourceAllowed(t, rm, k2, "10.0.0.5", true)
+
+	commit(rm, func(m *Mutation) { m.SetScore(2, pfx("10.0.0.0/24"), 100) })
+	wantSourceAllowed(t, rm, k1, "10.0.0.5", true)
+	wantSourceAllowed(t, rm, k2, "10.0.0.5", true)
+
+	commit(rm, func(m *Mutation) { m.SetPrefs(Prefs{}) })
+	wantSourceAllowed(t, rm, k1, "10.0.0.5", false)
+	wantSourceAllowed(t, rm, k2, "10.0.0.5", false)
+}
+
+func TestSourceAllowedLifecycleAndKeyRotation(t *testing.T) {
+	rm := New(t.Logf)
+	commit(rm, func(m *Mutation) { m.upsertPeer(peer1()) })
+	wantSourceAllowed(t, rm, k1, "100.64.0.1", true)
+
+	oldTable := rm.source.Load()
+	commit(rm, func(m *Mutation) { m.RemovePeer(1) })
+	wantSourceAllowed(t, rm, k1, "100.64.0.1", false)
+	if _, _, ok := oldTable.LookupPrefixLPM(netip.PrefixFrom(addr("100.64.0.1"), 32)); !ok {
+		t.Fatal("old source snapshot lost a live prefix after a later commit")
+	}
+
+	rotated := peer1()
+	rotated.Key = k3
+	commit(rm, func(m *Mutation) { m.upsertPeer(rotated) })
+	wantSourceAllowed(t, rm, k3, "100.64.0.1", true)
+	wantSourceAllowed(t, rm, k1, "100.64.0.1", false)
+}
+
 func TestExtraAllowedIPs(t *testing.T) {
 	rm := New(t.Logf)
 	commit(rm, func(m *Mutation) { m.upsertPeer(peer1()) })

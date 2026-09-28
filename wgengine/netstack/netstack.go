@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tailscale/wireguard-go/conn"
+	"github.com/LiuTangLei/wireguard-go/conn"
 	"gvisor.dev/gvisor/pkg/refs"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -349,33 +349,21 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 	if dialer == nil {
 		return nil, errors.New("nil Dialer")
 	}
-	ipstack := stack.New(stack.Options{
+	// Backport upstream 3ec674bc8 with its matching gVisor clock fix. Keep
+	// default SACK/RACK recovery rather than the old workaround disabling it.
+	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
-	})
-	sackEnabledOpt := tcpip.TCPSACKEnabled(true) // TCP SACK is disabled by default
-	tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt)
-	if tcpipErr != nil {
-		return nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
 	}
-	// See https://github.com/tailscale/tailscale/issues/9707
-	// gVisor's RACK performs poorly. ACKs do not appear to be handled in a
-	// timely manner, leading to spurious retransmissions and a reduced
-	// congestion window.
-	tcpRecoveryOpt := tcpip.TCPRecovery(0)
-	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRecoveryOpt)
-	if tcpipErr != nil {
-		return nil, fmt.Errorf("could not disable TCP RACK: %v", tcpipErr)
+	if runtime.GOOS == "windows" {
+		// RACK must account for quantized Windows monotonic timestamps.
+		opts.ClockResolution = 500 * time.Microsecond
 	}
-	// gVisor defaults to reno at the time of writing. We explicitly set reno
-	// congestion control in order to prevent unexpected changes. Netstack
-	// has an int overflow in sender congestion window arithmetic that is more
-	// prone to trigger with cubic congestion control.
-	// See https://github.com/google/gvisor/issues/11632
-	renoOpt := tcpip.CongestionControlOption("reno")
-	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &renoOpt)
+	ipstack := stack.New(opts)
+	cubicOpt := tcpip.CongestionControlOption("cubic")
+	tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &cubicOpt)
 	if tcpipErr != nil {
-		return nil, fmt.Errorf("could not set reno congestion control: %v", tcpipErr)
+		return nil, fmt.Errorf("could not set cubic congestion control: %v", tcpipErr)
 	}
 	err := setTCPBufSizes(ipstack)
 	if err != nil {

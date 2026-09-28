@@ -18,10 +18,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LiuTangLei/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"github.com/gaissmai/bart"
-	"github.com/tailscale/wireguard-go/device"
-	"github.com/tailscale/wireguard-go/tun"
-	"go4.org/mem"
 	"tailscale.com/control/controlknobs"
 	"tailscale.com/drive"
 	"tailscale.com/envknob"
@@ -33,6 +32,7 @@ import (
 	"tailscale.com/net/dns/resolver"
 	"tailscale.com/net/ipset"
 	"tailscale.com/net/netmon"
+	"tailscale.com/net/netns"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/routemanager"
 	"tailscale.com/net/sockstats"
@@ -63,6 +63,8 @@ import (
 	"tailscale.com/wgengine/wgcfg"
 	"tailscale.com/wgengine/wgint"
 	"tailscale.com/wgengine/wglog"
+	"tailscale.com/wgengine/wgtransport"
+	"tailscale.com/wgengine/wgtransport/quicbind"
 )
 
 type userspaceEngine struct {
@@ -72,22 +74,31 @@ type userspaceEngine struct {
 
 	linkChangeQueue execqueue.ExecQueue
 
-	logf           logger.Logf
-	wgLogger       *wglog.Logger // a wireguard-go logging wrapper
-	reqCh          chan struct{}
-	waitCh         chan struct{} // chan is closed when first Close call completes; contrast with closing bool
-	timeNow        func() mono.Time
-	tundev         *tstun.Wrapper
-	wgdev          *device.Device
-	router         router.Router
-	dialer         *tsdial.Dialer
-	confListenPort uint16 // original conf.ListenPort
-	dns            *dns.Manager
-	magicConn      *magicsock.Conn
-	netMon         *netmon.Monitor
-	health         *health.Tracker
-	netMonOwned    bool                // whether we created netMon (and thus need to close it)
-	controlKnobs   *controlknobs.Knobs // or nil
+	logf              logger.Logf
+	wgLogger          *wglog.Logger // a wireguard-go logging wrapper
+	reqCh             chan struct{}
+	sessionDisco      chan key.NodePublic
+	waitCh            chan struct{} // chan is closed when first Close call completes; contrast with closing bool
+	timeNow           func() mono.Time
+	tundev            *tstun.Wrapper
+	tunReadBatching   bool // true only when the actual device accepted the opt-in
+	packet            packetEngine
+	packetPolicy      atomic.Pointer[packetPolicy]
+	packetIdentity    atomic.Pointer[key.NodePublic]
+	packetPrivate     atomic.Pointer[key.NodePrivate] // host-only H3 handshake authentication
+	transport         *wgtransport.Manager
+	transportSource   string
+	transportRevision string
+	transportManaged  bool
+	router            router.Router
+	dialer            *tsdial.Dialer
+	confListenPort    uint16 // original conf.ListenPort
+	dns               *dns.Manager
+	magicConn         *magicsock.Conn
+	netMon            *netmon.Monitor
+	health            *health.Tracker
+	netMonOwned       bool                // whether we created netMon (and thus need to close it)
+	controlKnobs      *controlknobs.Knobs // or nil
 
 	// bird is the BIRD integration handle constructed via
 	// [HookNewBird], or nil if [Config.BIRDSocket] was empty or the
@@ -171,6 +182,15 @@ type Config struct {
 	// the OS.
 	// If nil, a fake Device that does nothing is used.
 	Tun tun.Device
+
+	// Transport selects an experimental outer carrier independently of AWG.
+	// Zero preserves the native Bind. QUIC requires pinned peer configuration.
+	Transport wgtransport.Config
+	// Metadata describing the immutable running configuration, not a pending
+	// profile staged by a LocalAPI caller. Embedders may leave these empty.
+	TransportSource   string
+	TransportRevision string
+	TransportManaged  bool // host reloads daemon-managed profile on restart
 
 	// IsTAP is whether Tun is actually a TAP (Layer 2) device that'll
 	// require ethernet headers.
@@ -302,6 +322,29 @@ func NewFakeUserspaceEngine(logf logger.Logf, opts ...any) (Engine, error) {
 // NewUserspaceEngine creates the named tun device and returns a
 // Tailscale Engine running on it.
 func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) {
+	transportChoice := conf.Transport
+	mode := transportChoice.Mode
+	if mode == "" {
+		mode = wgtransport.Mode(envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
+	}
+	if mode == wgtransport.QUIC {
+		return nil, fmt.Errorf("%w: WG-over-QUIC was removed; use native, quic-ip or http3-ip", wgtransport.ErrUnsupported)
+	}
+	if (mode == wgtransport.QUICIP || mode == wgtransport.HTTP3IP) && transportChoice.Factory == nil {
+		path := envknob.String("TS_EXPERIMENTAL_QUIC_CONFIG")
+		if path == "" {
+			return nil, fmt.Errorf("%w: quic requires TS_EXPERIMENTAL_QUIC_CONFIG with trusted peer pins; native fallback is forbidden", wgtransport.ErrUnsupported)
+		}
+		factory, err := quicbind.Load(path)
+		if err != nil {
+			return nil, fmt.Errorf("wgengine: QUIC configuration: %w", err)
+		}
+		transportChoice.Factory = factory
+	}
+	transportConfig, transportErr := wgtransport.Resolve(transportChoice, envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
+	if transportErr != nil {
+		return nil, transportErr
+	}
 	var closePool closeOnErrorPool
 	defer closePool.closeAllIfError(&reterr)
 
@@ -336,6 +379,16 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		}
 	}
 
+	// H3's IP pipeline benefits from draining records already queued on a
+	// virtio TUN before handing them to filtering/transport. This opt-in API
+	// never changes the host qdisc or WireGuard/AWG's default reader.
+	tunReadBatching := false
+	if !conf.IsTAP && transportConfig.Mode == wgtransport.HTTP3IP {
+		if reader, ok := conf.Tun.(interface{ SetReadBatching(bool) bool }); ok && reader.SetReadBatching(true) {
+			tunReadBatching = true
+			logf("wgengine: ready-record TUN batching enabled for H3")
+		}
+	}
 	var tsTUNDev *tstun.Wrapper
 	if conf.IsTAP {
 		tsTUNDev = tstun.WrapTAP(logf, conf.Tun, conf.Metrics, conf.EventBus)
@@ -361,19 +414,35 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		rtr = router.ConsolidatingRoutes(logf, rtr)
 	}
 
+	transportSource := conf.TransportSource
+	if transportSource == "" {
+		switch {
+		case conf.Transport.Mode != "" || conf.Transport.Factory != nil:
+			transportSource = "embedded"
+		case envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT") != "":
+			transportSource = "environment"
+		default:
+			transportSource = "default"
+		}
+	}
 	e := &userspaceEngine{
-		eventBus:       conf.EventBus,
-		timeNow:        mono.Now,
-		logf:           logf,
-		reqCh:          make(chan struct{}, 1),
-		waitCh:         make(chan struct{}),
-		tundev:         tsTUNDev,
-		router:         rtr,
-		dialer:         conf.Dialer,
-		confListenPort: conf.ListenPort,
-		controlKnobs:   conf.ControlKnobs,
-		reconfigureVPN: conf.ReconfigureVPN,
-		health:         conf.HealthTracker,
+		transportSource:   transportSource,
+		transportRevision: conf.TransportRevision,
+		transportManaged:  conf.TransportManaged,
+		eventBus:          conf.EventBus,
+		timeNow:           mono.Now,
+		logf:              logf,
+		reqCh:             make(chan struct{}, 1),
+		waitCh:            make(chan struct{}),
+		sessionDisco:      make(chan key.NodePublic, 64),
+		tundev:            tsTUNDev,
+		tunReadBatching:   tunReadBatching,
+		router:            rtr,
+		dialer:            conf.Dialer,
+		confListenPort:    conf.ListenPort,
+		controlKnobs:      conf.ControlKnobs,
+		reconfigureVPN:    conf.ReconfigureVPN,
+		health:            conf.HealthTracker,
 	}
 
 	if buildfeatures.HasBird && conf.BIRDSocket != "" {
@@ -508,10 +577,41 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		return true
 	}
 
-	// wgdev takes ownership of tundev, will close it when closed.
-	e.logf("Creating WireGuard device...")
-	e.wgdev = wgcfg.NewDevice(e.tundev, e.magicConn.Bind(), e.wgLogger.DeviceLogger)
-	closePool.addFunc(e.wgdev.Close)
+	// Keep carrier selection outside the WG/AWG cryptographic engine. Native
+	// returns the original magicsock Bind, including its optional interfaces.
+	e.transport, err = wgtransport.New(wgtransport.Host{
+		Bind: e.magicConn.Bind(), Logf: e.logf,
+		ListenPacket:   netns.Listener(e.logf, e.netMon).ListenPacket,
+		ListenTCP:      netns.Listener(e.logf, e.netMon).Listen,
+		PeerAllowed:    func(k [32]byte) bool { return e.peerCurrentlyAllowed(keyFromRaw(k)) },
+		NodePublic:     e.transportNodePublic,
+		NodeHandshake:  e.transportNodeHandshake,
+		SessionChanged: e.carrierSessionChanged,
+		PacketStats: func() map[string]uint64 {
+			if ip, ok := e.packet.(*ipPacketEngine); ok {
+				return ip.dev.SnapshotCounters()
+			}
+			return nil
+		},
+	}, transportConfig)
+	if err != nil {
+		return nil, fmt.Errorf("wgengine: create transport: %w", err)
+	}
+	closePool.add(e.transport)
+	e.logf("Packet transport: %s", e.transport.Mode())
+	// Each backend owns exactly one filtered TUN reader. Native QUIC-IP never
+	// constructs a WG Device, not even for status or a hidden handshake.
+	if e.transport.Mode() == wgtransport.QUICIP || e.transport.Mode() == wgtransport.HTTP3IP {
+		e.logf("Creating native QUIC IP engine (no WireGuard device)...")
+		e.packet, err = newIPPacketEngine(e.tundev, e.transport.Bind(), e.transport.Mode())
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		e.logf("Creating WireGuard/AWG device...")
+		e.packet = &wgPacketEngine{dev: wgcfg.NewDevice(e.tundev, e.transport.Bind(), e.wgLogger.DeviceLogger), logf: e.logf}
+	}
+	closePool.addFunc(e.packet.Close)
 	closePool.addFunc(func() {
 		if err := e.magicConn.Close(); err != nil {
 			e.logf("error closing magicconn: %v", err)
@@ -536,7 +636,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 
 	go func() {
 		select {
-		case <-e.wgdev.Wait():
+		case <-e.packet.Done():
 			e.mu.Lock()
 			closing := e.closing
 			e.mu.Unlock()
@@ -549,8 +649,8 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		}
 	}()
 
-	e.logf("Bringing WireGuard device up...")
-	if err := e.wgdev.Up(); err != nil {
+	e.logf("Bringing %s packet device up...", e.transport.Mode())
+	if err := e.packet.Up(); err != nil {
 		return nil, fmt.Errorf("wgdev.Up: %w", err)
 	}
 	e.logf("Bringing router up...")
@@ -625,6 +725,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		})
 	})
 	e.eventClient = ec
+	go e.sendSessionDiscoNotifications()
 	e.logf("Engine created.")
 	return e, nil
 }
@@ -691,9 +792,7 @@ func (e *userspaceEngine) SetPeerConfigFunc(fn func(key.NodePublic) (allowedIPs 
 		panic("SetPeerConfigFunc: nil fn")
 	}
 	e.peerConfigFn.Store(&fn)
-	e.wgdev.SetPeerLookupFunc(wgcfg.NewPeerLookupFunc(e.wgdev.Bind(), e.logf, func(pubk device.NoisePublicKey) ([]netip.Prefix, bool) {
-		return fn(key.NodePublicFromRaw32(mem.B(pubk[:])))
-	}))
+	e.packet.SetPeerConfigFunc(fn)
 }
 
 // SyncDevicePeer implements [Engine.SyncDevicePeer].
@@ -709,12 +808,11 @@ func (e *userspaceEngine) SyncDevicePeer(k key.NodePublic) {
 	e.wgLogger.Invalidate()
 	allowedIPs, ok := (*fn)(k)
 	if !ok {
-		e.wgdev.RemovePeer(k.Raw32())
+		e.transport.PeerRemoved(k.Raw32())
+		e.packet.RemovePeer(k)
 		return
 	}
-	if peer, ok := e.wgdev.LookupActivePeer(k.Raw32()); ok {
-		peer.SetAllowedIPs(allowedIPs)
-	}
+	e.packet.SyncPeer(k, allowedIPs)
 }
 
 // ResetDevicePeer implements [Engine.ResetDevicePeer].
@@ -722,7 +820,8 @@ func (e *userspaceEngine) ResetDevicePeer(k key.NodePublic) {
 	e.wgLock.Lock()
 	defer e.wgLock.Unlock()
 	e.wgLogger.Invalidate()
-	e.wgdev.RemovePeer(k.Raw32())
+	e.transport.PeerRemoved(k.Raw32())
+	e.packet.RemovePeer(k)
 }
 
 // SetPeerByIPPacketFunc installs a callback used by wireguard-go to look up
@@ -738,24 +837,11 @@ func (e *userspaceEngine) ResetDevicePeer(k key.NodePublic) {
 // in the device. Callers without a LocalBackend that need outbound packets
 // to lazily create peers must install their own callback.
 func (e *userspaceEngine) SetPeerByIPPacketFunc(fn func(netip.Addr) (_ key.NodePublic, ok bool)) {
-	if fn == nil {
-		e.wgdev.SetPeerByIPPacketFunc(nil)
-		return
-	}
-	e.wgdev.SetPeerByIPPacketFunc(func(_, dst netip.Addr, _ []byte) (device.NoisePublicKey, bool) {
-		if pk, ok := fn(dst); ok {
-			return pk.Raw32(), true
-		}
-		return device.NoisePublicKey{}, false
-	})
+	e.packet.SetRouteFunc(fn)
 }
 
 func (e *userspaceEngine) SetPeerSessionStateFunc(fn func(key.NodePublic, PeerWireGuardState)) {
-	e.wgdev.SetSessionStateFunc(func(pk device.NoisePublicKey, state device.PeerSessionState) {
-		if fn != nil {
-			fn(key.NodePublicFromRaw32(mem.B(pk[:])), peerWireGuardStateFromDevice(state))
-		}
-	})
+	e.packet.SetSessionCallback(fn)
 }
 
 // SetNetLogSource installs the [NetLogSource] consulted by the engine's
@@ -865,6 +951,24 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 		e.isDNSIPOverTailscale.Store(ipset.NewContainsIPFunc(views.SliceOf(dnsIPsOverTailscale(dnsCfg, routerCfg))))
 	}
 
+	// Apply on every engine config change, including the first one. The initial
+	// call is required for installations that configure AWG only through the
+	// TS_AMNEZIA_* environment variables while persisted preferences are zero.
+	if engineChanged {
+		if err := e.packet.ApplyConfig(cfg); err != nil {
+			// A rejected native-IP profile must not leave the previous identity
+			// usable while the control plane has already switched profiles.
+			if e.transport.Mode() == wgtransport.QUICIP || e.transport.Mode() == wgtransport.HTTP3IP {
+				e.packetPrivate.Store(nil)
+				e.packetIdentity.Store(new(key.NodePublic))
+				e.transport.LocalIdentityChanged([32]byte{})
+				_ = e.packet.SetIdentity(key.NodePrivate{})
+				e.lastCfg.PrivateKey = key.NodePrivate{} // force a valid retry to restore identity
+			}
+			return fmt.Errorf("wgengine: packet configuration: %w", err)
+		}
+	}
+
 	if !e.lastCfg.PrivateKey.Equal(cfg.PrivateKey) {
 		// Tell magicsock about the new (or initial) private key
 		// (which is needed by DERP) before wgdev gets it, as wgdev
@@ -874,9 +978,22 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 			e.logf("wgengine: Reconfig: SetPrivateKey: %v", err)
 		}
 
-		if err := e.wgdev.SetPrivateKey(key.NodePrivateAs[device.NoisePrivateKey](cfg.PrivateKey)); err != nil {
-			e.logf("wgengine: Reconfig: wgdev.SetPrivateKey: %v", err)
+		var publicKey [32]byte
+		if !cfg.PrivateKey.IsZero() {
+			publicKey = cfg.PrivateKey.Public().Raw32()
 		}
+		// Invalidate the old TLS/node binding before publishing a new identity.
+		e.packetPrivate.Store(nil)
+		e.packetIdentity.Store(new(key.NodePublic))
+		e.transport.LocalIdentityChanged([32]byte{})
+		if err := e.packet.SetIdentity(cfg.PrivateKey); err != nil {
+			return fmt.Errorf("wgengine: set packet-engine identity: %w", err)
+		}
+		pub := keyFromRaw(publicKey)
+		private := cfg.PrivateKey
+		e.packetPrivate.Store(&private)
+		e.packetIdentity.Store(&pub)
+		e.transport.LocalIdentityChanged(publicKey)
 	}
 
 	e.lastCfg = *cfg.Clone()
@@ -988,7 +1105,7 @@ var ErrEngineClosing = errors.New("engine closing; no status")
 
 func (e *userspaceEngine) PeerByKey(pubKey key.NodePublic) (_ wgint.Peer, ok bool) {
 	e.wgLock.Lock()
-	dev := e.wgdev
+	dev := e.packet
 	e.wgLock.Unlock()
 
 	if dev == nil {
@@ -1000,23 +1117,11 @@ func (e *userspaceEngine) PeerByKey(pubKey key.NodePublic) (_ wgint.Peer, ok boo
 	// in the netmap; using LookupPeer would lazily create a wireguard-go
 	// peer for every single netmap peer on each status poll, leaking
 	// memory via per-peer queues and goroutines.
-	peer, ok := dev.LookupActivePeer(pubKey.Raw32())
-	if !ok {
-		return wgint.Peer{}, false
-	}
-	return wgint.PeerOf(peer), true
+	return dev.WireGuardPeer(pubKey)
 }
 
 func (e *userspaceEngine) getPeerStatusLite(pk key.NodePublic) (status ipnstate.PeerStatusLite, ok bool) {
-	peer, ok := e.PeerByKey(pk)
-	if !ok {
-		return status, false
-	}
-	status.NodeKey = pk
-	status.RxBytes = int64(peer.RxBytes())
-	status.TxBytes = int64(peer.TxBytes())
-	status.LastHandshake = peer.LastHandshake()
-	return status, true
+	return e.packet.Status(pk)
 }
 
 func (e *userspaceEngine) getStatus() (*Status, error) {
@@ -1034,16 +1139,8 @@ func (e *userspaceEngine) getStatus() (*Status, error) {
 		return nil, ErrEngineClosing
 	}
 
-	// Snapshot the set of active wgdev peers. wireguard-go has no
-	// read-only iterator over its peer map; RemoveMatchingPeers with
-	// a callback that always returns false is the cheap equivalent
-	// (the callback can't itself call LookupActivePeer, though, as
-	// RemoveMatchingPeers holds the wireguard device's mutex).
-	var peerKeys []key.NodePublic
-	e.wgdev.RemoveMatchingPeers(func(pk device.NoisePublicKey) bool {
-		peerKeys = append(peerKeys, key.NodePublicFromRaw32(mem.B(pk[:])))
-		return false
-	})
+	// Enumerating stats must never allocate protocol peers or signal removal.
+	peerKeys := e.packet.ActivePeers()
 
 	peers := make([]ipnstate.PeerStatusLite, 0, len(peerKeys))
 	for _, k := range peerKeys {
@@ -1112,13 +1209,21 @@ func (e *userspaceEngine) Close() {
 	e.closing = true
 	e.mu.Unlock()
 
+	e.packetPrivate.Store(nil)
+	e.packetIdentity.Store(new(key.NodePublic))
+	// A QUIC carrier must send CONNECTION_CLOSE before its underlying
+	// magicsock socket disappears, so remote stream readers terminate promptly.
+	// Native mode has no separate backend and retains its existing behavior.
+	if err := e.transport.Close(); err != nil {
+		e.logf("wgengine: closing transport: %v", err)
+	}
 	e.magicConn.Close()
 	if e.netMonOwned {
 		e.netMon.Close()
 	}
 	e.dns.Down()
 	e.router.Close()
-	e.wgdev.Close()
+	e.packet.Close()
 	e.tundev.Close()
 	if e.bird != nil {
 		e.bird.Close()
@@ -1204,6 +1309,7 @@ func (e *userspaceEngine) linkChange(delta *netmon.ChangeDelta) {
 		}
 		e.magicConn.ReSTUN(why)
 	}
+	e.transport.NetworkChanged(up, delta.RebindLikelyRequired)
 }
 
 func (e *userspaceEngine) SetSelfNode(self tailcfg.NodeView) {
@@ -1232,6 +1338,14 @@ func (e *userspaceEngine) SetSelfNode(self tailcfg.NodeView) {
 }
 
 func (e *userspaceEngine) UpdateStatus(sb *ipnstate.StatusBuilder) {
+	if e.transport != nil {
+		sb.MutateStatus(func(s *ipnstate.Status) {
+			s.PacketTransport = string(e.transport.Mode())
+			s.PacketTransportSource = e.transportSource
+			s.PacketTransportRevision = e.transportRevision
+			s.PacketTransportManaged = e.transportManaged
+		})
+	}
 	st, err := e.getStatus()
 	if err != nil {
 		e.logf("wgengine: getStatus: %v", err)
@@ -1240,10 +1354,13 @@ func (e *userspaceEngine) UpdateStatus(sb *ipnstate.StatusBuilder) {
 	if sb.WantPeers {
 		for _, ps := range st.Peers {
 			sb.AddPeer(ps.NodeKey, &ipnstate.PeerStatus{
-				RxBytes:       int64(ps.RxBytes),
-				TxBytes:       int64(ps.TxBytes),
-				LastHandshake: ps.LastHandshake,
-				InEngine:      true,
+				RxBytes:                int64(ps.RxBytes),
+				TxBytes:                int64(ps.TxBytes),
+				LastHandshake:          ps.LastHandshake,
+				SessionProtocol:        ps.SessionProtocol,
+				LastSessionEstablished: ps.LastSessionEstablished,
+				SessionState:           ps.SessionState,
+				InEngine:               true,
 			})
 		}
 	}

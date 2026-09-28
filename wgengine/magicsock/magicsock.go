@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
@@ -25,8 +26,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tailscale/wireguard-go/conn"
-	"github.com/tailscale/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/conn"
+	"github.com/LiuTangLei/wireguard-go/device"
 	"go4.org/mem"
 	"golang.org/x/net/ipv6"
 	"tailscale.com/control/controlknobs"
@@ -36,6 +37,7 @@ import (
 	"tailscale.com/feature/condlite/expvar"
 	"tailscale.com/health"
 	"tailscale.com/hostinfo"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/batching"
 	"tailscale.com/net/netcheck"
@@ -73,6 +75,20 @@ import (
 	"tailscale.com/wgengine/router"
 	"tailscale.com/wgengine/wgint"
 )
+
+// AmneziaWGConfigData represents a received Amnezia-WG configuration response.
+type AmneziaWGConfigData struct {
+	RequestID  [8]byte
+	NodeKey    key.NodePublic
+	DiscoKey   key.DiscoPublic
+	ConfigJSON []byte
+}
+
+type amneziaWGConfigWaiter struct {
+	ch       chan *AmneziaWGConfigData
+	nodeKey  key.NodePublic
+	discoKey key.DiscoPublic
+}
 
 const (
 	// These are disco.Magic in big-endian form, 4 then 2 bytes. The
@@ -417,6 +433,13 @@ type Conn struct {
 	// updated by netmap resets.
 	initializedAt mono.Time
 
+	// amneziaWGConfigWaiters holds per-request channels keyed by request ID to
+	// allow concurrent Amnezia-WG config requests.
+	amneziaWGConfigWaiters map[[8]byte]amneziaWGConfigWaiter
+	// amneziaWGConfigProvider, if non-nil, returns the current local
+	// Amnezia-WG preferences to respond with. Called under c.mu; it must be fast.
+	amneziaWGConfigProvider func() ipn.AmneziaWGPrefs
+
 	// homeDERPGauge is the usermetric gauge for the home DERP region ID.
 	// This can be nil when [Options.Metrics] are not enabled.
 	homeDERPGauge *usermetric.Gauge
@@ -581,14 +604,15 @@ type UDPRelayAllocResp struct {
 func newConn(logf logger.Logf) *Conn {
 	discoPrivate := key.NewDisco()
 	c := &Conn{
-		logf:          logf,
-		derpRecvCh:    make(chan derpReadResult, 1), // must be buffered, see issue 3736
-		derpStarted:   make(chan struct{}),
-		peerLastDerp:  make(map[key.NodePublic]int),
-		peerMap:       newPeerMap(),
-		discoInfo:     make(map[key.DiscoPublic]*discoInfo),
-		cloudInfo:     cloudinfo.New(logf),
-		initializedAt: mono.Now(),
+		amneziaWGConfigWaiters: make(map[[8]byte]amneziaWGConfigWaiter),
+		logf:                   logf,
+		derpRecvCh:             make(chan derpReadResult, 1), // must be buffered, see issue 3736
+		derpStarted:            make(chan struct{}),
+		peerLastDerp:           make(map[key.NodePublic]int),
+		peerMap:                newPeerMap(),
+		discoInfo:              make(map[key.DiscoPublic]*discoInfo),
+		cloudInfo:              cloudinfo.New(logf),
+		initializedAt:          mono.Now(),
 	}
 	c.discoAtomic.Set(discoPrivate)
 	c.bind = &connBind{Conn: c, closed: true}
@@ -884,6 +908,17 @@ func (c *Conn) InstallCaptureHook(cb packet.CaptureCallback) {
 // periodicReSTUNTimer when periodic STUNs are active.
 func (c *Conn) doPeriodicSTUN() { c.ReSTUN("periodic") }
 
+func (c *Conn) shouldRebindAfterNetcheckSendError() bool {
+	return c.shouldRebindAfterSendErrorForPolicy(debugAlwaysDERP())
+}
+
+func (c *Conn) shouldRebindAfterSendErrorForPolicy(alwaysDERP bool) bool {
+	// In forced DERP mode the UDP socket is deliberately disabled. Rebinding
+	// cannot repair it and instead tears down a healthy DERP session on each
+	// netcheck (especially frequently on a host with interface churn).
+	return c.noV4Send.Load() && runtime.GOOS != "js" && !c.onlyTCP443.Load() && !alwaysDERP && !hostinfo.IsInVM86()
+}
+
 func (c *Conn) stopPeriodicReSTUNTimerLocked() {
 	if t := c.periodicReSTUNTimer; t != nil {
 		t.Stop()
@@ -932,7 +967,7 @@ func (c *Conn) updateEndpoints(why string) {
 		c.muCond.Broadcast()
 	}()
 	c.dlogf("[v1] magicsock: starting endpoint update (%s)", why)
-	if c.noV4Send.Load() && runtime.GOOS != "js" && !c.onlyTCP443.Load() && !hostinfo.IsInVM86() {
+	if c.shouldRebindAfterNetcheckSendError() {
 		c.mu.Lock()
 		closed := c.closed
 		c.mu.Unlock()
@@ -1500,7 +1535,7 @@ func (c *Conn) networkDown() bool {
 
 // Send implements conn.Bind.
 //
-// See https://pkg.go.dev/github.com/tailscale/wireguard-go/conn#Bind.Send
+// See https://pkg.go.dev/github.com/LiuTangLei/wireguard-go/conn#Bind.Send
 func (c *Conn) Send(buffs [][]byte, ep conn.Endpoint, offset int) (err error) {
 	n := int64(len(buffs))
 	defer func() {
@@ -1525,7 +1560,9 @@ func (c *Conn) Send(buffs [][]byte, ep conn.Endpoint, offset int) (err error) {
 		}
 		return c.pconn4.WriteWireGuardBatchTo(buffs, ep.src, offset)
 	}
-	return nil
+	// Carrier implementations must unwrap their endpoint metadata before
+	// calling the host Bind. Do not silently report a dropped send as success.
+	return conn.ErrWrongEndpointType
 }
 
 var errConnClosed = errors.New("Conn closed")
@@ -1886,7 +1923,7 @@ func (c *Conn) receiveIP(b []byte, ipp netip.AddrPort, cache *epAddrEndpointCach
 		// Strip away the Geneve header before returning the packet to
 		// wireguard-go.
 		//
-		// TODO(jwhited): update [github.com/tailscale/wireguard-go/conn.ReceiveFunc]
+		// TODO(jwhited): update [github.com/LiuTangLei/wireguard-go/conn.ReceiveFunc]
 		//  to support returning start offset in order to get rid of this memmove perf
 		//  penalty.
 		size = copy(b, b[packet.GeneveFixedHeaderLength:])
@@ -2500,6 +2537,10 @@ func (c *Conn) handleDiscoMessage(msg []byte, src epAddr, shouldBeRelayHandshake
 			RxFromNodeKey:  nodeKey,
 			Message:        req,
 		})
+	case *disco.AmneziaWGConfigRequest:
+		c.handleAmneziaWGConfigRequestLocked(dm, src, di, derpNodeSrc)
+	case *disco.AmneziaWGConfigResponse:
+		c.handleAmneziaWGConfigResponseLocked(dm, src, di, derpNodeSrc)
 	}
 	return
 }
@@ -2732,6 +2773,15 @@ func (c *Conn) SetNetworkUp(up bool) {
 		}
 		c.closeAllDerpLocked("network-down")
 	}
+}
+
+// SetAmneziaWGConfigProvider installs a provider function that returns the
+// current local Amnezia-WG preferences for disco config requests. It is safe
+// to call multiple times; passing nil disables responses (will send zeros).
+func (c *Conn) SetAmneziaWGConfigProvider(p func() ipn.AmneziaWGPrefs) {
+	c.mu.Lock()
+	c.amneziaWGConfigProvider = p
+	c.mu.Unlock()
 }
 
 // SetPreferredPort sets the connection's preferred local port.
@@ -3477,6 +3527,22 @@ var _ conn.Bind = (*connBind)(nil)
 // the ReceiveFuncs, and the maximum expected to be passed to SendBatch.
 //
 // See https://pkg.go.dev/golang.zx2c4.com/wireguard/conn#Bind.BatchSize
+// ReceiveBufferSizes describes the buffers needed by this Bind's receive
+// functions. Linux batching reads GRO aggregates into the last two buffers
+// before splitting individual datagrams into the head. Carrier adapters can
+// preserve this layout without allocating 64 KiB for every batch slot.
+func (c *connBind) ReceiveBufferSizes() []int {
+	sizes := make([]int, c.BatchSize())
+	for i := range sizes {
+		sizes[i] = 2048 // individual outer QUIC datagrams fit here
+	}
+	if runtime.GOOS == "linux" && len(sizes) >= 2 {
+		sizes[len(sizes)-2] = 65535
+		sizes[len(sizes)-1] = 65535
+	}
+	return sizes
+}
+
 func (c *connBind) BatchSize() int {
 	// TODO(raggi): determine by properties rather than hardcoding platform behavior
 	switch runtime.GOOS {
@@ -4607,4 +4673,308 @@ func (c *Conn) maybeSendTSMPDiscoAdvert(de *endpoint) {
 		NodeFirstAddr: de.nodeAddr,
 		NodeID:        de.nodeID,
 	})
+}
+
+// handleAmneziaWGConfigRequestLocked handles incoming Amnezia-WG configuration requests.
+// It responds with the current node's Amnezia-WG configuration.
+// c.mu must be held.
+func (c *Conn) handleAmneziaWGConfigRequestLocked(dm *disco.AmneziaWGConfigRequest, src epAddr, di *discoInfo, derpNodeSrc key.NodePublic) {
+	c.dlogf("[v1] magicsock: disco: handling AmneziaWG config request tx=%x from %v (derpNodeSrc=%v)",
+		dm.RequestID[:4], di.discoKey.ShortString(), derpNodeSrc.ShortString())
+
+	// Fetch current config via provider if available; fall back to zero (standard WG)
+	awgPrefs := ipn.AmneziaWGPrefs{}
+	if c.amneziaWGConfigProvider != nil {
+		func() {
+			// provider is expected to be fast & side-effect free
+			defer func() {
+				if r := recover(); r != nil {
+					c.logf("magicsock: disco: amneziaWGConfigProvider panic: %v", r)
+				}
+			}()
+			awgPrefs = c.amneziaWGConfigProvider()
+		}()
+	}
+	if !amneziaWGConfigRequestCompatible(dm, awgPrefs) {
+		c.logf("magicsock: disco: not sending AWG v3 config tx=%x to legacy v2 requester %v",
+			dm.RequestID[:4], di.discoKey.ShortString())
+		return
+	}
+
+	configJSON, err := ipn.MarshalAmneziaWGConfigForDisco(awgPrefs)
+	if err != nil {
+		c.logf("magicsock: disco: cannot encode AmneziaWG config response: %v", err)
+		return
+	}
+
+	resp := &disco.AmneziaWGConfigResponse{
+		RequestID:  dm.RequestID,
+		ConfigJSON: configJSON,
+	}
+
+	// Send response via all available paths (DERP + direct UDP) for reliability.
+	// Duplicate responses are safe: the waiter deduplicates by RequestID.
+	responseSent := false
+	var directResponseAddr epAddr
+
+	// Resolve the nodeKey of the requester for endpoint lookup.
+	// derpNodeSrc is set when the request arrived via DERP; for direct UDP it's zero.
+	requesterNodeKey := derpNodeSrc
+	if requesterNodeKey.IsZero() {
+		// Request arrived via direct UDP. Resolve nodeKey from disco key only if
+		// the disco key maps unambiguously to a single node.
+		var numRequesterNodes int
+		c.peerMap.forEachEndpointWithDiscoKey(di.discoKey, func(ep *endpoint) bool {
+			numRequesterNodes++
+			if numRequesterNodes == 1 {
+				requesterNodeKey = ep.publicKey
+			}
+			return true
+		})
+		if numRequesterNodes > 1 {
+			requesterNodeKey = key.NodePublic{}
+		}
+	}
+
+	if requesterNodeKey.IsZero() {
+		c.logf("magicsock: disco: cannot resolve nodeKey for AmneziaWG config response tx=%x from disco=%v",
+			dm.RequestID[:4], di.discoKey.ShortString())
+	} else {
+		// Try DERP path
+		var derpAddr netip.AddrPort
+		if ep, ok := c.peerMap.endpointForNodeKey(requesterNodeKey); ok && ep != nil && ep.derpAddr.IsValid() {
+			derpAddr = ep.derpAddr
+		} else if src.ap.Addr() == tailcfg.DerpMagicIPAddr {
+			// Fallback: use the DERP region the request arrived on
+			derpAddr = src.ap
+		}
+		if derpAddr.IsValid() {
+			c.dlogf("[v1] magicsock: disco: sending AmneziaWG config response tx=%x to %v via DERP region=%d size=%d",
+				dm.RequestID[:4], requesterNodeKey.ShortString(), derpAddr.Port(), len(configJSON))
+			go c.sendDiscoMessage(epAddr{ap: derpAddr}, requesterNodeKey, di.discoKey, resp, discoLog)
+			responseSent = true
+		}
+
+		// Also try direct UDP path (bestAddr) if available.
+		if ep, ok := c.peerMap.endpointForNodeKey(requesterNodeKey); ok && ep != nil {
+			ep.mu.Lock()
+			ba := ep.bestAddr
+			trust := ep.trustBestAddrUntil
+			ep.mu.Unlock()
+			if ba.ap.IsValid() && ba.ap.Addr() != tailcfg.DerpMagicIPAddr && mono.Now().Before(trust) {
+				c.dlogf("[v1] magicsock: disco: sending AmneziaWG config response tx=%x to %v via direct %v size=%d",
+					dm.RequestID[:4], requesterNodeKey.ShortString(), ba.ap, len(configJSON))
+				go c.sendDiscoMessage(ba.epAddr, requesterNodeKey, di.discoKey, resp, discoLog)
+				responseSent = true
+				directResponseAddr = ba.epAddr
+			}
+		}
+
+	}
+
+	// A direct request proves that its source address is reachable. Always reply
+	// there even if a DERP send was already queued; stale DERP metadata must not
+	// suppress the known-good path. Skip only an identical direct bestAddr send.
+	// This also works when requesterNodeKey is zero (ambiguous disco key), because
+	// direct sendDiscoMessage/sendAddr does not require a valid nodeKey.
+	if shouldSendAmneziaWGConfigToDirectSource(src, directResponseAddr) {
+		c.dlogf("[v1] magicsock: disco: sending AmneziaWG config response tx=%x to %v via source addr %v size=%d",
+			dm.RequestID[:4], requesterNodeKey.ShortString(), src.ap, len(configJSON))
+		go c.sendDiscoMessage(src, requesterNodeKey, di.discoKey, resp, discoLog)
+		responseSent = true
+	}
+
+	if !responseSent {
+		c.logf("magicsock: disco: no path available to send AmneziaWG config response tx=%x (derpNodeSrc=%v, src=%v)",
+			dm.RequestID[:4], derpNodeSrc.ShortString(), src)
+	}
+
+	c.dlogf("[v1] magicsock: disco: completed handling AmneziaWG config request tx=%x from %v",
+		dm.RequestID[:4], di.discoKey.ShortString())
+}
+
+func shouldSendAmneziaWGConfigToDirectSource(src, directResponseAddr epAddr) bool {
+	return src.isDirect() && src != directResponseAddr
+}
+
+func amneziaWGConfigRequestCompatible(req *disco.AmneziaWGConfigRequest, prefs ipn.AmneziaWGPrefs) bool {
+	version := disco.AmneziaWGConfigVersionV2
+	if prefs.IsV3() {
+		version = disco.AmneziaWGConfigVersionV3
+	}
+	if prefs.IsV31() {
+		version = disco.AmneziaWGConfigVersionV31
+	}
+	return req.SupportsConfigVersion(version)
+}
+
+// handleAmneziaWGConfigResponseLocked handles incoming Amnezia-WG configuration responses.
+// It delivers the result to the waiter channel registered for the matching request ID.
+// c.mu must be held.
+func (c *Conn) handleAmneziaWGConfigResponseLocked(dm *disco.AmneziaWGConfigResponse, src epAddr, di *discoInfo, derpNodeSrc key.NodePublic) {
+	c.dlogf("[v1] magicsock: disco: received AmneziaWG config response tx=%x from %v (derpNodeSrc=%v) size=%d",
+		dm.RequestID[:4], di.discoKey.ShortString(), derpNodeSrc.ShortString(), len(dm.ConfigJSON))
+
+	if waiter, ok := c.amneziaWGConfigWaiters[dm.RequestID]; ok {
+		if waiter.discoKey.Compare(di.discoKey) != 0 {
+			c.logf("magicsock: disco: ignoring AmneziaWG config response tx=%x from unexpected disco key %v",
+				dm.RequestID[:4], di.discoKey.ShortString())
+			return
+		}
+		responseNodeKey := derpNodeSrc
+		if responseNodeKey.IsZero() {
+			if ep, ok := c.peerMap.endpointForEpAddr(src); ok && ep != nil {
+				responseNodeKey = ep.publicKey
+			}
+		}
+		if !waiter.nodeKey.IsZero() && !responseNodeKey.IsZero() && responseNodeKey != waiter.nodeKey {
+			c.logf("magicsock: disco: ignoring AmneziaWG config response tx=%x from unexpected node %v",
+				dm.RequestID[:4], responseNodeKey.ShortString())
+			return
+		}
+		delete(c.amneziaWGConfigWaiters, dm.RequestID)
+		if responseNodeKey.IsZero() {
+			responseNodeKey = waiter.nodeKey
+		}
+		select {
+		case waiter.ch <- &AmneziaWGConfigData{RequestID: dm.RequestID, NodeKey: responseNodeKey, DiscoKey: di.discoKey, ConfigJSON: dm.ConfigJSON}:
+			c.dlogf("[v1] magicsock: disco: delivered AmneziaWG config response tx=%x", dm.RequestID[:4])
+		default:
+			c.logf("magicsock: disco: waiter channel full for AmneziaWG config response tx=%x", dm.RequestID[:4])
+		}
+		return
+	}
+
+	// A second response is expected when the peer replies over both DERP and a
+	// direct path. The first response consumes the waiter, so keep this at debug
+	// level rather than emitting a warning during healthy path racing.
+	c.dlogf("[v1] magicsock: disco: no waiter found for duplicate/late AmneziaWG config response tx=%x", dm.RequestID[:4])
+}
+
+// RequestAmneziaWGConfigCtx sends a request for Amnezia-WG configuration to the
+// specified peer using its disco key. The provided context governs the lifetime
+// of the request; if it is cancelled or times out before a response arrives the
+// internal waiter entry is cleaned up to avoid leaking memory.
+//
+// respCh must be a buffered channel (capacity >=1). A single response will be
+// sent on success; the channel is not closed by magicsock.
+func (c *Conn) RequestAmneziaWGConfigCtx(ctx context.Context, discoKey key.DiscoPublic, respCh chan *AmneziaWGConfigData) error {
+	return c.requestAmneziaWGConfigCtx(ctx, key.NodePublic{}, discoKey, respCh)
+}
+
+// RequestAmneziaWGConfigForNodeCtx requests an AWG configuration from one
+// specific node. NodeKey is required because a DiscoKey can be shared by more
+// than one node in a netmap.
+func (c *Conn) RequestAmneziaWGConfigForNodeCtx(ctx context.Context, nodeKey key.NodePublic, discoKey key.DiscoPublic, respCh chan *AmneziaWGConfigData) error {
+	if nodeKey.IsZero() {
+		return errors.New("zero node key")
+	}
+	return c.requestAmneziaWGConfigCtx(ctx, nodeKey, discoKey, respCh)
+}
+
+func (c *Conn) requestAmneziaWGConfigCtx(ctx context.Context, nodeKey key.NodePublic, discoKey key.DiscoPublic, respCh chan *AmneziaWGConfigData) error {
+	if cap(respCh) < 1 {
+		return errors.New("AmneziaWG response channel must be buffered")
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return errConnClosed
+	}
+
+	c.dlogf("[v1] magicsock: disco: requesting AmneziaWG config from node=%v disco=%v", nodeKey.ShortString(), discoKey.ShortString())
+
+	var target *endpoint
+	if nodeKey.IsZero() {
+		c.peerMap.forEachEndpointWithDiscoKey(discoKey, func(ep *endpoint) bool {
+			target = ep
+			return false
+		})
+		if target == nil {
+			return fmt.Errorf("unknown peer with disco key %v", discoKey)
+		}
+	} else {
+		var ok bool
+		target, ok = c.peerMap.endpointForNodeKeyAndDiscoKey(nodeKey, discoKey)
+		if !ok {
+			return fmt.Errorf("node %v is not associated with disco key %v", nodeKey.ShortString(), discoKey.ShortString())
+		}
+	}
+
+	// Generate a random request ID
+	var requestID [8]byte
+	if _, err := rand.Read(requestID[:]); err != nil {
+		return fmt.Errorf("failed to generate request ID: %w", err)
+	}
+
+	req := &disco.AmneziaWGConfigRequest{
+		RequestID:        requestID,
+		MaxConfigVersion: disco.AmneziaWGConfigVersionV31,
+	}
+
+	// Register waiter
+	if _, exists := c.amneziaWGConfigWaiters[requestID]; exists {
+		// Extremely unlikely; regenerate
+		c.dlogf("[v1] magicsock: disco: collision on request ID %x, regenerating", requestID[:4])
+		return fmt.Errorf("request ID collision; retry")
+	}
+	c.amneziaWGConfigWaiters[requestID] = amneziaWGConfigWaiter{
+		ch:       respCh,
+		nodeKey:  nodeKey,
+		discoKey: discoKey,
+	}
+
+	// Launch a cleanup goroutine that removes the waiter if the context is
+	// done before a response arrives. We capture requestID & discoKey values.
+	if ctx != nil && ctx.Done() != nil {
+		go func(requestID [8]byte, done <-chan struct{}) {
+			<-done
+			c.mu.Lock()
+			if waiter, ok := c.amneziaWGConfigWaiters[requestID]; ok && waiter.ch == respCh {
+				delete(c.amneziaWGConfigWaiters, requestID)
+				c.dlogf("[v1] magicsock: disco: cleaned up AmneziaWG config waiter tx=%x after context done (%v)", requestID[:4], ctx.Err())
+			}
+			c.mu.Unlock()
+		}(requestID, ctx.Done())
+	}
+
+	c.dlogf("[v1] magicsock: disco: generated request ID %x for AmneziaWG config from %v", requestID[:4], discoKey.ShortString())
+
+	// Send via all available paths (DERP + direct UDP) for reliability.
+	// Duplicate requests are safe: the response handler deduplicates by RequestID.
+	sent := false
+	// Snapshot both paths while holding the endpoint lock.
+	target.mu.Lock()
+	derpAddr := target.derpAddr
+	ba := target.bestAddr
+	trust := target.trustBestAddrUntil
+	target.mu.Unlock()
+	// Try DERP path.
+	if derpAddr.IsValid() {
+		c.dlogf("[v1] magicsock: disco: sending AmneziaWG config request tx=%x to %v via DERP region=%d (nodeKey=%v)",
+			requestID[:4], discoKey.ShortString(), derpAddr.Port(), target.publicKey.ShortString())
+		go c.sendDiscoMessage(epAddr{ap: derpAddr}, target.publicKey, discoKey, req, discoLog)
+		sent = true
+	}
+	// Also try direct UDP path if a trusted bestAddr exists.
+	if ba.ap.IsValid() && ba.ap.Addr() != tailcfg.DerpMagicIPAddr && mono.Now().Before(trust) {
+		c.dlogf("[v1] magicsock: disco: sending AmneziaWG config request tx=%x to %v via direct %v (nodeKey=%v)",
+			requestID[:4], discoKey.ShortString(), ba.ap, target.publicKey.ShortString())
+		go c.sendDiscoMessage(ba.epAddr, target.publicKey, discoKey, req, discoLog)
+		sent = true
+	}
+
+	if !sent {
+		delete(c.amneziaWGConfigWaiters, requestID)
+		return fmt.Errorf("no path available for peer %v (%v)", target.publicKey.ShortString(), discoKey.ShortString())
+	}
+
+	return nil
 }

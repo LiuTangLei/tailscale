@@ -222,6 +222,12 @@ var (
 // into LocalBackend to advance the state machine, and advancing the
 // state machine generates events back out to zero or more components.
 type LocalBackend struct {
+	// Serializes daemon-owned transport profile writes and revision checks.
+	// Never hold b.mu while acquiring it or performing filesystem operations.
+	transportProfileMu sync.Mutex
+	// Immutable for this engine lifetime; used while b.mu is held, without
+	// recursively querying engine/LocalBackend status from preference checks.
+	packetTransportMode string
 	// Elements that are thread-safe or constant after construction.
 	ctx         context.Context         // canceled by [LocalBackend.Shutdown]
 	ctxCancel   context.CancelCauseFunc // cancels ctx
@@ -584,25 +590,28 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 			"Bytes sent to peers on Serve connections for Tailscale Services, labeled by Tailscale Service name."),
 	}
 
+	var transportStatus ipnstate.StatusBuilder
+	e.UpdateStatus(&transportStatus)
 	b := &LocalBackend{
-		ctx:          ctx,
-		ctxCancel:    cancel,
-		logf:         logf,
-		keyLogf:      logger.LogOnChange(logf, 5*time.Minute, clock.Now),
-		statsLogf:    logger.LogOnChange(logf, 5*time.Minute, clock.Now),
-		sys:          sys,
-		polc:         sys.PolicyClientOrDefault(),
-		health:       sys.HealthTracker.Get(),
-		metrics:      m,
-		e:            e,
-		dialer:       dialer,
-		store:        store,
-		pm:           pm,
-		backendLogID: logID,
-		state:        ipn.NoState,
-		em:           newExpiryManager(logf, sys.Bus.Get()),
-		loginFlags:   loginFlags,
-		clock:        clock,
+		packetTransportMode: transportStatus.Status().PacketTransport,
+		ctx:                 ctx,
+		ctxCancel:           cancel,
+		logf:                logf,
+		keyLogf:             logger.LogOnChange(logf, 5*time.Minute, clock.Now),
+		statsLogf:           logger.LogOnChange(logf, 5*time.Minute, clock.Now),
+		sys:                 sys,
+		polc:                sys.PolicyClientOrDefault(),
+		health:              sys.HealthTracker.Get(),
+		metrics:             m,
+		e:                   e,
+		dialer:              dialer,
+		store:               store,
+		pm:                  pm,
+		backendLogID:        logID,
+		state:               ipn.NoState,
+		em:                  newExpiryManager(logf, sys.Bus.Get()),
+		loginFlags:          loginFlags,
+		clock:               clock,
 	}
 
 	sys.NoiseRoundTripper.Set(noiseRoundTripper{b})
@@ -613,6 +622,7 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 
 	e.SetPeerByIPPacketFunc(b.lookupPeerByIP)
 	e.SetPeerConfigFunc(b.peerAllowedIPs)
+	e.SetPeerPolicyFuncs(b.peerIdentityAllowed, b.peerIdentitySourceAllowed)
 	e.SetPeerForIPFunc(b.PeerForIP)
 	e.SetPeerSessionStateFunc(b.onPeerWireGuardState)
 	e.SetNetLogSource(netLogNodeSource{b})
@@ -4757,7 +4767,7 @@ func (b *LocalBackend) parseWgStatusLocked(s *wgengine.Status) (ret ipn.EngineSt
 	ret.LiveDERPs = s.DERPs
 	ret.LivePeers = map[key.NodePublic]ipnstate.PeerStatusLite{}
 	for _, p := range s.Peers {
-		if !p.LastHandshake.IsZero() {
+		if !p.LastHandshake.IsZero() || (!p.LastSessionEstablished.IsZero() && p.SessionState == uint8(wgengine.PeerWireGuardStateEstablished)) {
 			fmt.Fprintf(&peerStats, "%d/%d ", p.RxBytes, p.TxBytes)
 			fmt.Fprintf(&peerKeys, "%s ", p.NodeKey.ShortString())
 
@@ -4976,7 +4986,28 @@ func (b *LocalBackend) checkPrefsLocked(p *ipn.Prefs) error {
 	if err := checkAdvertiseRoutes(p); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateAmneziaWGPrefsChange(b.pm.CurrentPrefs(), p); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateAWGForTransport(b.packetTransportMode, b.pm.CurrentPrefs(), p); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// validateAmneziaWGPrefsChange validates AWG only when it is being introduced
+// or changed. This keeps unrelated LocalAPI preference edits working for a
+// node that still has a historical profile the current core cannot apply (for
+// example, one containing the retired <c> tag), while preventing that profile
+// from being newly saved or synced.
+func validateAmneziaWGPrefsChange(current ipn.PrefsView, proposed *ipn.Prefs) error {
+	if current.Valid() && current.AmneziaWG() == proposed.AmneziaWG {
+		return nil
+	}
+	if _, err := wgcfg.EffectiveAmneziaConfig(proposed.AmneziaWG); err != nil {
+		return fmt.Errorf("invalid Amnezia-WG configuration: %w", err)
+	}
+	return nil
 }
 
 func (b *LocalBackend) checkSSHPrefsLocked(p *ipn.Prefs) error {
@@ -6109,9 +6140,20 @@ func (b *LocalBackend) authReconfigLocked() {
 	// The config carries no peers; wireguard-go gets those from the
 	// live per-peer config source installed via
 	// [wgengine.Engine.SetPeerConfigFunc], fed by the route manager.
+	awgConfig := awgForRunningTransport(b.packetTransportMode, prefs.AmneziaWG())
+	if effective, err := wgcfg.EffectiveAmneziaConfig(awgConfig); err != nil {
+		// Keep the previous sync provider installed and let Reconfig report
+		// the same validation error without advertising a profile the device
+		// could not apply.
+		b.logf("authReconfig: invalid effective Amnezia-WG config: %v", err)
+	} else {
+		awgConfig = effective
+		b.MagicConn().SetAmneziaWGConfigProvider(func() ipn.AmneziaWGPrefs { return awgConfig })
+	}
 	cfg := &wgcfg.Config{
 		PrivateKey: priv,
 		Addresses:  nm.GetAddresses().AsSlice(),
+		AmneziaWG:  awgConfig,
 	}
 
 	// Note: b.goos (set only by tests) speaks runtime.GOOS while

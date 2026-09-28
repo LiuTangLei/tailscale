@@ -43,8 +43,13 @@ type StatusCallback func(*Status, error)
 // into network map updates.
 type NetworkMapCallback func(*netmap.NetworkMap)
 
-// PeerWireGuardState is the current WireGuard session state for a peer.
-type PeerWireGuardState uint8
+// PeerSessionState is the authenticated data-plane session state. The peer
+// status SessionProtocol identifies WireGuard or QUIC-IP; a QUIC TLS session
+// is never reported as a fabricated WireGuard handshake timestamp.
+type PeerSessionState uint8
+
+// PeerWireGuardState is the historical name retained for source compatibility.
+type PeerWireGuardState = PeerSessionState
 
 const (
 	// PeerWireGuardStateNone means there is no handshake in progress and no
@@ -183,6 +188,12 @@ type Engine interface {
 	// SetPeerByIPPacketFunc installs a callback used by wireguard-go to
 	// look up which peer should handle an outbound packet by destination IP.
 	SetPeerByIPPacketFunc(func(netip.Addr) (_ key.NodePublic, ok bool))
+
+	// SetPeerPolicyFuncs installs concurrency-safe live node admission and
+	// inbound source ownership checks. These are mandatory for non-WG IP
+	// backends; callbacks must remain current across netmap/profile changes.
+	// They must not call back into Engine or a carrier.
+	SetPeerPolicyFuncs(peer func(local, remote key.NodePublic) bool, source func(local, remote key.NodePublic, src netip.Addr) bool)
 
 	// SetPeerConfigFunc installs the live source of per-peer WireGuard
 	// configuration: given a peer's public key, fn returns the prefixes

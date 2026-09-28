@@ -35,8 +35,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"github.com/dblohm7/wingoes/com"
-	"github.com/tailscale/wireguard-go/tun"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"

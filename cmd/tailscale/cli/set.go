@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -69,6 +70,8 @@ type setArgsT struct {
 	netfilterMode              string
 	relayServerPort            string
 	relayServerStaticEndpoints string
+	amneziaWG                  string
+	amneziaWGConfig            bool
 }
 
 func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
@@ -93,6 +96,10 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
 	setf.BoolVar(&setArgs.sync, "sync", false, hidden+"actively sync configuration from the control plane (set to false only for network failure testing)")
 	setf.StringVar(&setArgs.relayServerPort, "relay-server-port", "", "UDP port number (0 will pick a random unused port) for the relay server to bind to, on all interfaces, or empty string to disable relay server functionality")
 	setf.StringVar(&setArgs.relayServerStaticEndpoints, "relay-server-static-endpoints", "", "static IP:port endpoints to advertise as candidates for relay connections (comma-separated, e.g. \"[2001:db8::1]:40000,192.0.2.1:40000\") or empty string to not advertise any static endpoints")
+
+	// Amnezia-WG configuration flags
+	setf.StringVar(&setArgs.amneziaWG, "amnezia-wg", "", hidden+"Amnezia-WG v2/v3 configuration as JSON; all zero/empty fields use standard WireGuard")
+	setf.BoolVar(&setArgs.amneziaWGConfig, "amnezia-wg-config", false, hidden+"Configure Amnezia-WG v2/v3 parameters interactively")
 
 	ffcomplete.Flag(setf, "exit-node", func(args []string) ([]string, ffcomplete.ShellCompDirective, error) {
 		st, err := localClient.Status(context.Background())
@@ -135,6 +142,20 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 		fatalf("too many non-flag arguments: %q", args)
 	}
 
+	// Handle Amnezia-WG interactive configuration
+	if setArgs.amneziaWGConfig {
+		var conflicting []string
+		setFlagSet.Visit(func(f *flag.Flag) {
+			if f.Name != "amnezia-wg-config" {
+				conflicting = append(conflicting, "--"+f.Name)
+			}
+		})
+		if len(conflicting) != 0 {
+			return fmt.Errorf("--amnezia-wg-config cannot be combined with %s", strings.Join(conflicting, ", "))
+		}
+		return runAmneziaWGSet(ctx, []string{})
+	}
+
 	st, err := localClient.Status(ctx)
 	if err != nil {
 		return err
@@ -170,6 +191,19 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 		},
 	}
 
+	// Handle Amnezia-WG JSON configuration
+	if setArgs.amneziaWG != "" {
+		var amneziaConfig ipn.AmneziaWGPrefs
+		if err := json.Unmarshal([]byte(setArgs.amneziaWG), &amneziaConfig); err != nil {
+			return fmt.Errorf("invalid amnezia-wg JSON: %v", err)
+		}
+		if err := validateAmneziaWGConfig(amneziaConfig); err != nil {
+			return fmt.Errorf("invalid amnezia-wg configuration: %w", err)
+		}
+		maskedPrefs.Prefs.AmneziaWG = amneziaConfig
+		maskedPrefs.AmneziaWGSet = true
+	}
+
 	if effectiveGOOS() == "linux" {
 		nfMode, warning, err := netfilterModeFromFlag(setArgs.netfilterMode)
 		if err != nil {
@@ -197,12 +231,18 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 
 	var advertiseExitNodeSet, advertiseRoutesSet bool
 	setFlagSet.Visit(func(f *flag.Flag) {
-		updateMaskedPrefsFromUpOrSetFlag(maskedPrefs, f.Name)
+		// Skip amnezia-wg flag here since it's handled separately below
+		if f.Name != "amnezia-wg" {
+			updateMaskedPrefsFromUpOrSetFlag(maskedPrefs, f.Name)
+		}
 		switch f.Name {
 		case "advertise-exit-node":
 			advertiseExitNodeSet = true
 		case "advertise-routes":
 			advertiseRoutesSet = true
+		case "amnezia-wg":
+			// Handle amnezia-wg flag - this ensures AmneziaWGSet is marked as true
+			maskedPrefs.AmneziaWGSet = true
 		}
 	})
 	if maskedPrefs.IsEmpty() {
@@ -280,6 +320,13 @@ func runSet(ctx context.Context, args []string) (retErr error) {
 	_, err = localClient.EditPrefs(ctx, maskedPrefs)
 	if err != nil {
 		return err
+	}
+
+	// If Amnezia-WG configuration was changed, offer to restart tailscaled
+	if maskedPrefs.AmneziaWGSet {
+		if err := restartTailscaledWithPrompt(); err != nil {
+			fmt.Printf("Warning: %v\n", err)
+		}
 	}
 
 	if setArgs.runWebClient && len(st.TailscaleIPs) > 0 {

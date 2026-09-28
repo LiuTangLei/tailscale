@@ -150,6 +150,29 @@ func TestMarshalAndParse(t *testing.T) {
 			},
 			want: "09 00 00 00 00 01 00 01 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 1e 1f 00 01 02 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 1e 1f 00 01 02 00 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 1e 1f 00 00 00 00 00 00 00 7b 00 00 01 c8 00 00 00 00 3b 9a ca 00 00 00 00 0d f8 47 58 00 00 00 00 00 00 00 00 00 00 00 ff ff 01 02 03 04 02 37 20 01 00 00 00 00 00 00 00 00 00 00 00 00 34 56 03 15",
 		},
+		{
+			name: "amnezia_wg_config_request_legacy",
+			m: &AmneziaWGConfigRequest{
+				RequestID: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+			},
+			want: "ea 00 01 02 03 04 05 06 07 08",
+		},
+		{
+			name: "amnezia_wg_config_request_v3",
+			m: &AmneziaWGConfigRequest{
+				RequestID:        [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+				MaxConfigVersion: AmneziaWGConfigVersionV3,
+			},
+			want: "ea 00 01 02 03 04 05 06 07 08 03",
+		},
+		{
+			name: "amnezia_wg_config_response",
+			m: &AmneziaWGConfigResponse{
+				RequestID:  [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+				ConfigJSON: []byte(`{"JC":1}`),
+			},
+			want: "eb 00 01 02 03 04 05 06 07 08 7b 22 4a 43 22 3a 31 7d",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -173,6 +196,21 @@ func TestMarshalAndParse(t *testing.T) {
 				t.Errorf("message in %+v doesn't match Parse back result %+v", tt.m, back)
 			}
 		})
+	}
+}
+
+func TestAmneziaWGConfigRequestVersionCompatibility(t *testing.T) {
+	legacy := &AmneziaWGConfigRequest{}
+	if !legacy.SupportsConfigVersion(AmneziaWGConfigVersionV2) {
+		t.Fatal("legacy request does not support AWG v2")
+	}
+	if legacy.SupportsConfigVersion(AmneziaWGConfigVersionV3) {
+		t.Fatal("legacy request unexpectedly supports AWG v3")
+	}
+
+	current := &AmneziaWGConfigRequest{MaxConfigVersion: AmneziaWGConfigVersionV3}
+	if !current.SupportsConfigVersion(AmneziaWGConfigVersionV2) || !current.SupportsConfigVersion(AmneziaWGConfigVersionV3) {
+		t.Fatal("current request does not support both AWG v2 and v3")
 	}
 }
 

@@ -183,6 +183,10 @@ type RouteManager struct {
 
 	outbound atomic.Pointer[bart.Table[*PeerRoute]]
 	osRoutes atomic.Pointer[bart.Lite]
+	// source is the authoritative source-prefix snapshot used to
+	// validate inbound packets. It is immutable after publication,
+	// and SourceAllowed reads it without taking rm.mu.
+	source atomic.Pointer[bart.Table[[]key.NodePublic]]
 
 	// attrPeers counts the current peers with data-plane attributes
 	// (jailed or masquerade addresses). It backs
@@ -231,6 +235,7 @@ func New(logf logger.Logf) *RouteManager {
 	}
 	rm.outbound.Store(&bart.Table[*PeerRoute]{})
 	rm.osRoutes.Store(&bart.Lite{})
+	rm.source.Store(&bart.Table[[]key.NodePublic]{})
 	return rm
 }
 
@@ -294,6 +299,74 @@ func (rm *RouteManager) peerAllowedIPsLocked(id tailcfg.NodeID) (pfxs []netip.Pr
 	}
 	tsaddr.SortPrefixes(pfxs)
 	return pfxs, true
+}
+
+// SourceAllowed reports whether peer may originate src under the
+// current routing state. The decision is made against the immutable
+// source-prefix snapshot, so reads have no locks and no per-call
+// allocation.
+func (rm *RouteManager) SourceAllowed(peer key.NodePublic, src netip.Addr) bool {
+	if !src.IsValid() || src.Is4In6() || peer == (key.NodePublic{}) {
+		return false
+	}
+	t := rm.source.Load()
+	if t == nil {
+		return false
+	}
+	_, keys, ok := t.LookupPrefixLPM(netip.PrefixFrom(src, src.BitLen()))
+	if !ok || keys == nil {
+		return false
+	}
+	for _, k := range keys {
+		if k == peer {
+			return true
+		}
+	}
+	return false
+}
+
+// sourcePeersForPrefix returns all peer keys currently eligible to
+// originate the given prefix. The result is sorted so that the
+// immutable source table snapshot is stable across commits.
+func (rm *RouteManager) sourcePeersForPrefix(pfx netip.Prefix) []key.NodePublic {
+	nodes, ok := rm.byPrefix[pfx]
+	if !ok || len(nodes) == 0 {
+		return nil
+	}
+	keys := make([]key.NodePublic, 0, len(nodes))
+	for id, kind := range nodes {
+		if !rm.eligible(id, pfx, kind) {
+			continue
+		}
+		p, ok := rm.peers[id]
+		if !ok {
+			continue
+		}
+		keys = append(keys, p.Key)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	slices.SortFunc(keys, func(a, b key.NodePublic) int {
+		return a.Compare(b)
+	})
+	return keys
+}
+
+func (rm *RouteManager) updateSourceTable(prefixes ...netip.Prefix) {
+	t := rm.source.Load()
+	if t == nil {
+		t = &bart.Table[[]key.NodePublic]{}
+	}
+	for _, pfx := range prefixes {
+		keys := rm.sourcePeersForPrefix(pfx)
+		if len(keys) == 0 {
+			t = t.DeletePersist(pfx)
+			continue
+		}
+		t = t.InsertPersist(pfx, keys)
+	}
+	rm.source.Store(t)
 }
 
 // Result describes what a Commit changed.
@@ -952,6 +1025,14 @@ func (rm *RouteManager) applyDirty(dirty set.Set[netip.Prefix], res *Result) {
 		}
 	}
 
+	if len(dirty) != 0 {
+		pfxs := make([]netip.Prefix, 0, len(dirty))
+		for pfx := range dirty {
+			pfxs = append(pfxs, pfx)
+		}
+		rm.updateSourceTable(pfxs...)
+	}
+
 	var ch bool
 	osr, ch = tableSet(osr, tsaddr.TailscaleULARange(), len(rm.ulaPfxs) > 0)
 	osChanged = osChanged || ch
@@ -980,6 +1061,7 @@ func (rm *RouteManager) applyDirty(dirty set.Set[netip.Prefix], res *Result) {
 func (rm *RouteManager) rebuildAll(res *Result) {
 	out := &bart.Table[*PeerRoute]{}
 	osr := &bart.Lite{}
+	source := &bart.Table[[]key.NodePublic]{}
 	clear(rm.cgnatPfxs)
 	clear(rm.ulaPfxs)
 
@@ -990,6 +1072,9 @@ func (rm *RouteManager) rebuildAll(res *Result) {
 			continue
 		}
 		out.Insert(pfx, want)
+		if keys := rm.sourcePeersForPrefix(pfx); len(keys) > 0 {
+			source.Insert(pfx, keys)
+		}
 		if !wantOS {
 			continue
 		}
@@ -1025,6 +1110,7 @@ func (rm *RouteManager) rebuildAll(res *Result) {
 		}
 	}
 
+	rm.source.Store(source)
 	rm.publish(out, !out.Equal(rm.outbound.Load()),
 		osr, !osr.Equal(rm.osRoutes.Load()), res)
 }

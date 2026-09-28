@@ -33,6 +33,59 @@ func fieldsOf(t reflect.Type) (fields []string) {
 	return
 }
 
+func TestAmneziaWGPrefsJSONV2AndV3(t *testing.T) {
+	const key = "4242424242424242424242424242424242424242424242424242424242424242"
+	input := `{
+		"jc": 4,
+		"h1": "100-200",
+		"header_protection_key": "` + key + `",
+		"content_padding_addition": "5-31",
+		"rekey_after_time": 120,
+		"max_handshake_attempts": {"min": 8, "max": 12}
+	}`
+	var got AmneziaWGPrefs
+	if err := json.Unmarshal([]byte(input), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := AmneziaWGPrefs{
+		JC:                     4,
+		H1:                     MagicHeaderRange{Min: 100, Max: 200},
+		HeaderProtectionKey:    key,
+		ContentPaddingAddition: MagicHeaderRange{Min: 5, Max: 31},
+		RekeyAfterTime:         MagicHeaderRange{Min: 120, Max: 120},
+		MaxHandshakeAttempts:   MagicHeaderRange{Min: 8, Max: 12},
+	}
+	if got != want {
+		t.Fatalf("decoded config = %#v, want %#v", got, want)
+	}
+
+	// Legacy v2 JSON used scalar magic headers and must remain readable.
+	var v2 AmneziaWGPrefs
+	if err := json.Unmarshal([]byte(`{"JC":3,"JMin":40,"JMax":70,"H1":123456}`), &v2); err != nil {
+		t.Fatal(err)
+	}
+	if v2.JC != 3 || v2.H1 != (MagicHeaderRange{Min: 123456, Max: 123456}) || v2.HeaderProtectionKey != "" {
+		t.Fatalf("legacy v2 config decoded incorrectly: %#v", v2)
+	}
+}
+
+func TestAmneziaWGPrefsVersions(t *testing.T) {
+	if p := (AmneziaWGPrefs{}); !p.IsZero() || p.IsV3() {
+		t.Fatalf("zero prefs: IsZero=%v, IsV3=%v", p.IsZero(), p.IsV3())
+	}
+
+	v2 := AmneziaWGPrefs{JC: 1, H1: MagicHeaderRange{Min: 123, Max: 123}}
+	if v2.IsZero() || v2.IsV3() {
+		t.Fatalf("v2 prefs: IsZero=%v, IsV3=%v", v2.IsZero(), v2.IsV3())
+	}
+
+	v3 := v2
+	v3.RekeyAfterTime = MagicHeaderRange{Min: 120, Max: 180}
+	if v3.IsZero() || !v3.IsV3() {
+		t.Fatalf("v3 prefs: IsZero=%v, IsV3=%v", v3.IsZero(), v3.IsV3())
+	}
+}
+
 func TestPrefsEqual(t *testing.T) {
 	tstest.PanicOnLog()
 
@@ -72,6 +125,7 @@ func TestPrefsEqual(t *testing.T) {
 		"RelayServerPort",
 		"RelayServerStaticEndpoints",
 		"Persist",
+		"AmneziaWG",
 	}
 	if have := fieldsOf(reflect.TypeFor[Prefs]()); !reflect.DeepEqual(have, prefsHandles) {
 		t.Errorf("Prefs.Equal check might be out of sync\nfields: %q\nhandled: %q\n",
@@ -749,17 +803,30 @@ func TestMaskedPrefsFields(t *testing.T) {
 	// ApplyEdits assumes.
 	pt := reflect.TypeFor[Prefs]()
 	mt := reflect.TypeFor[MaskedPrefs]()
-	for i := range mt.NumField() {
-		name := mt.Field(i).Name
-		if i == 0 {
-			if name != "Prefs" {
-				t.Errorf("first field of MaskedPrefs should be Prefs")
-			}
+	maskedIndex := 1
+	for i := range pt.NumField() {
+		prefName := pt.Field(i).Name
+		switch prefName {
+		case "Persist", "AllowSingleHosts":
+			// These can't be edited; no corresponding mask fields.
 			continue
 		}
-		prefName := pt.Field(i - 1).Name
-		if prefName+"Set" != name {
-			t.Errorf("MaskedField[%d] = %s; want %sSet", i-1, name, prefName)
+		if maskedIndex >= mt.NumField() {
+			t.Errorf("missing MaskedPrefs.%sSet for Prefs.%s", prefName, prefName)
+			break
+		}
+		maskName := mt.Field(maskedIndex).Name
+		if maskName != prefName+"Set" {
+			t.Errorf("MaskedField[%d] = %s; want %sSet", maskedIndex-1, maskName, prefName)
+		}
+		maskedIndex++
+	}
+	if maskedIndex != mt.NumField() {
+		for i := maskedIndex; i < mt.NumField(); i++ {
+			name := mt.Field(i).Name
+			if name != "Prefs" {
+				t.Errorf("unexpected extra MaskedPrefs field %q", name)
+			}
 		}
 	}
 }

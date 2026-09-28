@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -317,6 +318,212 @@ type Prefs struct {
 	//  We can maybe do that once we're sure which module should persist
 	//  it (backend or frontend?)
 	Persist *persist.Persist `json:"Config"`
+
+	// AmneziaWG contains Amnezia-WG specific configuration
+	AmneziaWG AmneziaWGPrefs `json:",omitempty"`
+}
+
+// MagicHeaderRange represents a range of values for magic header fields.
+// If Min equals Max, it represents a single value.
+type MagicHeaderRange struct {
+	Min uint32 `json:"min"`
+	Max uint32 `json:"max"`
+}
+
+// IsZero reports whether the range is unset.
+func (m MagicHeaderRange) IsZero() bool { return m.Min == 0 && m.Max == 0 }
+
+func (m MagicHeaderRange) String() string {
+	if m.Min == m.Max {
+		return strconv.FormatUint(uint64(m.Min), 10)
+	}
+	return fmt.Sprintf("%d-%d", m.Min, m.Max)
+}
+
+// ParseMagicHeaderRange parses either a single uint32 or an inclusive range.
+// Despite its historical name, MagicHeaderRange is also used for AWG v3
+// timing and padding ranges because they share the same wire format.
+func ParseMagicHeaderRange(s string) (MagicHeaderRange, error) {
+	loText, hiText, hasRange := strings.Cut(strings.TrimSpace(s), "-")
+	lo, err := strconv.ParseUint(loText, 10, 32)
+	if err != nil {
+		return MagicHeaderRange{}, err
+	}
+	hi := lo
+	if hasRange {
+		hi, err = strconv.ParseUint(hiText, 10, 32)
+		if err != nil {
+			return MagicHeaderRange{}, err
+		}
+	}
+	if hi < lo {
+		return MagicHeaderRange{}, fmt.Errorf("range maximum %d is less than minimum %d", hi, lo)
+	}
+	return MagicHeaderRange{Min: uint32(lo), Max: uint32(hi)}, nil
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling to handle backward compatibility.
+// It supports both the old uint32 format and the new MagicHeaderRange format.
+func (m *MagicHeaderRange) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		parsed, err := ParseMagicHeaderRange(text)
+		if err != nil {
+			return err
+		}
+		*m = parsed
+		return nil
+	}
+
+	// Try to unmarshal as a simple uint32 first (backward compatibility)
+	var singleValue uint32
+	if err := json.Unmarshal(data, &singleValue); err == nil {
+		m.Min = singleValue
+		m.Max = singleValue
+		return nil
+	}
+
+	// Try to unmarshal as the full structure
+	type Alias MagicHeaderRange
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(m),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if m.Max < m.Min {
+		return fmt.Errorf("range maximum %d is less than minimum %d", m.Max, m.Min)
+	}
+	return nil
+}
+
+// AmneziaWGPrefs contains Amnezia-WG configuration parameters.
+// Zero values for all parameters mean standard WireGuard behavior.
+// Network-wide consistency is required: all nodes must use identical parameters.
+type AmneziaWGPrefs struct {
+	JC   uint16           `json:",omitempty"` // Junk packet count (0 = disabled)
+	JMin uint16           `json:",omitempty"` // Min junk size (0 = disabled)
+	JMax uint16           `json:",omitempty"` // Max junk size (0 = disabled)
+	S1   uint16           `json:",omitempty"` // Init packet prefix length (0 = disabled)
+	S2   uint16           `json:",omitempty"` // Response packet prefix length (0 = disabled)
+	S3   uint16           `json:",omitempty"` // Cookie packet prefix length (0 = disabled)
+	S4   uint16           `json:",omitempty"` // Transport packet prefix length (0 = disabled)
+	I1   string           `json:",omitempty"` // Primary signature packet (CPS format, e.g., "<b 0xf6ab3267fa><t><r 10>")
+	I2   string           `json:",omitempty"` // Secondary signature packet (CPS format)
+	I3   string           `json:",omitempty"` // Tertiary signature packet (CPS format)
+	I4   string           `json:",omitempty"` // Quaternary signature packet (CPS format)
+	I5   string           `json:",omitempty"` // Quinary signature packet (CPS format)
+	H1   MagicHeaderRange `json:",omitempty"` // Header field 1
+	H2   MagicHeaderRange `json:",omitempty"` // Header field 2
+	H3   MagicHeaderRange `json:",omitempty"` // Header field 3
+	H4   MagicHeaderRange `json:",omitempty"` // Header field 4
+
+	// AWG v3 parameters. Keeping these with the v2 fields lets a v3-capable
+	// client sync and apply either profile version without a second format.
+	HeaderProtectionKey    string           `json:",omitempty"`
+	ContentPaddingAddition MagicHeaderRange `json:",omitempty"`
+	RekeyAfterTime         MagicHeaderRange `json:",omitempty"`
+	RekeyTimeout           MagicHeaderRange `json:",omitempty"`
+	RejectAfterTime        MagicHeaderRange `json:",omitempty"`
+	KeepaliveTimeout       MagicHeaderRange `json:",omitempty"`
+	MaxHandshakeAttempts   MagicHeaderRange `json:",omitempty"`
+
+	// AWG 3.1 flags are opt-in. In particular, do not disable handshake
+	// cookies as a side effect of choosing a different outer transport.
+	RandomTrailers bool `json:",omitempty"`
+	DisableCookies bool `json:",omitempty"`
+}
+
+// IsZero reports whether p disables all Amnezia-WG behavior and therefore
+// represents standard WireGuard. Keeping this check with the data type avoids
+// callers overlooking fields added by newer AWG versions.
+func (p AmneziaWGPrefs) IsZero() bool {
+	// wireguard-go uses an all-zero v3 key as the disabled sentinel. Treat it
+	// exactly like an omitted key when classifying or syncing a profile.
+	if p.HeaderProtectionKey == zeroHeaderProtectionKey {
+		p.HeaderProtectionKey = ""
+	}
+	return p == (AmneziaWGPrefs{})
+}
+
+// IsV31 reports whether p needs support for the opt-in AWG 3.1 flags.
+func (p AmneziaWGPrefs) IsV31() bool {
+	return p.RandomTrailers || p.DisableCookies
+}
+
+// IsV3 reports whether p uses any AWG v3 or newer parameter. A configuration
+// with only the historical fields is an AWG v2 configuration.
+func (p AmneziaWGPrefs) IsV3() bool {
+	return p.IsV31() || (p.HeaderProtectionKey != "" && p.HeaderProtectionKey != zeroHeaderProtectionKey) ||
+		!p.ContentPaddingAddition.IsZero() ||
+		!p.RekeyAfterTime.IsZero() ||
+		!p.RekeyTimeout.IsZero() ||
+		!p.RejectAfterTime.IsZero() ||
+		!p.KeepaliveTimeout.IsZero() ||
+		!p.MaxHandshakeAttempts.IsZero()
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for AmneziaWGPrefs. It
+// accepts historical scalar headers as well as v3 snake_case field names, but
+// returns structural/type errors rather than silently replacing a damaged
+// configuration with standard WireGuard settings.
+func (a *AmneziaWGPrefs) UnmarshalJSON(data []byte) error {
+	// Define a type alias to avoid infinite recursion
+	type Alias AmneziaWGPrefs
+	aux := &Alias{}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return fmt.Errorf("invalid Amnezia-WG configuration: %w", err)
+	}
+
+	*a = AmneziaWGPrefs(*aux)
+
+	// Also accept wireguard-go's snake_case UAPI names. Existing v2 JSON and
+	// the Go field names remain accepted by Alias above.
+	var uapiNames struct {
+		HeaderProtectionKey    *string           `json:"header_protection_key"`
+		ContentPaddingAddition *MagicHeaderRange `json:"content_padding_addition"`
+		RekeyAfterTime         *MagicHeaderRange `json:"rekey_after_time"`
+		RekeyTimeout           *MagicHeaderRange `json:"rekey_timeout"`
+		RejectAfterTime        *MagicHeaderRange `json:"reject_after_time"`
+		KeepaliveTimeout       *MagicHeaderRange `json:"keepalive_timeout"`
+		MaxHandshakeAttempts   *MagicHeaderRange `json:"max_handshake_attempts"`
+		RandomTrailers         *bool             `json:"random_trailers"`
+		DisableCookies         *bool             `json:"disable_cookies"`
+	}
+	if err := json.Unmarshal(data, &uapiNames); err != nil {
+		return err
+	}
+	if uapiNames.HeaderProtectionKey != nil {
+		a.HeaderProtectionKey = *uapiNames.HeaderProtectionKey
+	}
+	if uapiNames.ContentPaddingAddition != nil {
+		a.ContentPaddingAddition = *uapiNames.ContentPaddingAddition
+	}
+	if uapiNames.RekeyAfterTime != nil {
+		a.RekeyAfterTime = *uapiNames.RekeyAfterTime
+	}
+	if uapiNames.RekeyTimeout != nil {
+		a.RekeyTimeout = *uapiNames.RekeyTimeout
+	}
+	if uapiNames.RejectAfterTime != nil {
+		a.RejectAfterTime = *uapiNames.RejectAfterTime
+	}
+	if uapiNames.KeepaliveTimeout != nil {
+		a.KeepaliveTimeout = *uapiNames.KeepaliveTimeout
+	}
+	if uapiNames.MaxHandshakeAttempts != nil {
+		a.MaxHandshakeAttempts = *uapiNames.MaxHandshakeAttempts
+	}
+	if uapiNames.RandomTrailers != nil {
+		a.RandomTrailers = *uapiNames.RandomTrailers
+	}
+	if uapiNames.DisableCookies != nil {
+		a.DisableCookies = *uapiNames.DisableCookies
+	}
+	return nil
 }
 
 // AutoUpdatePrefs are the auto update settings for the node agent.
@@ -355,7 +562,6 @@ type AppConnectorPrefs struct {
 // Prefs (see AutoUpdateSet for example).
 type MaskedPrefs struct {
 	Prefs
-
 	ControlURLSet                 bool                `json:",omitempty"`
 	RouteAllSet                   bool                `json:",omitempty"`
 	ExitNodeIDSet                 bool                `json:",omitempty"`
@@ -390,6 +596,7 @@ type MaskedPrefs struct {
 	DriveSharesSet                bool                `json:",omitempty"`
 	RelayServerPortSet            bool                `json:",omitempty"`
 	RelayServerStaticEndpointsSet bool                `json:",omitzero"`
+	AmneziaWGSet                  bool                `json:",omitempty"`
 }
 
 // SetsInternal reports whether mp has any of the Internal*Set field bools set
@@ -507,7 +714,17 @@ func (m *MaskedPrefs) Pretty() string {
 					sb.WriteString(" ")
 				}
 				first = false
-				f := mpv.Field(i - 1)
+				// Match by name: Prefs also contains unmasked fields (Persist).
+				// Never log the AWG header-protection key or packet signatures.
+				if name == "AmneziaWGSet" {
+					state := "configured"
+					if m.AmneziaWG.IsZero() {
+						state = "disabled"
+					}
+					fmt.Fprintf(&sb, "AmneziaWG=%s", state)
+					continue
+				}
+				f := mpv.FieldByName(strings.TrimSuffix(name, "Set"))
 				fmt.Fprintf(&sb, format(f),
 					strings.TrimSuffix(name, "Set"),
 					f.Interface())
@@ -516,7 +733,7 @@ func (m *MaskedPrefs) Pretty() string {
 			if mf.IsZero() {
 				continue
 			}
-			mpf := mpv.Field(i - 1)
+			mpf := mpv.FieldByName(strings.TrimSuffix(name, "Set"))
 			// This would be much simpler with reflect.MethodByName("Pretty"),
 			// but using MethodByName disables some linker optimizations and
 			// makes our binaries much larger. See
@@ -700,7 +917,8 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
 		p.NetfilterKind == p2.NetfilterKind &&
 		p.RemoteConfig == p2.RemoteConfig &&
 		compareUint16Ptrs(p.RelayServerPort, p2.RelayServerPort) &&
-		slices.Equal(p.RelayServerStaticEndpoints, p2.RelayServerStaticEndpoints)
+		slices.Equal(p.RelayServerStaticEndpoints, p2.RelayServerStaticEndpoints) &&
+		p.AmneziaWG == p2.AmneziaWG
 }
 
 func (au AutoUpdatePrefs) Pretty() string {

@@ -158,7 +158,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tailscale/wireguard-go/tun"
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"tailscale.com/client/local"
 	"tailscale.com/control/controlclient"
 	"tailscale.com/envknob"
@@ -198,6 +198,8 @@ import (
 	"tailscale.com/util/testenv"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/netstack"
+	"tailscale.com/wgengine/transportprofile"
+	"tailscale.com/wgengine/wgtransport"
 )
 
 // Server is an embedded Tailscale server.
@@ -296,6 +298,10 @@ type Server struct {
 	// traffic. If zero, a port is automatically selected. Leave this
 	// field at zero unless you know what you are doing.
 	Port uint16
+
+	// Transport optionally selects a statically configured experimental WG
+	// carrier. The zero value preserves the existing native transport.
+	Transport wgtransport.Config
 
 	// AdvertiseTags specifies tags that should be applied to this node, for
 	// purposes of ACL enforcement. These can be referenced from the ACL policy
@@ -846,17 +852,35 @@ func (s *Server) start() (reterr error) {
 
 	s.dialer = &tsdial.Dialer{Logf: tsLogf} // mutated below (before used)
 	s.dialer.SetBus(sys.Bus.Get())
+	transport := s.Transport
+	transportSource, transportRevision := "", "0"
+	transportManaged := transport.Mode == "" && transport.Factory == nil
+	if transportManaged && os.Getenv("TS_EXPERIMENTAL_WG_TRANSPORT") == "" {
+		var loadErr error
+		transport, transportRevision, loadErr = transportprofile.LoadForStart(s.rootPath)
+		if loadErr != nil {
+			return fmt.Errorf("packet transport profile: %w", loadErr)
+		}
+		transportSource = "default"
+		if transportRevision != "0" {
+			transportSource = "managed"
+		}
+	}
 	eng, err := wgengine.NewUserspaceEngine(tsLogf, wgengine.Config{
-		Tun:           s.Tun,
-		EventBus:      sys.Bus.Get(),
-		ListenPort:    s.Port,
-		NetMon:        s.netMon,
-		Dialer:        s.dialer,
-		SetSubsystem:  sys.Set,
-		ControlKnobs:  sys.ControlKnobs(),
-		HealthTracker: sys.HealthTracker.Get(),
-		ExtraRootCAs:  sys.ExtraRootCAs,
-		Metrics:       sys.UserMetricsRegistry(),
+		Tun:               s.Tun,
+		EventBus:          sys.Bus.Get(),
+		ListenPort:        s.Port,
+		Transport:         transport,
+		TransportSource:   transportSource,
+		TransportRevision: transportRevision,
+		TransportManaged:  transportManaged,
+		NetMon:            s.netMon,
+		Dialer:            s.dialer,
+		SetSubsystem:      sys.Set,
+		ControlKnobs:      sys.ControlKnobs(),
+		HealthTracker:     sys.HealthTracker.Get(),
+		ExtraRootCAs:      sys.ExtraRootCAs,
+		Metrics:           sys.UserMetricsRegistry(),
 	})
 	if err != nil {
 		return err
@@ -942,6 +966,11 @@ func (s *Server) start() (reterr error) {
 	}
 	closePool.addFunc(func() { s.lb.Shutdown() })
 	prefs := ipn.NewPrefs()
+	// Like tailscale up, an embedded restart must preserve the independently
+	// managed AWG profile, including one staged for a native transport start.
+	if previous := lb.Prefs(); previous.Valid() {
+		prefs.AmneziaWG = previous.AmneziaWG()
+	}
 	prefs.Hostname = s.hostname
 	prefs.WantRunning = true
 	prefs.ControlURL = s.getControlURL()

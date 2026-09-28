@@ -14,8 +14,8 @@ import (
 	"os/exec"
 	"sync"
 
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"github.com/insomniacslk/dhcp/dhcpv4"
-	"github.com/tailscale/wireguard-go/tun"
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/checksum"

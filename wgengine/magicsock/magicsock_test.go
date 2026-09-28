@@ -32,11 +32,11 @@ import (
 	"time"
 	"unsafe"
 
+	wgconn "github.com/LiuTangLei/wireguard-go/conn"
+	"github.com/LiuTangLei/wireguard-go/device"
+	"github.com/LiuTangLei/wireguard-go/tun/tuntest"
 	qt "github.com/frankban/quicktest"
 	"github.com/google/go-cmp/cmp"
-	wgconn "github.com/tailscale/wireguard-go/conn"
-	"github.com/tailscale/wireguard-go/device"
-	"github.com/tailscale/wireguard-go/tun/tuntest"
 	"go4.org/mem"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
@@ -48,6 +48,7 @@ import (
 	"tailscale.com/disco"
 	"tailscale.com/envknob"
 	"tailscale.com/health"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/netcheck"
@@ -93,6 +94,122 @@ func init() {
 	// (In particular, TestActiveDiscovery.)
 	discoPingInterval = 100 * time.Millisecond
 	pingTimeoutDuration = 100 * time.Millisecond
+}
+
+func TestAmneziaWGConfigRequestCompatibility(t *testing.T) {
+	v2 := ipn.AmneziaWGPrefs{JC: 1}
+	v3 := v2
+	v3.HeaderProtectionKey = strings.Repeat("42", 32)
+
+	legacy := &disco.AmneziaWGConfigRequest{}
+	current := &disco.AmneziaWGConfigRequest{MaxConfigVersion: disco.AmneziaWGConfigVersionV3}
+	for _, tt := range []struct {
+		name  string
+		req   *disco.AmneziaWGConfigRequest
+		prefs ipn.AmneziaWGPrefs
+		want  bool
+	}{
+		{"legacy-standard", legacy, ipn.AmneziaWGPrefs{}, true},
+		{"legacy-v2", legacy, v2, true},
+		{"legacy-v3", legacy, v3, false},
+		{"current-v2", current, v2, true},
+		{"current-v3", current, v3, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := amneziaWGConfigRequestCompatible(tt.req, tt.prefs); got != tt.want {
+				t.Fatalf("compatible = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldSendAmneziaWGConfigToDirectSource(t *testing.T) {
+	src := epAddr{ap: netip.MustParseAddrPort("192.0.2.1:1234")}
+	other := epAddr{ap: netip.MustParseAddrPort("192.0.2.2:1234")}
+	derp := epAddr{ap: netip.AddrPortFrom(tailcfg.DerpMagicIPAddr, 1)}
+
+	for _, tt := range []struct {
+		name       string
+		src        epAddr
+		directSent epAddr
+		want       bool
+	}{
+		{"direct-after-DERP-only", src, epAddr{}, true},
+		{"same-direct-already-sent", src, src, false},
+		{"different-direct-already-sent", src, other, true},
+		{"DERP-source", derp, epAddr{}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldSendAmneziaWGConfigToDirectSource(tt.src, tt.directSent); got != tt.want {
+				t.Fatalf("should send to source = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAmneziaWGConfigResponseMatchesRequestedIdentity(t *testing.T) {
+	c := newConn(t.Logf)
+	requestID := [8]byte{1, 2, 3}
+	wantNode := key.NewNode().Public()
+	wrongNode := key.NewNode().Public()
+	wantDisco := key.NewDisco().Public()
+	wrongDisco := key.NewDisco().Public()
+	ch := make(chan *AmneziaWGConfigData, 1)
+	c.amneziaWGConfigWaiters[requestID] = amneziaWGConfigWaiter{
+		ch: ch, nodeKey: wantNode, discoKey: wantDisco,
+	}
+	response := &disco.AmneziaWGConfigResponse{RequestID: requestID, ConfigJSON: []byte(`{"JC":1}`)}
+
+	c.mu.Lock()
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, &discoInfo{discoKey: wrongDisco}, wantNode)
+	if _, ok := c.amneziaWGConfigWaiters[requestID]; !ok {
+		c.mu.Unlock()
+		t.Fatal("wrong DiscoKey consumed the response waiter")
+	}
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, &discoInfo{discoKey: wantDisco}, wrongNode)
+	if _, ok := c.amneziaWGConfigWaiters[requestID]; !ok {
+		c.mu.Unlock()
+		t.Fatal("wrong NodeKey consumed the response waiter")
+	}
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, &discoInfo{discoKey: wantDisco}, wantNode)
+	_, stillWaiting := c.amneziaWGConfigWaiters[requestID]
+	c.mu.Unlock()
+	if stillWaiting {
+		t.Fatal("matching response did not consume the waiter")
+	}
+
+	select {
+	case got := <-ch:
+		if got.NodeKey != wantNode || got.DiscoKey != wantDisco || !bytes.Equal(got.ConfigJSON, response.ConfigJSON) {
+			t.Fatalf("delivered response = %#v", got)
+		}
+	default:
+		t.Fatal("matching response was not delivered")
+	}
+}
+
+func TestAmneziaWGConfigResponseWithoutWaiterIsDebugOnly(t *testing.T) {
+	var logs []string
+	c := newConn(func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	response := &disco.AmneziaWGConfigResponse{RequestID: [8]byte{1}}
+	di := &discoInfo{discoKey: key.NewDisco().Public()}
+
+	c.mu.Lock()
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, di, key.NodePublic{})
+	c.mu.Unlock()
+	if len(logs) != 0 {
+		t.Fatalf("late/duplicate response emitted normal log: %q", logs)
+	}
+
+	c.SetDebugLoggingEnabled(true)
+	c.mu.Lock()
+	c.handleAmneziaWGConfigResponseLocked(response, epAddr{}, di, key.NodePublic{})
+	c.mu.Unlock()
+	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "no waiter found") {
+		t.Fatalf("debug log missing for late/duplicate response: %q", logs)
+	}
 }
 
 // WaitReady waits until the magicsock is entirely initialized and connected

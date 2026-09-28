@@ -18,9 +18,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/LiuTangLei/wireguard-go/tun"
 	"github.com/google/go-cmp/cmp"
 	"github.com/tailscale/netlink"
-	"github.com/tailscale/wireguard-go/tun"
 	"go4.org/netipx"
 	"tailscale.com/health"
 	"tailscale.com/net/netmon"

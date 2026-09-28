@@ -1,0 +1,555 @@
+{
+  "status": "unreleased; wait for official 1.102.6 and remaining performance/WAN gates",
+  "upstream": "f07b22d4dffb345c90fed07160c3ba9cb5fc5fff",
+  "integration_base": "b4f1aa3cd3001425ab263c53250d93af14dbb1b6",
+  "quic_module": "github.com/LiuTangLei/quic-go v0.63.0-quic.3",
+  "wg_module": "github.com/LiuTangLei/wireguard-go v0.0.33-0.20260910045057-ed22747d204e",
+  "awg_upstream_tag": "v3.1.20260828",
+  "awg_upstream_commit": "b5928efb6ca19f0153958460c3d141f04abc5c2e",
+  "toolchain": "go1.27.1 linux/amd64",
+  "performance_claim": "Allocation reduction verified; VPN throughput improvement NOT established; reverse startup remains a release gate",
+  "microbenchmark": {
+    "address_wrapper_before_bytes": 16,
+    "address_wrapper_before_allocs": 1,
+    "address_wrapper_cached_bytes": 0,
+    "address_wrapper_cached_allocs": 0,
+    "samples_per_variant": 3
+  },
+  "comparisons": {
+    "comparison": [
+      {
+        "label": "baseline-1",
+        "exit": 0,
+        "binary_sha256": "cd7a7fb79e8456f8c3a63d6937a5309771ab8d8f977d19034f2ae44db188def2",
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 17.10765157975215,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v1",
+              "bbr-v1"
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 17.667396711994453,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v1",
+              "bbr-v1"
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-1",
+        "exit": 0,
+        "binary_sha256": "c2cb7d39979a6ebb29f5aaece3758f91541b8aa3afaa340def8d1ada7a327a18",
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 16.882993886852734,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 10.84594793164498,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-2",
+        "exit": 0,
+        "binary_sha256": "c2cb7d39979a6ebb29f5aaece3758f91541b8aa3afaa340def8d1ada7a327a18",
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 16.837096092562515,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 12.560021935428686,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-2",
+        "exit": 0,
+        "binary_sha256": "cd7a7fb79e8456f8c3a63d6937a5309771ab8d8f977d19034f2ae44db188def2",
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 12.46831226796166,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v1",
+              "bbr-v1"
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 17.37696494384887,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v1",
+              "bbr-v1"
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-3",
+        "exit": 0,
+        "binary_sha256": "cd7a7fb79e8456f8c3a63d6937a5309771ab8d8f977d19034f2ae44db188def2",
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 17.11431937579302,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v1",
+              "bbr-v1"
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 10.814449792543153,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v1",
+              "bbr-v1"
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-3",
+        "exit": 0,
+        "binary_sha256": "c2cb7d39979a6ebb29f5aaece3758f91541b8aa3afaa340def8d1ada7a327a18",
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 15.53878724853637,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 17.126750037691835,
+            "bytes": 16777216,
+            "sha256": "c2fcf7162a903ff3dff8fa8cc030d762417186bb65f719bb58ec1da65ec07a26",
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ]
+          }
+        ]
+      }
+    ],
+    "comparison-long": [
+      {
+        "label": "baseline-1",
+        "exit": 0,
+        "binary_sha256": "cd7a7fb79e8456f8c3a63d6937a5309771ab8d8f977d19034f2ae44db188def2",
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 17.719067588499698,
+            "bytes": 67108864,
+            "sha256": "06531582aeb3929dd00db2097c4858d28db18adc768610c4cd5180fb834962d8",
+            "controllers": [
+              "bbr-v1",
+              "bbr-v1"
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 17.809315547923834,
+            "bytes": 67108864,
+            "sha256": "06531582aeb3929dd00db2097c4858d28db18adc768610c4cd5180fb834962d8",
+            "controllers": [
+              "bbr-v1",
+              "bbr-v1"
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-1",
+        "exit": 0,
+        "binary_sha256": "c2cb7d39979a6ebb29f5aaece3758f91541b8aa3afaa340def8d1ada7a327a18",
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 17.52829516630444,
+            "bytes": 67108864,
+            "sha256": "06531582aeb3929dd00db2097c4858d28db18adc768610c4cd5180fb834962d8",
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 16.213674619770647,
+            "bytes": 67108864,
+            "sha256": "06531582aeb3929dd00db2097c4858d28db18adc768610c4cd5180fb834962d8",
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "protocol_checks": {
+    "direct": {
+      "passed": true,
+      "scope": "fresh loopback test control + DERP and two isolated tsnet processes",
+      "force_derp": false,
+      "require_direct": true,
+      "rounds": 3,
+      "idle_seconds": 65.0,
+      "payload_bytes": 262144,
+      "cleanup_errors": [],
+      "lab_sha256": "0873a342ed598cd7f93cb77639f53f35f029ae740254710497be28be87fefe23",
+      "cli_sha256": "940caf0c04b94b03dd62b0dd2a8a2713709cebd57c07f4e949428780c9848ccf",
+      "phases": [
+        {
+          "name": "simultaneous-1",
+          "passed": true,
+          "seconds": 0.022
+        },
+        {
+          "name": "simultaneous-2",
+          "passed": true,
+          "seconds": 0.012
+        },
+        {
+          "name": "simultaneous-3",
+          "passed": true,
+          "seconds": 0.014
+        },
+        {
+          "name": "after-idle",
+          "passed": true,
+          "seconds": 0.014
+        },
+        {
+          "name": "after-rebind-0",
+          "passed": true,
+          "seconds": 0.012
+        },
+        {
+          "name": "after-rebind-1",
+          "passed": true,
+          "seconds": 0.012
+        },
+        {
+          "name": "after-peer-restart",
+          "passed": true,
+          "seconds": 0.02
+        },
+        {
+          "name": "after-peer-crash-0",
+          "passed": true,
+          "seconds": 0.019
+        },
+        {
+          "name": "after-peer-crash-1",
+          "passed": true,
+          "seconds": 0.022
+        },
+        {
+          "name": "after-simultaneous-restart",
+          "passed": true,
+          "seconds": 0.023
+        }
+      ],
+      "report_sha256": "957f4e1465f7be303a743bf5f1373f2e03c345f2c574300fce7a77871c60bfd5"
+    },
+    "derp": {
+      "passed": true,
+      "scope": "fresh loopback test control + DERP and two isolated tsnet processes",
+      "force_derp": true,
+      "require_direct": false,
+      "rounds": 3,
+      "idle_seconds": 65.0,
+      "payload_bytes": 262144,
+      "cleanup_errors": [],
+      "lab_sha256": "0873a342ed598cd7f93cb77639f53f35f029ae740254710497be28be87fefe23",
+      "cli_sha256": "940caf0c04b94b03dd62b0dd2a8a2713709cebd57c07f4e949428780c9848ccf",
+      "phases": [
+        {
+          "name": "simultaneous-1",
+          "passed": true,
+          "seconds": 1.034
+        },
+        {
+          "name": "simultaneous-2",
+          "passed": true,
+          "seconds": 1.029
+        },
+        {
+          "name": "simultaneous-3",
+          "passed": true,
+          "seconds": 1.027
+        },
+        {
+          "name": "after-idle",
+          "passed": true,
+          "seconds": 1.026
+        },
+        {
+          "name": "after-rebind-0",
+          "passed": true,
+          "seconds": 1.027
+        },
+        {
+          "name": "after-rebind-1",
+          "passed": true,
+          "seconds": 1.028
+        },
+        {
+          "name": "after-peer-restart",
+          "passed": true,
+          "seconds": 1.032
+        },
+        {
+          "name": "after-peer-crash-0",
+          "passed": true,
+          "seconds": 1.036
+        },
+        {
+          "name": "after-peer-crash-1",
+          "passed": true,
+          "seconds": 1.032
+        },
+        {
+          "name": "after-simultaneous-restart",
+          "passed": true,
+          "seconds": 1.035
+        }
+      ],
+      "report_sha256": "f930ec283d77b92651843cb31bdee645082734f0b04e6408bade32d1b39e8da2"
+    }
+  },
+  "logs": {
+    "verified-tests": {
+      "path": "/tmp/tailscale-quic4-verified-tests.log",
+      "sha256": "1107de6d0f52926b4d7454e4657ee96a3ff8d1b570eeaadc34a04901d45ae547"
+    },
+    "final-race": {
+      "path": "/tmp/tailscale-quic4-final-race.log",
+      "sha256": "9b779e87114651630fdfd1dc9c86cacc25a0b483d7c9f902e61343ee0b3694b5"
+    },
+    "readiness-race": {
+      "path": "/tmp/tailscale-quic4-readiness-race.log",
+      "sha256": "478f973116d83d7bc9aca5a272800e861c24f367ad49db549a9600cf2a0de263"
+    },
+    "awg-tests": {
+      "path": "/tmp/tailscale-quic4-awg-tests.log",
+      "sha256": "8c908a4ca27c5b75c907ed68e1a1d1c99237bcdc06d70cd8a38d1fe659a835b8"
+    },
+    "final-vet": {
+      "path": "/tmp/tailscale-quic4-final-vet.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "mod-verify": {
+      "path": "/tmp/tailscale-quic4-mod-verify.log",
+      "sha256": "b4537ed75f533f993f371954de47e42a793b8e5b0587577de7e27fb3e50696bd"
+    },
+    "address-bench": {
+      "path": "/tmp/tailscale-quic4-address-bench.log",
+      "sha256": "2b127bf41c194e48f9c6cd0e4752ff0146b75f48f7c46877a401e56caafb5fba"
+    }
+  },
+  "binaries": {
+    "tailscale": {
+      "sha256": "940caf0c04b94b03dd62b0dd2a8a2713709cebd57c07f4e949428780c9848ccf",
+      "bytes": 33645306,
+      "installed": false
+    },
+    "tailscaled": {
+      "sha256": "4203cca1195566c1c3bdfafc5574da1404dca7595b33fd968184fbeebdd18d27",
+      "bytes": 47945849,
+      "installed": false
+    },
+    "wgcompat-lab": {
+      "sha256": "0873a342ed598cd7f93cb77639f53f35f029ae740254710497be28be87fefe23",
+      "bytes": 38395934,
+      "installed": false
+    }
+  },
+  "platforms": [
+    {
+      "target": "linux/amd64",
+      "status": "PASS",
+      "runtime_verified": false,
+      "kind": "VPN Go core/package compile (no app signing/link/runtime)",
+      "env": {
+        "GOOS": "linux",
+        "GOARCH": "amd64",
+        "CGO_ENABLED": "0"
+      },
+      "command": [
+        "go",
+        "build",
+        "-mod=readonly",
+        "-p=3",
+        "./wgengine",
+        "./wgengine/quicip",
+        "./wgengine/wgtransport/quicbind",
+        "./ipn/ipnlocal",
+        "./tsnet"
+      ],
+      "seconds": 22.413,
+      "exit": 0,
+      "log": "linux-amd64.log"
+    },
+    {
+      "target": "linux/arm64",
+      "status": "PASS",
+      "runtime_verified": false,
+      "kind": "VPN Go core/package compile (no app signing/link/runtime)",
+      "env": {
+        "GOOS": "linux",
+        "GOARCH": "arm64",
+        "CGO_ENABLED": "0"
+      },
+      "command": [
+        "go",
+        "build",
+        "-mod=readonly",
+        "-p=3",
+        "./wgengine",
+        "./wgengine/quicip",
+        "./wgengine/wgtransport/quicbind",
+        "./ipn/ipnlocal",
+        "./tsnet"
+      ],
+      "seconds": 22.592,
+      "exit": 0,
+      "log": "linux-arm64.log"
+    },
+    {
+      "target": "windows/amd64",
+      "status": "PASS",
+      "runtime_verified": false,
+      "kind": "VPN Go core/package compile (no app signing/link/runtime)",
+      "env": {
+        "GOOS": "windows",
+        "GOARCH": "amd64",
+        "CGO_ENABLED": "0"
+      },
+      "command": [
+        "go",
+        "build",
+        "-mod=readonly",
+        "-p=3",
+        "./wgengine",
+        "./wgengine/quicip",
+        "./wgengine/wgtransport/quicbind",
+        "./ipn/ipnlocal",
+        "./tsnet"
+      ],
+      "seconds": 14.569,
+      "exit": 0,
+      "log": "windows-amd64.log"
+    },
+    {
+      "target": "darwin/arm64",
+      "status": "PASS",
+      "runtime_verified": false,
+      "kind": "VPN Go core/package compile (no app signing/link/runtime)",
+      "env": {
+        "GOOS": "darwin",
+        "GOARCH": "arm64",
+        "CGO_ENABLED": "0"
+      },
+      "command": [
+        "go",
+        "build",
+        "-mod=readonly",
+        "-p=3",
+        "./wgengine",
+        "./wgengine/quicip",
+        "./wgengine/wgtransport/quicbind",
+        "./ipn/ipnlocal",
+        "./tsnet"
+      ],
+      "seconds": 14.444,
+      "exit": 0,
+      "log": "darwin-arm64.log"
+    },
+    {
+      "target": "android/arm64",
+      "status": "PASS",
+      "runtime_verified": false,
+      "kind": "VPN Go core/package compile (no app signing/link/runtime)",
+      "env": {
+        "GOOS": "android",
+        "GOARCH": "arm64",
+        "CGO_ENABLED": "0"
+      },
+      "command": [
+        "go",
+        "build",
+        "-mod=readonly",
+        "-p=3",
+        "./wgengine",
+        "./wgengine/quicip",
+        "./wgengine/wgtransport/quicbind",
+        "./ipn/ipnlocal",
+        "./tsnet"
+      ],
+      "seconds": 12.506,
+      "exit": 0,
+      "log": "android-arm64.log"
+    }
+  ],
+  "go_source_manifest_sha256": "40289b5baeecf960eccab2176f32b516f30b934599b1a3c1106d595a859e7750"
+}

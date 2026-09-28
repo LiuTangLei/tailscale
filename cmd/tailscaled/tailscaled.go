@@ -65,6 +65,7 @@ import (
 	"tailscale.com/version/distro"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/router"
+	"tailscale.com/wgengine/transportprofile"
 )
 
 // defaultTunName returns the default tun device name for the platform.
@@ -196,6 +197,10 @@ type proxyStartFunc = func(logf logger.Logf, dialer *tsdial.Dialer)
 
 func main() {
 	envknob.PanicIfAnyEnvCheckedInInit()
+	if len(os.Args) > 1 && runtime.GOOS == "android" && filepath.IsAbs(os.Args[1]) && strings.Contains(os.Args[1], "tailscale") {
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+	}
+
 	if shouldRunCLI() {
 		beCLI()
 		return
@@ -799,6 +804,23 @@ func tryEngine(logf logger.Logf, sys *tsd.System, name string) (onlyNetstack boo
 		SetSubsystem:  sys.Set,
 		ControlKnobs:  sys.ControlKnobs(),
 		EventBus:      sys.Bus.Get(),
+	}
+	conf.TransportManaged = true
+	// A managed profile takes effect only at engine construction. Explicit
+	// environment deployment remains authoritative and is shown as such in
+	// LocalAPI; a broken profile must not fall back to native traffic.
+	if envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT") == "" {
+		transport, revision, loadErr := transportprofile.LoadForStart(ipnServerOpts().VarRoot)
+		if loadErr != nil {
+			return false, fmt.Errorf("packet transport profile: %w", loadErr)
+		}
+		conf.Transport = transport
+		conf.TransportRevision = revision
+		if revision != "0" {
+			conf.TransportSource = "managed"
+		} else {
+			conf.TransportSource = "default"
+		}
 	}
 	if f, ok := hookSetWgEnginConfigDrive.GetOk(); ok {
 		f(&conf, logf)

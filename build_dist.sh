@@ -72,4 +72,16 @@ while [ "$#" -gt 1 ]; do
 	esac
 done
 
-exec $go build ${tags:+-tags=$tags} -trimpath -ldflags "$ldflags" "$@"
+# A distribution must never accidentally enable the development-only double
+# encryption path. Normal peer compatibility remains native WG/AWG.
+case ",$tags, $* ${GOFLAGS:-}" in
+	*ts_dev_wg_over_quic*)
+		echo "WG-over-QUIC is development-only; use go build with the explicit tag, not build_dist.sh" >&2
+		exit 1
+		;;
+esac
+
+# QUIC fixes are in the published, checksum-pinned dependency in go.mod.
+# No temporary modfile, module-cache edit or source overlay is required.
+# readonly also prevents a distribution build from silently changing pins.
+$go build -mod=readonly ${tags:+-tags=$tags} -trimpath -ldflags "$ldflags" "$@"

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"tailscale.com/ipn"
 	"tailscale.com/types/key"
 )
 
@@ -22,6 +23,11 @@ import (
 type Config struct {
 	PrivateKey key.NodePrivate
 	Addresses  []netip.Prefix
+
+	// AmneziaWG contains the device-wide AWG parameters. Its zero value keeps
+	// standard WireGuard behavior. Both legacy AWG v2 and AWG v3 fields live in
+	// the same preferences value so switching versions clears stale settings.
+	AmneziaWG ipn.AmneziaWGPrefs
 }
 
 func (c *Config) Equal(o *Config) bool {
@@ -29,5 +35,6 @@ func (c *Config) Equal(o *Config) bool {
 		return c == o
 	}
 	return c.PrivateKey.Equal(o.PrivateKey) &&
-		slices.Equal(c.Addresses, o.Addresses)
+		slices.Equal(c.Addresses, o.Addresses) &&
+		c.AmneziaWG == o.AmneziaWG
 }
