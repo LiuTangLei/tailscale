@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -65,6 +66,8 @@ type h3BulkLinkStats struct {
 	DroppedPackets  uint64 `json:"dropped_packets"`
 	DroppedBytes    uint64 `json:"dropped_quic_bytes"`
 	SendErrors      uint64 `json:"send_errors"`
+	HostSendCalls   uint64 `json:"host_send_calls"`
+	HostSendPackets uint64 `json:"host_send_packets"`
 	QueuedBytes     int    `json:"queued_quic_bytes"`
 	MaxQueuedBytes  int64  `json:"max_queued_quic_bytes"`
 }
@@ -82,6 +85,8 @@ type h3BulkShapedBind struct {
 	droppedPackets  atomic.Uint64
 	droppedBytes    atomic.Uint64
 	sendErrors      atomic.Uint64
+	hostSendCalls   atomic.Uint64
+	hostSendPackets atomic.Uint64
 	maxQueuedBytes  atomic.Int64
 }
 
@@ -218,6 +223,7 @@ func (link *h3BulkLink) run() {
 	}()
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
+	bufs := make([][]byte, max(1, min(link.owner.Bind.BatchSize(), conn.IdealBatchSize)))
 	for {
 		link.mu.Lock()
 		if link.ctx.Err() != nil {
@@ -246,9 +252,24 @@ func (link *h3BulkLink) run() {
 				continue
 			}
 		}
-		link.queue[link.head] = h3BulkLinkPacket{}
-		link.head++
-		length := len(packet.data) - packet.offset
+		// The scheduler must retain already-due batching. Turning every input
+		// vector into singleton sends bypasses the real UDP batch path and can
+		// make host syscall overhead look like a congestion-control limit.
+		// Never wait to gather more packets or release a future packet early.
+		now := time.Now()
+		n, length := 0, 0
+		comparable := packet.ep == nil || reflect.ValueOf(packet.ep).Comparable()
+		for link.head < len(link.queue) && n < len(bufs) {
+			next := link.queue[link.head]
+			if n > 0 && (!comparable || next.ep != packet.ep || next.offset != packet.offset || next.due.After(now)) {
+				break
+			}
+			bufs[n] = next.data
+			n++
+			length += len(next.data) - next.offset
+			link.queue[link.head] = h3BulkLinkPacket{}
+			link.head++
+		}
 		link.bytes -= length
 		if link.head > 128 && link.head > len(link.queue)/2 {
 			remaining := copy(link.queue, link.queue[link.head:])
@@ -257,16 +278,19 @@ func (link *h3BulkLink) run() {
 			link.head = 0
 		}
 		link.mu.Unlock()
-		if err := link.owner.Bind.Send([][]byte{packet.data}, packet.ep, packet.offset); err != nil {
-			link.owner.sendErrors.Add(1)
+		link.owner.hostSendCalls.Add(1)
+		link.owner.hostSendPackets.Add(uint64(n))
+		if err := link.owner.Bind.Send(bufs[:n], packet.ep, packet.offset); err != nil {
+			link.owner.sendErrors.Add(uint64(n))
 		} else {
 			link.owner.deliveredBytes.Add(uint64(length))
 		}
+		clear(bufs[:n])
 	}
 }
 
 func (b *h3BulkShapedBind) snapshot() h3BulkLinkStats {
-	snapshot := h3BulkLinkStats{AcceptedPackets: b.acceptedPackets.Load(), AcceptedBytes: b.acceptedBytes.Load(), DeliveredBytes: b.deliveredBytes.Load(), DroppedPackets: b.droppedPackets.Load(), DroppedBytes: b.droppedBytes.Load(), SendErrors: b.sendErrors.Load(), MaxQueuedBytes: b.maxQueuedBytes.Load()}
+	snapshot := h3BulkLinkStats{AcceptedPackets: b.acceptedPackets.Load(), AcceptedBytes: b.acceptedBytes.Load(), DeliveredBytes: b.deliveredBytes.Load(), DroppedPackets: b.droppedPackets.Load(), DroppedBytes: b.droppedBytes.Load(), SendErrors: b.sendErrors.Load(), HostSendCalls: b.hostSendCalls.Load(), HostSendPackets: b.hostSendPackets.Load(), MaxQueuedBytes: b.maxQueuedBytes.Load()}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if link := b.current; link != nil {
@@ -287,6 +311,8 @@ type h3BulkRecordingBind struct {
 	conn.Bind
 	sent chan h3BulkRecordedPacket
 }
+
+func (*h3BulkRecordingBind) BatchSize() int { return 128 }
 
 func (b *h3BulkRecordingBind) Open(uint16) ([]conn.ReceiveFunc, uint16, error) {
 	return nil, 1, nil
@@ -389,5 +415,128 @@ func TestH3BulkLinkConcurrentSendAndClose(t *testing.T) {
 	}
 	if link.bytes != 0 || len(link.queue) != 0 {
 		t.Fatal("concurrent sender appended after final queue drain")
+	}
+}
+
+type h3BulkRecordedVector struct {
+	data   [][]byte
+	ep     conn.Endpoint
+	offset int
+	at     time.Time
+}
+
+type h3BulkVectorRecorder struct {
+	conn.Bind
+	calls chan h3BulkRecordedVector
+}
+
+func (*h3BulkVectorRecorder) BatchSize() int { return 2 }
+func (b *h3BulkVectorRecorder) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
+	call := h3BulkRecordedVector{ep: ep, offset: offset, at: time.Now()}
+	for _, buf := range bufs {
+		call.data = append(call.data, append([]byte(nil), buf...))
+	}
+	b.calls <- call
+	return nil
+}
+
+func TestH3BulkLinkReadyBatchBoundaries(t *testing.T) {
+	b := &h3BulkVectorRecorder{calls: make(chan h3BulkRecordedVector, 8)}
+	owner := &h3BulkShapedBind{Bind: b}
+	ctx, cancel := context.WithCancel(context.Background())
+	link := &h3BulkLink{owner: owner, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1)}
+	plain := conn.NewStdNetBind()
+	epA, err := plain.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	epB, err := plain.ParseEndpoint("127.0.0.1:2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	past, future := time.Now().Add(-time.Second), time.Now().Add(80*time.Millisecond)
+	for i := range 6 {
+		ep, offset, due := epA, 8, past
+		if i >= 3 {
+			ep = epB
+		}
+		if i >= 4 {
+			offset = 4
+		}
+		if i == 5 {
+			due = future
+		}
+		data := make([]byte, 12)
+		data[offset] = byte(i + 1)
+		link.queue = append(link.queue, h3BulkLinkPacket{data: data, ep: ep, offset: offset, due: due})
+		link.bytes += len(data) - offset
+	}
+	go link.run()
+	defer func() { cancel(); <-link.done }()
+	seen := 0
+	for index := 0; seen < 6; index++ {
+		select {
+		case call := <-b.calls:
+			if index < 3 {
+				want := []int{2, 1, 1}[index]
+				if len(call.data) != want {
+					t.Fatalf("batch %d size=%d want=%d", index, len(call.data), want)
+				}
+			} else if len(call.data) < 1 || len(call.data) > min(2, 6-seen) {
+				t.Fatal("invalid final batch size")
+			}
+			wantEP, wantOffset := epA, 8
+			if index >= 2 {
+				wantEP = epB
+			}
+			if index >= 3 {
+				wantOffset = 4
+			}
+			if call.ep != wantEP || call.offset != wantOffset {
+				t.Fatal("mixed endpoint or offset")
+			}
+			for _, data := range call.data {
+				seen++
+				if seen == 6 && call.at.Before(future) {
+					t.Fatal("future packet released early")
+				}
+				if len(data) != 12 || data[call.offset] != byte(seen) {
+					t.Fatal("packet order or headroom changed")
+				}
+			}
+		case <-time.After(time.Second):
+			t.Fatal("ready batch stalled")
+		}
+	}
+	if owner.hostSendPackets.Load() != 6 || owner.hostSendCalls.Load() < 4 || owner.hostSendCalls.Load() > 5 {
+		t.Fatal("underlying host batch accounting mismatch")
+	}
+}
+
+type h3BulkUncomparableEndpoint struct {
+	conn.Endpoint
+	data []byte
+}
+
+func TestH3BulkLinkUncomparableEndpoint(t *testing.T) {
+	b := &h3BulkVectorRecorder{calls: make(chan h3BulkRecordedVector, 3)}
+	ctx, cancel := context.WithCancel(context.Background())
+	link := &h3BulkLink{owner: &h3BulkShapedBind{Bind: b}, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1)}
+	ep := h3BulkUncomparableEndpoint{data: []byte{1}}
+	for i := range 3 {
+		link.queue = append(link.queue, h3BulkLinkPacket{data: []byte{byte(i)}, ep: ep, due: time.Now().Add(-time.Second)})
+		link.bytes++
+	}
+	go link.run()
+	defer func() { cancel(); <-link.done }()
+	for i := range 3 {
+		select {
+		case call := <-b.calls:
+			if len(call.data) != 1 || len(call.data[0]) != 1 || call.data[0][0] != byte(i) {
+				t.Fatal("uncomparable endpoint must retain ordered singleton fallback")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("uncomparable endpoint stalled")
+		}
 	}
 }
