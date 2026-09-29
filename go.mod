@@ -528,6 +528,6 @@ require (
 
 // Published fork: preserve upstream import paths, but never depend on a local
 // directory or a build-time overlay for the prerelease's QUIC fixes.
-replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.63.0-quic.3
+replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.63.0-tailscale.1.0.20260929072415-cda3ed094749
 
 tool github.com/stacklok/frizbee

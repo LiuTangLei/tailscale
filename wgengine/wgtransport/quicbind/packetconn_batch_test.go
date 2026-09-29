@@ -87,3 +87,31 @@ func TestPacketConnBatchDoesNotRetryPartialHostError(t *testing.T) {
 		t.Fatal("potential partial send retried")
 	}
 }
+
+func TestPacketConnExpandedBatch(t *testing.T) {
+	host := &recordingBatchBind{batch: 7}
+	c := newBindPacketConn(&generation{b: &Backend{host: wgtransport.Host{Bind: host}}})
+	defer c.Close()
+	input := make([][]byte, 32)
+	for i := range input {
+		input[i] = bytes.Repeat([]byte{byte(i)}, 1200-i)
+	}
+	addr := &bindAddr{ep: &endpoint{}}
+	if c.MaxPacketBatchSize() != 32 {
+		t.Fatal("wrong negotiated limit")
+	}
+	if err := c.WritePacketBatch(input, addr); err != nil {
+		t.Fatal(err)
+	}
+	if host.calls != 5 || len(host.packets) != 32 {
+		t.Fatal("host capacity or packet count changed")
+	}
+	for i, p := range host.packets {
+		if !bytes.Equal(p, input[i]) {
+			t.Fatal("packet boundary, order or borrowed bytes changed")
+		}
+	}
+	if err := c.WritePacketBatch(append(input, []byte{1}), addr); err == nil || host.calls != 5 {
+		t.Fatal("oversized group was partially sent")
+	}
+}

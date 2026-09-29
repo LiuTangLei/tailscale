@@ -11,6 +11,12 @@ import (
 	"github.com/LiuTangLei/wireguard-go/conn"
 )
 
+const maxOuterPacketBatch = 32
+
+// MaxPacketBatchSize opts this bridge into larger already-paced ready batches.
+// Older QUIC libraries continue sending their historical groups of at most 8.
+func (*bindPacketConn) MaxPacketBatchSize() int { return maxOuterPacketBatch }
+
 // WritePacketBatch implements quic-go's optional portable batch writer. Every
 // input is already one encrypted QUIC UDP packet. No GSO/ECN/DF capability is
 // advertised. Forwarding one same-endpoint batch lets magicsock use its own
@@ -19,7 +25,7 @@ func (c *bindPacketConn) WritePacketBatch(input [][]byte, addr net.Addr) error {
 	if len(input) == 0 {
 		return nil
 	}
-	if len(input) > 8 {
+	if len(input) > maxOuterPacketBatch {
 		return errors.New("outer QUIC write batch exceeds bounded capacity")
 	}
 	if len(input) == 1 {
@@ -41,8 +47,8 @@ func (c *bindPacketConn) WritePacketBatch(input [][]byte, addr net.Addr) error {
 	if !deadline.IsZero() && !time.Now().Before(deadline) {
 		return deadlineError{}
 	}
-	var packets [8]*packetBuffer
-	var buffers [8][]byte
+	var packets [maxOuterPacketBatch]*packetBuffer
+	var buffers [maxOuterPacketBatch][]byte
 	// Validate the entire batch before performing any write.
 	for _, p := range input {
 		if len(p)+8 > 2048 {

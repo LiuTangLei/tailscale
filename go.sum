@@ -89,6 +89,8 @@ github.com/LiuTangLei/quic-go v0.63.0-quic.3 h1:fxQbjBZWDXYxrdcB782e/QUmUhBL8bsb
 github.com/LiuTangLei/quic-go v0.63.0-quic.3/go.mod h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U=
 github.com/LiuTangLei/quic-go v0.63.0-tailscale.1 h1:Am+//RFiTRi0iB1tFDhf5ABfeHbIKfLAkHfNJDSYnyI=
 github.com/LiuTangLei/quic-go v0.63.0-tailscale.1/go.mod h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U=
+github.com/LiuTangLei/quic-go v0.63.0-tailscale.1.0.20260929072415-cda3ed094749 h1:gdZvpsgsnz05GIWfNlkhWIdNJRB50N4mZBXij1pAbrc=
+github.com/LiuTangLei/quic-go v0.63.0-tailscale.1.0.20260929072415-cda3ed094749/go.mod h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U=
 github.com/LiuTangLei/wireguard-go v0.0.33-0.20260910045057-ed22747d204e h1:mGieoLdA0boJaY0o4PFAgPDfkRaBinKygczxKIHJ1hs=
 github.com/LiuTangLei/wireguard-go v0.0.33-0.20260910045057-ed22747d204e/go.mod h1:f7uSn74R1/LKiqDHRok1pV2vnEelx6Catt+uAkBzgrk=
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=

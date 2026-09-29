@@ -1,0 +1,4303 @@
+{
+  "date": "2026-09-29",
+  "decision": "Adopt E on dev only; reject additional F; default 500 Mbps target remains unmet. MTU=1400 diagnostic is not a shipped default.",
+  "application_parent": "34e48726c1b6d2d9b9bb26ff3df263d2bfce9462",
+  "runtime_baseline": "e89f1dfd6f3c4f76c369073c7ee7cfe8202b98c1",
+  "library_commit": "cda3ed094749ffe253e91ab02edf4743003487d0",
+  "module": {
+    "Path": "github.com/LiuTangLei/quic-go",
+    "Version": "v0.63.0-tailscale.1.0.20260929072415-cda3ed094749",
+    "Info": "/home/box/go/pkg/mod/cache/download/github.com/!liu!tang!lei/quic-go/@v/v0.63.0-tailscale.1.0.20260929072415-cda3ed094749.info",
+    "GoMod": "/home/box/go/pkg/mod/cache/download/github.com/!liu!tang!lei/quic-go/@v/v0.63.0-tailscale.1.0.20260929072415-cda3ed094749.mod",
+    "Zip": "/home/box/go/pkg/mod/cache/download/github.com/!liu!tang!lei/quic-go/@v/v0.63.0-tailscale.1.0.20260929072415-cda3ed094749.zip",
+    "Dir": "/home/box/go/pkg/mod/github.com/!liu!tang!lei/quic-go@v0.63.0-tailscale.1.0.20260929072415-cda3ed094749",
+    "Sum": "h1:gdZvpsgsnz05GIWfNlkhWIdNJRB50N4mZBXij1pAbrc=",
+    "GoModSum": "h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U="
+  },
+  "method": {
+    "wan_offered_mbps": 1000,
+    "wan_seconds": 20,
+    "outer_family": "IPv4 only for temporary test services",
+    "latency": "TSMP bursts across 17-18 seconds, same method for all valid baseline/E comparisons",
+    "default_packet_size": 1200,
+    "diagnostic_packet_size": 1400,
+    "local_bytes_each_way": 536870912,
+    "local_shaped_rate_mbps": 500,
+    "local_shaped_rtt_ms": 60
+  },
+  "checks": {
+    "selected_wan_all_passed": true,
+    "selected_wan_quic_declared_lost": 968,
+    "local_all_passed": true,
+    "local_verified_transfers": 60,
+    "local_forced_derp_passed": true
+  },
+  "wan": [
+    {
+      "file": "baseline-mtu-v4-1.json",
+      "sha256": "a6755c464bf11b0f11bb8b41a34b0cc53394d97d8ccc4a3465270f5e6a74691d",
+      "passed": true,
+      "cleanup_errors": [],
+      "binary_sha256": "2ceab7e23aa73e4a584648833d446af9943e7d69e0acd5017bb3e4b1a6c8c07f",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1400
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 261.58849787780355,
+          "wall_lower_bound_mbps": 254.87710651201436,
+          "received_bytes": 654180352,
+          "cpu_seconds": {
+            "jp6": 41.607874,
+            "jp1010": 24.364815
+          },
+          "cpu_seconds_per_GiB": 108.28456587617713,
+          "allocated_bytes_per_payload_byte": 3.350085879681082,
+          "latency": {
+            "median_ms": 4.93254,
+            "p95_ms": 6.43539,
+            "p99_ms": 7.695797,
+            "max_ms": 12.879506000000001,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 86510,
+              "raw_write_batches": 38548
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 516879,
+              "raw_write_batches": 107607
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 39
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 268.05204089829823,
+          "wall_lower_bound_mbps": 259.59726516719303,
+          "received_bytes": 670695424,
+          "cpu_seconds": {
+            "jp6": 41.40660499999999,
+            "jp1010": 24.86987599999999
+          },
+          "cpu_seconds_per_GiB": 106.10454022904044,
+          "allocated_bytes_per_payload_byte": 3.3585300501468756,
+          "latency": {
+            "median_ms": 4.997596,
+            "p95_ms": 6.486307999999999,
+            "p99_ms": 8.275759,
+            "max_ms": 35.827719,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 95721,
+              "raw_write_batches": 42045
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 530140,
+              "raw_write_batches": 108488
+            }
+          },
+          "quic_loss": {
+            "jp6": 8,
+            "jp1010": 12
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 1,
+          "mbps": 498.1719315476968,
+          "wall_lower_bound_mbps": 485.96770897394697,
+          "received_bytes": 1245446144,
+          "cpu_seconds": {
+            "jp6": 25.82768200000001,
+            "jp1010": 41.74070800000001
+          },
+          "cpu_seconds_per_GiB": 58.25302577141656,
+          "allocated_bytes_per_payload_byte": 2.9215776286509585,
+          "latency": {
+            "median_ms": 3.4423719999999998,
+            "p95_ms": 9.271059,
+            "p99_ms": 13.602646,
+            "max_ms": 25.487665,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 962904,
+              "raw_write_batches": 149305
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 147230,
+              "raw_write_batches": 59988
+            }
+          },
+          "quic_loss": {
+            "jp6": 47,
+            "jp1010": 12
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 4,
+          "mbps": 515.9460422043273,
+          "wall_lower_bound_mbps": 502.6049240119289,
+          "received_bytes": 1289879552,
+          "cpu_seconds": {
+            "jp6": 27.333174000000014,
+            "jp1010": 41.79144499999998
+          },
+          "cpu_seconds_per_GiB": 57.54180254526979,
+          "allocated_bytes_per_payload_byte": 2.9357372059495987,
+          "latency": {
+            "median_ms": 4.155624,
+            "p95_ms": 9.130907,
+            "p99_ms": 11.691129,
+            "max_ms": 39.319255999999996,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1001812,
+              "raw_write_batches": 158115
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 163992,
+              "raw_write_batches": 64286
+            }
+          },
+          "quic_loss": {
+            "jp6": 386,
+            "jp1010": 3
+          },
+          "session_reused": true
+        }
+      ]
+    },
+    {
+      "file": "baseline-v4-1.json",
+      "sha256": "842c053093a93af523ae6dc455ee1bd5d3578d92abdad5231e66de418f91d507",
+      "passed": false,
+      "cleanup_errors": [],
+      "binary_sha256": "2ceab7e23aa73e4a584648833d446af9943e7d69e0acd5017bb3e4b1a6c8c07f",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1200
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 235.60021569843968,
+          "wall_lower_bound_mbps": 230.00746862232424,
+          "received_bytes": 589168640,
+          "cpu_seconds": {
+            "jp6": 39.652526,
+            "jp1010": 23.548377000000002
+          },
+          "cpu_seconds_per_GiB": 115.18171243070078,
+          "allocated_bytes_per_payload_byte": 3.3311139167217045,
+          "latency": {
+            "median_ms": 5.333081,
+            "p95_ms": 7.112182,
+            "p99_ms": 7.899107000000001,
+            "max_ms": 44.463559,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 990,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 85990,
+              "raw_write_batches": 37576
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 526393,
+              "raw_write_batches": 104802
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 242.6241464047566,
+          "wall_lower_bound_mbps": 234.5434731643838,
+          "received_bytes": 607256576,
+          "cpu_seconds": {
+            "jp6": 41.910949,
+            "jp1010": 25.120919
+          },
+          "cpu_seconds_per_GiB": 118.52472753205267,
+          "allocated_bytes_per_payload_byte": 3.400383616430364,
+          "latency": {
+            "median_ms": 5.039509,
+            "p95_ms": 6.8201920000000005,
+            "p99_ms": 8.536799,
+            "max_ms": 36.139705,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 990,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 99738,
+              "raw_write_batches": 43717
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 544083,
+              "raw_write_batches": 109974
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        }
+      ]
+    },
+    {
+      "file": "baseline-v4-2.json",
+      "sha256": "d6d196bab613b5f71674a218d2d5b5fa858ff88bd7090864140c0808aa0c2d11",
+      "passed": true,
+      "cleanup_errors": [],
+      "binary_sha256": "2ceab7e23aa73e4a584648833d446af9943e7d69e0acd5017bb3e4b1a6c8c07f",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1200
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 237.78614533467476,
+          "wall_lower_bound_mbps": 230.9276052198445,
+          "received_bytes": 594673664,
+          "cpu_seconds": {
+            "jp6": 32.419869000000006,
+            "jp1010": 21.759373
+          },
+          "cpu_seconds_per_GiB": 97.82595337535817,
+          "allocated_bytes_per_payload_byte": 3.18903380257983,
+          "latency": {
+            "median_ms": 5.257504,
+            "p95_ms": 7.325397,
+            "p99_ms": 9.380545,
+            "max_ms": 13.513226,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 93000,
+              "raw_write_batches": 35429
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 528434,
+              "raw_write_batches": 100076
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 239.19636701944455,
+          "wall_lower_bound_mbps": 230.9613739698987,
+          "received_bytes": 598474752,
+          "cpu_seconds": {
+            "jp6": 41.540411999999996,
+            "jp1010": 24.697096000000002
+          },
+          "cpu_seconds_per_GiB": 118.83873533420936,
+          "allocated_bytes_per_payload_byte": 3.3988155944797485,
+          "latency": {
+            "median_ms": 4.854859,
+            "p95_ms": 6.695739,
+            "p99_ms": 7.835141,
+            "max_ms": 13.237629,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 97341,
+              "raw_write_batches": 42767
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 535979,
+              "raw_write_batches": 110958
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 1,
+          "mbps": 444.5951347419199,
+          "wall_lower_bound_mbps": 433.6263165429036,
+          "received_bytes": 1111490560,
+          "cpu_seconds": {
+            "jp6": 25.53971200000001,
+            "jp1010": 41.27263199999999
+          },
+          "cpu_seconds_per_GiB": 64.5432455245283,
+          "allocated_bytes_per_payload_byte": 2.8612016425942475,
+          "latency": {
+            "median_ms": 3.380864,
+            "p95_ms": 7.803028,
+            "p99_ms": 10.89513,
+            "max_ms": 57.759201000000004,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 974500,
+              "raw_write_batches": 151681
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 146980,
+              "raw_write_batches": 59734
+            }
+          },
+          "quic_loss": {
+            "jp6": 107,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 4,
+          "mbps": 429.390412072599,
+          "wall_lower_bound_mbps": 417.87743088875806,
+          "received_bytes": 1073479680,
+          "cpu_seconds": {
+            "jp6": 24.600268,
+            "jp1010": 41.359959
+          },
+          "cpu_seconds_per_GiB": 65.97633450354091,
+          "allocated_bytes_per_payload_byte": 2.9237772921793916,
+          "latency": {
+            "median_ms": 5.821354,
+            "p95_ms": 11.879118,
+            "p99_ms": 15.601959,
+            "max_ms": 18.371792000000003,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 450,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 944465,
+              "raw_write_batches": 148825
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 156077,
+              "raw_write_batches": 63114
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        }
+      ]
+    },
+    {
+      "file": "baseline-v4-3.json",
+      "sha256": "baaf47377ea1a96c7ddd2d95998298ff175cacfd9b9b0462cfe9d354fc9f2980",
+      "passed": true,
+      "cleanup_errors": [],
+      "binary_sha256": "2ceab7e23aa73e4a584648833d446af9943e7d69e0acd5017bb3e4b1a6c8c07f",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1200
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 237.88842169092743,
+          "wall_lower_bound_mbps": 231.87263066715977,
+          "received_bytes": 594935808,
+          "cpu_seconds": {
+            "jp6": 41.875669,
+            "jp1010": 24.4711
+          },
+          "cpu_seconds_per_GiB": 119.7428357893809,
+          "allocated_bytes_per_payload_byte": 3.361592624123912,
+          "latency": {
+            "median_ms": 5.238436,
+            "p95_ms": 6.920325,
+            "p99_ms": 7.666530000000001,
+            "max_ms": 11.524834,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 88485,
+              "raw_write_batches": 39549
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 532763,
+              "raw_write_batches": 110396
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 243.82539883345274,
+          "wall_lower_bound_mbps": 235.90601858930114,
+          "received_bytes": 610009088,
+          "cpu_seconds": {
+            "jp6": 42.22328999999999,
+            "jp1010": 24.729151
+          },
+          "cpu_seconds_per_GiB": 117.85010671938116,
+          "allocated_bytes_per_payload_byte": 3.38706468582973,
+          "latency": {
+            "median_ms": 4.895347,
+            "p95_ms": 6.500837,
+            "p99_ms": 7.2391570000000005,
+            "max_ms": 33.119997,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 420,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 98450,
+              "raw_write_batches": 43526
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 546076,
+              "raw_write_batches": 112465
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 36
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 1,
+          "mbps": 449.50073013633926,
+          "wall_lower_bound_mbps": 435.93151188115843,
+          "received_bytes": 1123811328,
+          "cpu_seconds": {
+            "jp6": 25.970035999999993,
+            "jp1010": 43.325731000000005
+          },
+          "cpu_seconds_per_GiB": 66.20841185724282,
+          "allocated_bytes_per_payload_byte": 2.849002767838268,
+          "latency": {
+            "median_ms": 3.992486,
+            "p95_ms": 10.159902,
+            "p99_ms": 11.95879,
+            "max_ms": 13.684114000000001,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 985524,
+              "raw_write_batches": 154113
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 146399,
+              "raw_write_batches": 59678
+            }
+          },
+          "quic_loss": {
+            "jp6": 243,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 4,
+          "mbps": 440.59958480135566,
+          "wall_lower_bound_mbps": 428.75075037342737,
+          "received_bytes": 1101529088,
+          "cpu_seconds": {
+            "jp6": 25.375875000000008,
+            "jp1010": 42.632373
+          },
+          "cpu_seconds_per_GiB": 66.29266630366493,
+          "allocated_bytes_per_payload_byte": 2.909549152096472,
+          "latency": {
+            "median_ms": 5.675878,
+            "p95_ms": 10.747028,
+            "p99_ms": 12.748891,
+            "max_ms": 15.140705,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 450,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 969224,
+              "raw_write_batches": 153621
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 159905,
+              "raw_write_batches": 63101
+            }
+          },
+          "quic_loss": {
+            "jp6": 51,
+            "jp1010": 0
+          },
+          "session_reused": true
+        }
+      ]
+    },
+    {
+      "file": "candidate-e-mtu-v4-1.json",
+      "sha256": "32b98b3fb46720be1faaebe14e1697d9c94951075096f2d79067af9c9bd722a3",
+      "passed": true,
+      "cleanup_errors": [],
+      "binary_sha256": "376635a4da2a1f201ed164a71b64a77df8577b4a42340144ff3da8c3163d580f",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1400
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 270.2197094039641,
+          "wall_lower_bound_mbps": 263.6690928309777,
+          "received_bytes": 675807232,
+          "cpu_seconds": {
+            "jp6": 41.249126,
+            "jp1010": 23.476662
+          },
+          "cpu_seconds_per_GiB": 102.83817984794413,
+          "allocated_bytes_per_payload_byte": 3.3632795808849822,
+          "latency": {
+            "median_ms": 4.759171,
+            "p95_ms": 6.3207569999999995,
+            "p99_ms": 7.981624999999999,
+            "max_ms": 70.083633,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 450,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 89796,
+              "raw_write_batches": 39492
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 548957,
+              "raw_write_batches": 93607
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 9
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 275.2134570201203,
+          "wall_lower_bound_mbps": 266.82683410948994,
+          "received_bytes": 688652288,
+          "cpu_seconds": {
+            "jp6": 41.69868000000001,
+            "jp1010": 23.979894
+          },
+          "cpu_seconds_per_GiB": 102.40557255576705,
+          "allocated_bytes_per_payload_byte": 3.4114126750712255,
+          "latency": {
+            "median_ms": 4.836632000000001,
+            "p95_ms": 6.8798569999999994,
+            "p99_ms": 8.132089,
+            "max_ms": 37.857118,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 98989,
+              "raw_write_batches": 43405
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 560448,
+              "raw_write_batches": 97640
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 3
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 1,
+          "mbps": 488.7387077217844,
+          "wall_lower_bound_mbps": 475.79196966932614,
+          "received_bytes": 1221853184,
+          "cpu_seconds": {
+            "jp6": 27.551573999999988,
+            "jp1010": 41.58381999999999
+          },
+          "cpu_seconds_per_GiB": 60.754896765500945,
+          "allocated_bytes_per_payload_byte": 2.9609912806021708,
+          "latency": {
+            "median_ms": 3.08227,
+            "p95_ms": 5.340905,
+            "p99_ms": 7.262182,
+            "max_ms": 8.447724000000001,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 990624,
+              "raw_write_batches": 90399
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 148784,
+              "raw_write_batches": 59996
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 4
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 4,
+          "mbps": 530.1559699068301,
+          "wall_lower_bound_mbps": 516.0245186665205,
+          "received_bytes": 1325400064,
+          "cpu_seconds": {
+            "jp6": 29.041195999999985,
+            "jp1010": 43.60934499999999
+          },
+          "cpu_seconds_per_GiB": 58.85613448101264,
+          "allocated_bytes_per_payload_byte": 2.9982879373091684,
+          "latency": {
+            "median_ms": 3.476158,
+            "p95_ms": 7.093342,
+            "p99_ms": 9.663966,
+            "max_ms": 11.059839,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1076126,
+              "raw_write_batches": 96227
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 175058,
+              "raw_write_batches": 66946
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        }
+      ]
+    },
+    {
+      "file": "candidate-e-v4-1.json",
+      "sha256": "93073b34e9108a9a268b906301c7c162f67d75e8b5640d3787284a5d0d8762bd",
+      "passed": true,
+      "cleanup_errors": [],
+      "binary_sha256": "376635a4da2a1f201ed164a71b64a77df8577b4a42340144ff3da8c3163d580f",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1200
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 233.79852331541343,
+          "wall_lower_bound_mbps": 228.22358675569438,
+          "received_bytes": 584712192,
+          "cpu_seconds": {
+            "jp6": 40.846847,
+            "jp1010": 23.601678
+          },
+          "cpu_seconds_per_GiB": 118.35066505267875,
+          "allocated_bytes_per_payload_byte": 3.405802655129175,
+          "latency": {
+            "median_ms": 5.478645,
+            "p95_ms": 7.01865,
+            "p99_ms": 8.425975000000001,
+            "max_ms": 9.578712,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 450,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 86994,
+              "raw_write_batches": 38387
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 538194,
+              "raw_write_batches": 93054
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 2
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 243.9829482384075,
+          "wall_lower_bound_mbps": 234.79917049832068,
+          "received_bytes": 610402304,
+          "cpu_seconds": {
+            "jp6": 41.25625000000001,
+            "jp1010": 23.248742999999997
+          },
+          "cpu_seconds_per_GiB": 113.46895053811468,
+          "allocated_bytes_per_payload_byte": 3.3875104639185634,
+          "latency": {
+            "median_ms": 4.9911449999999995,
+            "p95_ms": 6.848838000000001,
+            "p99_ms": 8.624741,
+            "max_ms": 37.745927,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 450,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 99057,
+              "raw_write_batches": 43227
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 562826,
+              "raw_write_batches": 88487
+            }
+          },
+          "quic_loss": {
+            "jp6": 3,
+            "jp1010": 13
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 1,
+          "mbps": 483.9683169267323,
+          "wall_lower_bound_mbps": 471.941293175659,
+          "received_bytes": 1209925632,
+          "cpu_seconds": {
+            "jp6": 28.47130100000001,
+            "jp1010": 44.36339499999999
+          },
+          "cpu_seconds_per_GiB": 64.63674895807605,
+          "allocated_bytes_per_payload_byte": 2.866069335408542,
+          "latency": {
+            "median_ms": 2.618207,
+            "p95_ms": 3.9963339999999996,
+            "p99_ms": 4.890929,
+            "max_ms": 6.64511,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 510,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1111553,
+              "raw_write_batches": 97202
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 156362,
+              "raw_write_batches": 62362
+            }
+          },
+          "quic_loss": {
+            "jp6": 1,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 4,
+          "mbps": 474.5626236815386,
+          "wall_lower_bound_mbps": 461.2264865522752,
+          "received_bytes": 1186463744,
+          "cpu_seconds": {
+            "jp6": 29.046326000000022,
+            "jp1010": 44.97526099999999
+          },
+          "cpu_seconds_per_GiB": 66.98904559257623,
+          "allocated_bytes_per_payload_byte": 2.9758065122974378,
+          "latency": {
+            "median_ms": 3.624989,
+            "p95_ms": 6.86555,
+            "p99_ms": 8.678807,
+            "max_ms": 14.995546000000001,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1092006,
+              "raw_write_batches": 97812
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 173621,
+              "raw_write_batches": 66227
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        }
+      ]
+    },
+    {
+      "file": "candidate-e-v4-2.json",
+      "sha256": "f83660574d2566b631f71ab048c793eb1fa151983e721c8a5761dcd9233f6fc2",
+      "passed": true,
+      "cleanup_errors": [],
+      "binary_sha256": "376635a4da2a1f201ed164a71b64a77df8577b4a42340144ff3da8c3163d580f",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1200
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 229.4544114460654,
+          "wall_lower_bound_mbps": 223.99856329907496,
+          "received_bytes": 573833216,
+          "cpu_seconds": {
+            "jp6": 40.34855,
+            "jp1010": 22.648356
+          },
+          "cpu_seconds_per_GiB": 117.87817586843308,
+          "allocated_bytes_per_payload_byte": 3.409823707381902,
+          "latency": {
+            "median_ms": 5.361066,
+            "p95_ms": 7.258386000000001,
+            "p99_ms": 9.079367,
+            "max_ms": 12.755215999999999,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 83869,
+              "raw_write_batches": 37064
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 528441,
+              "raw_write_batches": 91831
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 88
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 242.95432736163934,
+          "wall_lower_bound_mbps": 235.11652653697715,
+          "received_bytes": 607911936,
+          "cpu_seconds": {
+            "jp6": 42.061335,
+            "jp1010": 23.071039000000003
+          },
+          "cpu_seconds_per_GiB": 115.04191630185424,
+          "allocated_bytes_per_payload_byte": 3.4262065221236253,
+          "latency": {
+            "median_ms": 4.839689,
+            "p95_ms": 6.635521,
+            "p99_ms": 7.879657999999999,
+            "max_ms": 9.896360999999999,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 450,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 97252,
+              "raw_write_batches": 42878
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 560254,
+              "raw_write_batches": 94096
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 3
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 1,
+          "mbps": 466.76746840779043,
+          "wall_lower_bound_mbps": 456.1168662796681,
+          "received_bytes": 1166934016,
+          "cpu_seconds": {
+            "jp6": 26.65317800000001,
+            "jp1010": 43.267739000000006
+          },
+          "cpu_seconds_per_GiB": 64.33698214804001,
+          "allocated_bytes_per_payload_byte": 2.854211040498112,
+          "latency": {
+            "median_ms": 2.685607,
+            "p95_ms": 4.061801,
+            "p99_ms": 5.064428,
+            "max_ms": 7.198479,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1072292,
+              "raw_write_batches": 91422
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 149168,
+              "raw_write_batches": 59090
+            }
+          },
+          "quic_loss": {
+            "jp6": 58,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 4,
+          "mbps": 477.7172523703681,
+          "wall_lower_bound_mbps": 463.52464336998275,
+          "received_bytes": 1194328064,
+          "cpu_seconds": {
+            "jp6": 29.520972999999998,
+            "jp1010": 42.65719899999999
+          },
+          "cpu_seconds_per_GiB": 64.89064804916593,
+          "allocated_bytes_per_payload_byte": 2.9796141975275563,
+          "latency": {
+            "median_ms": 3.977317,
+            "p95_ms": 6.354033,
+            "p99_ms": 7.677101,
+            "max_ms": 8.768451,
+            "failed": 1,
+            "within_client_command_window": true
+          },
+          "latency_samples": 389,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1099287,
+              "raw_write_batches": 99280
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 175117,
+              "raw_write_batches": 67763
+            }
+          },
+          "quic_loss": {
+            "jp6": 363,
+            "jp1010": 0
+          },
+          "session_reused": true
+        }
+      ]
+    },
+    {
+      "file": "candidate-f-v4-1.json",
+      "sha256": "8b19e902bc0634ea207eb2a63a584535716a5650be5a246684e843f248167028",
+      "passed": true,
+      "cleanup_errors": [],
+      "binary_sha256": "eee05bc29f3bddf873721c9a4669fb6e11763295620df67a3c3a6aa2bcc3b7c6",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1200
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 234.7478302090166,
+          "wall_lower_bound_mbps": 228.82663001306543,
+          "received_bytes": 587071488,
+          "cpu_seconds": {
+            "jp6": 40.867453999999995,
+            "jp1010": 23.294561
+          },
+          "cpu_seconds_per_GiB": 117.3510218530922,
+          "allocated_bytes_per_payload_byte": 3.399445159223948,
+          "latency": {
+            "median_ms": 5.364211,
+            "p95_ms": 6.983299,
+            "p99_ms": 8.560785,
+            "max_ms": 24.672187,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 450,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 87068,
+              "raw_write_batches": 38764
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 540308,
+              "raw_write_batches": 93579
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 80
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 236.9973808553994,
+          "wall_lower_bound_mbps": 229.11945484448688,
+          "received_bytes": 592969728,
+          "cpu_seconds": {
+            "jp6": 40.35907400000001,
+            "jp1010": 22.788427
+          },
+          "cpu_seconds_per_GiB": 114.34666847745359,
+          "allocated_bytes_per_payload_byte": 3.435051767094593,
+          "latency": {
+            "median_ms": 5.134042,
+            "p95_ms": 7.6651489999999995,
+            "p99_ms": 9.561205,
+            "max_ms": 37.885815,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 450,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 94927,
+              "raw_write_batches": 41656
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 546012,
+              "raw_write_batches": 93687
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 1,
+          "mbps": 448.5604033016497,
+          "wall_lower_bound_mbps": 436.6163885510899,
+          "received_bytes": 1121452032,
+          "cpu_seconds": {
+            "jp6": 27.042512000000002,
+            "jp1010": 42.551918
+          },
+          "cpu_seconds_per_GiB": 66.6336571482001,
+          "allocated_bytes_per_payload_byte": 2.8737310594128025,
+          "latency": {
+            "median_ms": 2.9359450000000002,
+            "p95_ms": 4.599169,
+            "p99_ms": 5.492482,
+            "max_ms": 6.4506499999999996,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1030032,
+              "raw_write_batches": 90944
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 146382,
+              "raw_write_batches": 59668
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 4,
+          "mbps": 459.99435239568953,
+          "wall_lower_bound_mbps": 446.2797355238703,
+          "received_bytes": 1150025728,
+          "cpu_seconds": {
+            "jp6": 28.79856500000001,
+            "jp1010": 42.377635
+          },
+          "cpu_seconds_per_GiB": 66.4549157054935,
+          "allocated_bytes_per_payload_byte": 2.9954790715777797,
+          "latency": {
+            "median_ms": 3.701839,
+            "p95_ms": 6.157498,
+            "p99_ms": 8.697992,
+            "max_ms": 15.973182,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1057500,
+              "raw_write_batches": 99756
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 171321,
+              "raw_write_batches": 67189
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 65
+          },
+          "session_reused": true
+        }
+      ]
+    },
+    {
+      "file": "candidate-v4-1.json",
+      "sha256": "2ae2ded091f591f1f6cab732fb553390065f8ca09e1030845d9278f46e4b3374",
+      "passed": true,
+      "cleanup_errors": [],
+      "binary_sha256": "3ab6748201ce570bb94e24f72c8fc61ad2b83ee2abfb8ec29f2107885b69aeed",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1200
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 238.87299827305466,
+          "wall_lower_bound_mbps": 232.60893301179854,
+          "received_bytes": 597426176,
+          "cpu_seconds": {
+            "jp6": 41.109261999999994,
+            "jp1010": 23.268572
+          },
+          "cpu_seconds_per_GiB": 115.70496185344449,
+          "allocated_bytes_per_payload_byte": 3.920817691121723,
+          "latency": {
+            "median_ms": 5.408179,
+            "p95_ms": 6.9827200000000005,
+            "p99_ms": 9.891862,
+            "max_ms": 21.860426,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 90114,
+              "raw_write_batches": 39374
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 550064,
+              "raw_write_batches": 90881
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 245.9484393294143,
+          "wall_lower_bound_mbps": 237.0951142266823,
+          "received_bytes": 615383040,
+          "cpu_seconds": {
+            "jp6": 42.257263,
+            "jp1010": 23.800606999999996
+          },
+          "cpu_seconds_per_GiB": 115.26007902875398,
+          "allocated_bytes_per_payload_byte": 3.906554434779353,
+          "latency": {
+            "median_ms": 4.972879000000001,
+            "p95_ms": 6.710528,
+            "p99_ms": 8.984100999999999,
+            "max_ms": 14.767012,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 100484,
+              "raw_write_batches": 43948
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 566958,
+              "raw_write_batches": 87008
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 1,
+          "mbps": 464.7800803327871,
+          "wall_lower_bound_mbps": 454.12602350298255,
+          "received_bytes": 1161953280,
+          "cpu_seconds": {
+            "jp6": 27.051412,
+            "jp1010": 43.87026699999999
+          },
+          "cpu_seconds_per_GiB": 65.5375515361534,
+          "allocated_bytes_per_payload_byte": 3.1560806644480577,
+          "latency": {
+            "median_ms": 2.717138,
+            "p95_ms": 4.897331,
+            "p99_ms": 6.9765060000000005,
+            "max_ms": 28.879826,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 510,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1068092,
+              "raw_write_batches": 90852
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 149334,
+              "raw_write_batches": 59440
+            }
+          },
+          "quic_loss": {
+            "jp6": 221,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 4,
+          "mbps": 438.76451729932256,
+          "wall_lower_bound_mbps": 426.9698531351386,
+          "received_bytes": 1096941568,
+          "cpu_seconds": {
+            "jp6": 26.97579500000002,
+            "jp1010": 40.81180199999997
+          },
+          "cpu_seconds_per_GiB": 66.35392455777273,
+          "allocated_bytes_per_payload_byte": 3.2976071957918545,
+          "latency": {
+            "median_ms": 3.920196,
+            "p95_ms": 7.211474,
+            "p99_ms": 9.281153,
+            "max_ms": 12.209985,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 450,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1009445,
+              "raw_write_batches": 93434
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 163003,
+              "raw_write_batches": 63363
+            }
+          },
+          "quic_loss": {
+            "jp6": 2,
+            "jp1010": 6
+          },
+          "session_reused": true
+        }
+      ]
+    },
+    {
+      "file": "candidate-v4-2.json",
+      "sha256": "affe5e0930c5bf79011bf118f79629055c42b16c410b5e8a0671b5ad8ae921ec",
+      "passed": true,
+      "cleanup_errors": [],
+      "binary_sha256": "3ab6748201ce570bb94e24f72c8fc61ad2b83ee2abfb8ec29f2107885b69aeed",
+      "settings": {
+        "mib_per_stream": 1,
+        "parallel": 1,
+        "rounds": 1,
+        "initial_packet_size": 1200
+      },
+      "rows": [
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 1,
+          "mbps": 229.3121824196326,
+          "wall_lower_bound_mbps": 223.83339367913868,
+          "received_bytes": 573440000,
+          "cpu_seconds": {
+            "jp6": 40.409164,
+            "jp1010": 23.279202
+          },
+          "cpu_seconds_per_GiB": 119.2537358336,
+          "allocated_bytes_per_payload_byte": 3.98140791015625,
+          "latency": {
+            "median_ms": 5.350345,
+            "p95_ms": 7.086702000000001,
+            "p99_ms": 9.117612000000001,
+            "max_ms": 11.166819,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 85774,
+              "raw_write_batches": 37730
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 527782,
+              "raw_write_batches": 93103
+            }
+          },
+          "quic_loss": {
+            "jp6": 22,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp1010 -> jp6",
+          "flows": 4,
+          "mbps": 244.17000230910259,
+          "wall_lower_bound_mbps": 237.05950054374614,
+          "received_bytes": 610926592,
+          "cpu_seconds": {
+            "jp6": 41.722865999999996,
+            "jp1010": 23.874452999999995
+          },
+          "cpu_seconds_per_GiB": 115.29140468740613,
+          "allocated_bytes_per_payload_byte": 3.949169801402261,
+          "latency": {
+            "median_ms": 5.095187,
+            "p95_ms": 7.074508,
+            "p99_ms": 8.35705,
+            "max_ms": 11.989984,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 100098,
+              "raw_write_batches": 43808
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 563264,
+              "raw_write_batches": 91178
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 1,
+          "mbps": 474.1103433331138,
+          "wall_lower_bound_mbps": 462.55655683269975,
+          "received_bytes": 1185284096,
+          "cpu_seconds": {
+            "jp6": 28.447239999999994,
+            "jp1010": 43.152946
+          },
+          "cpu_seconds_per_GiB": 64.86218331438681,
+          "allocated_bytes_per_payload_byte": 3.191578711607044,
+          "latency": {
+            "median_ms": 2.819168,
+            "p95_ms": 4.667112,
+            "p99_ms": 6.204802,
+            "max_ms": 11.787209,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 510,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1089049,
+              "raw_write_batches": 94819
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 158581,
+              "raw_write_batches": 63607
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 0
+          },
+          "session_reused": true
+        },
+        {
+          "direction": "jp6 -> jp1010",
+          "flows": 4,
+          "mbps": 481.503763906745,
+          "wall_lower_bound_mbps": 468.77508018808146,
+          "received_bytes": 1203765248,
+          "cpu_seconds": {
+            "jp6": 28.485636999999997,
+            "jp1010": 44.064284999999984
+          },
+          "cpu_seconds_per_GiB": 64.7135192752613,
+          "allocated_bytes_per_payload_byte": 3.263709251058226,
+          "latency": {
+            "median_ms": 3.656622,
+            "p95_ms": 5.673616,
+            "p99_ms": 7.362701,
+            "max_ms": 9.975265,
+            "failed": 0,
+            "within_client_command_window": true
+          },
+          "latency_samples": 480,
+          "counters": {
+            "jp6": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 1107857,
+              "raw_write_batches": 96093
+            },
+            "jp1010": {
+              "fragmented_packets": 0,
+              "raw_drops": 0,
+              "receive_drops": 0,
+              "send_drops": 0,
+              "send_errors": 0,
+              "quic_receive_queue_drops": 0,
+              "raw_batch_packets": 179288,
+              "raw_write_batches": 69004
+            }
+          },
+          "quic_loss": {
+            "jp6": 0,
+            "jp1010": 101
+          },
+          "session_reused": true
+        }
+      ]
+    }
+  ],
+  "local": {
+    "local-500m": [
+      {
+        "label": "baseline-1",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 49.300580316979904,
+        "process_user_seconds": 38.17679799999999,
+        "process_sys_seconds": 9.466136000000002,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 186.37681691335493,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.768814577,
+            "seconds": 23.044536156,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 181.91962694297794,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.514213105,
+            "seconds": 23.609147447,
+            "sender_before": {
+              "MinRTT": 60040427,
+              "LatestRTT": 61537565,
+              "SmoothedRTT": 60752000,
+              "MeanDeviation": 504000,
+              "BytesSent": 10582430,
+              "PacketsSent": 173750,
+              "BytesReceived": 581749271,
+              "PacketsReceived": 543724,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 181666,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 216558
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-1",
+        "exit": 0,
+        "binary_sha256": "5c004b78f439f6a774692f52e4a9a5120e618f65081a6108c985b9eaab0e895a",
+        "wall_seconds": 54.46957681002095,
+        "process_user_seconds": 40.383482000000015,
+        "process_sys_seconds": 9.731741999999997,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 156.74807192242977,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.771197376,
+            "seconds": 27.400447376,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              353,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 176.59875050283068,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.510692149,
+            "seconds": 24.320485189,
+            "sender_before": {
+              "MinRTT": 60039782,
+              "LatestRTT": 60714024,
+              "SmoothedRTT": 60643000,
+              "MeanDeviation": 160000,
+              "BytesSent": 11894362,
+              "PacketsSent": 192412,
+              "BytesReceived": 583587296,
+              "PacketsReceived": 554447,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 291567,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 2,
+              "ApplicationLimitedRTTSamples": 237879
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-2",
+        "exit": 0,
+        "binary_sha256": "5c004b78f439f6a774692f52e4a9a5120e618f65081a6108c985b9eaab0e895a",
+        "wall_seconds": 52.82832369598327,
+        "process_user_seconds": 40.630746999999985,
+        "process_sys_seconds": 9.686639,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 167.57613162102862,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 1.019919333,
+            "seconds": 25.629946547,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 175.0484090840282,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.520380226,
+            "seconds": 24.535883065,
+            "sender_before": {
+              "MinRTT": 60040401,
+              "LatestRTT": 61574944,
+              "SmoothedRTT": 60738000,
+              "MeanDeviation": 475000,
+              "BytesSent": 11728602,
+              "PacketsSent": 191792,
+              "BytesReceived": 582421114,
+              "PacketsReceived": 554526,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 174207,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 241611
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-2",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 53.22072804096388,
+        "process_user_seconds": 39.771811000000014,
+        "process_sys_seconds": 10.252673000000001,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 167.09934204483613,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 1.02081358,
+            "seconds": 25.703077244,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 172.41306977282346,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.566392576,
+            "seconds": 24.910914826,
+            "sender_before": {
+              "MinRTT": 60034471,
+              "LatestRTT": 61669700,
+              "SmoothedRTT": 60710000,
+              "MeanDeviation": 647000,
+              "BytesSent": 11919795,
+              "PacketsSent": 194261,
+              "BytesReceived": 582442126,
+              "PacketsReceived": 554139,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 183002,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 245045
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-3",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 36.718504349992145,
+        "process_user_seconds": 40.274343999999985,
+        "process_sys_seconds": 9.724572000000002,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 186.63119049001966,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.770405572,
+            "seconds": 23.013127038,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 390.76583264059593,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.517154983,
+            "seconds": 10.99115362,
+            "sender_before": {
+              "MinRTT": 60039537,
+              "LatestRTT": 60350523,
+              "SmoothedRTT": 60555000,
+              "MeanDeviation": 225000,
+              "BytesSent": 10722575,
+              "PacketsSent": 176144,
+              "BytesReceived": 581964292,
+              "PacketsReceived": 546842,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 179395,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 2,
+              "ApplicationLimitedRTTSamples": 220347
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-3",
+        "exit": 0,
+        "binary_sha256": "5c004b78f439f6a774692f52e4a9a5120e618f65081a6108c985b9eaab0e895a",
+        "wall_seconds": 52.7164988029981,
+        "process_user_seconds": 40.53135600000002,
+        "process_sys_seconds": 9.413017999999994,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 171.10653662643978,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.795049101,
+            "seconds": 25.101129277,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 171.9802900727614,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.56818603,
+            "seconds": 24.973601883,
+            "sender_before": {
+              "MinRTT": 60036560,
+              "LatestRTT": 61673812,
+              "SmoothedRTT": 60684000,
+              "MeanDeviation": 607000,
+              "BytesSent": 11137755,
+              "PacketsSent": 182250,
+              "BytesReceived": 582243795,
+              "PacketsReceived": 551712,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 173844,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 2,
+              "ApplicationLimitedRTTSamples": 226061
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    ],
+    "local-E-500m": [
+      {
+        "label": "baseline-1",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 51.80417998600751,
+        "process_user_seconds": 36.974258,
+        "process_sys_seconds": 9.56579,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 174.3404366806313,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.781399631,
+            "seconds": 24.635519893,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 175.04973484809145,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.52157281,
+            "seconds": 24.535697239,
+            "sender_before": {
+              "MinRTT": 60038496,
+              "LatestRTT": 61007187,
+              "SmoothedRTT": 60775000,
+              "MeanDeviation": 252000,
+              "BytesSent": 11236619,
+              "PacketsSent": 183145,
+              "BytesReceived": 582196232,
+              "PacketsReceived": 550233,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 188967,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 230818
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-1",
+        "exit": 0,
+        "binary_sha256": "63160dd921e0bd8413c13ca911de28200bbddd3bfdb7df5c5bef54a439abe101",
+        "wall_seconds": 52.44829473498976,
+        "process_user_seconds": 36.527004999999996,
+        "process_sys_seconds": 9.555077,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 168.41459382277293,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.859772207,
+            "seconds": 25.502346314,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 176.2479231473942,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.520523072,
+            "seconds": 24.368895924,
+            "sender_before": {
+              "MinRTT": 60034837,
+              "LatestRTT": 60730938,
+              "SmoothedRTT": 60352000,
+              "MeanDeviation": 224000,
+              "BytesSent": 11277529,
+              "PacketsSent": 184328,
+              "BytesReceived": 582334581,
+              "PacketsReceived": 552844,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 171847,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 2,
+              "ApplicationLimitedRTTSamples": 227936
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-2",
+        "exit": 0,
+        "binary_sha256": "63160dd921e0bd8413c13ca911de28200bbddd3bfdb7df5c5bef54a439abe101",
+        "wall_seconds": 49.039740926993545,
+        "process_user_seconds": 35.60432800000001,
+        "process_sys_seconds": 8.593879000000001,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 186.5213574928605,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.768251633,
+            "seconds": 23.026678305,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 182.79067188876658,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.517669273,
+            "seconds": 23.496643738,
+            "sender_before": {
+              "MinRTT": 60040377,
+              "LatestRTT": 60531480,
+              "SmoothedRTT": 60500000,
+              "MeanDeviation": 303000,
+              "BytesSent": 10407207,
+              "PacketsSent": 170768,
+              "BytesReceived": 581853040,
+              "PacketsReceived": 545536,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 163577,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 212065
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-2",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 51.54372043098556,
+        "process_user_seconds": 38.20737,
+        "process_sys_seconds": 9.197321999999996,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 168.82595016111327,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.853931234,
+            "seconds": 25.440208048,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              3,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 182.53407998889725,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.517734716,
+            "seconds": 23.529673452,
+            "sender_before": {
+              "MinRTT": 60037899,
+              "LatestRTT": 60512361,
+              "SmoothedRTT": 60478000,
+              "MeanDeviation": 153000,
+              "BytesSent": 11709910,
+              "PacketsSent": 190589,
+              "BytesReceived": 582336558,
+              "PacketsReceived": 552376,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 176669,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 2,
+              "ApplicationLimitedRTTSamples": 236008
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-3",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 52.85618534300011,
+        "process_user_seconds": 38.436406000000005,
+        "process_sys_seconds": 9.542454,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 170.0184907897452,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.857982998,
+            "seconds": 25.2617658,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 171.98085516565746,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.56667527,
+            "seconds": 24.973519825,
+            "sender_before": {
+              "MinRTT": 60040482,
+              "LatestRTT": 60372754,
+              "SmoothedRTT": 60393000,
+              "MeanDeviation": 235000,
+              "BytesSent": 11801367,
+              "PacketsSent": 192186,
+              "BytesReceived": 582365033,
+              "PacketsReceived": 553091,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 179898,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 242458
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-3",
+        "exit": 0,
+        "binary_sha256": "63160dd921e0bd8413c13ca911de28200bbddd3bfdb7df5c5bef54a439abe101",
+        "wall_seconds": 52.5095348850009,
+        "process_user_seconds": 37.00284399999998,
+        "process_sys_seconds": 9.130950000000006,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 168.74850725559446,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.85540995,
+            "seconds": 25.451883195,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 175.28400034743976,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.52117431,
+            "seconds": 24.502905499,
+            "sender_before": {
+              "MinRTT": 60031902,
+              "LatestRTT": 61257558,
+              "SmoothedRTT": 60543000,
+              "MeanDeviation": 415000,
+              "BytesSent": 11259544,
+              "PacketsSent": 184086,
+              "BytesReceived": 582328680,
+              "PacketsReceived": 552585,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 177926,
+              "BytesInFlight": 199,
+              "SlowStart": true,
+              "SlowStartExits": 2,
+              "ApplicationLimitedRTTSamples": 227019
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    ],
+    "local-E-unshaped": [
+      {
+        "label": "baseline-1",
+        "exit": 0,
+        "binary_sha256": "5c004b78f439f6a774692f52e4a9a5120e618f65081a6108c985b9eaab0e895a",
+        "wall_seconds": 5.550991949974559,
+        "process_user_seconds": 15.577009,
+        "process_sys_seconds": 3.021034,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2477.2028386849724,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.011184824,
+            "seconds": 1.73379718,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2469.76902978888,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.055325271,
+            "seconds": 1.7390157720000001,
+            "sender_before": {
+              "MinRTT": 23426,
+              "LatestRTT": 531257,
+              "SmoothedRTT": 167000,
+              "MeanDeviation": 153000,
+              "BytesSent": 1534996,
+              "PacketsSent": 25755,
+              "BytesReceived": 580959187,
+              "PacketsReceived": 524911,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 17636,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 29735
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-1",
+        "exit": 0,
+        "binary_sha256": "63160dd921e0bd8413c13ca911de28200bbddd3bfdb7df5c5bef54a439abe101",
+        "wall_seconds": 5.448256179981399,
+        "process_user_seconds": 15.674201,
+        "process_sys_seconds": 2.6825099999999997,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2562.8769080064217,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.0152059,
+            "seconds": 1.6758383060000002,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2486.225986657005,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.050951217,
+            "seconds": 1.727504788,
+            "sender_before": {
+              "MinRTT": 31463,
+              "LatestRTT": 271934,
+              "SmoothedRTT": 168000,
+              "MeanDeviation": 85000,
+              "BytesSent": 1481623,
+              "PacketsSent": 24926,
+              "BytesReceived": 580956876,
+              "PacketsReceived": 524914,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 15278,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 28812
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-2",
+        "exit": 0,
+        "binary_sha256": "63160dd921e0bd8413c13ca911de28200bbddd3bfdb7df5c5bef54a439abe101",
+        "wall_seconds": 5.554366975964513,
+        "process_user_seconds": 15.473014,
+        "process_sys_seconds": 2.8495619999999997,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2531.26098917092,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.012456866,
+            "seconds": 1.696769837,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2481.1966888771353,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.061668233,
+            "seconds": 1.731006379,
+            "sender_before": {
+              "MinRTT": 28770,
+              "LatestRTT": 254904,
+              "SmoothedRTT": 152000,
+              "MeanDeviation": 70000,
+              "BytesSent": 1502004,
+              "PacketsSent": 25283,
+              "BytesReceived": 580957442,
+              "PacketsReceived": 524916,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 16060,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 29226
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-2",
+        "exit": 0,
+        "binary_sha256": "5c004b78f439f6a774692f52e4a9a5120e618f65081a6108c985b9eaab0e895a",
+        "wall_seconds": 5.50295862701023,
+        "process_user_seconds": 15.799076,
+        "process_sys_seconds": 2.8229439999999997,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2620.530888188111,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.009202642,
+            "seconds": 1.638968392,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2406.981499243953,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.0529292,
+            "seconds": 1.784379023,
+            "sender_before": {
+              "MinRTT": 25856,
+              "LatestRTT": 268559,
+              "SmoothedRTT": 171000,
+              "MeanDeviation": 96000,
+              "BytesSent": 1495875,
+              "PacketsSent": 25101,
+              "BytesReceived": 580955721,
+              "PacketsReceived": 524816,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 16120,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 29124
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-3",
+        "exit": 0,
+        "binary_sha256": "5c004b78f439f6a774692f52e4a9a5120e618f65081a6108c985b9eaab0e895a",
+        "wall_seconds": 5.510057670006063,
+        "process_user_seconds": 15.570200000000007,
+        "process_sys_seconds": 2.9643180000000005,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2590.5594139117184,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.012099539,
+            "seconds": 1.657930435,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2420.0653108421084,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.054717013,
+            "seconds": 1.7747319780000002,
+            "sender_before": {
+              "MinRTT": 24552,
+              "LatestRTT": 227297,
+              "SmoothedRTT": 152000,
+              "MeanDeviation": 83000,
+              "BytesSent": 1487932,
+              "PacketsSent": 25205,
+              "BytesReceived": 580957006,
+              "PacketsReceived": 524909,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 13944,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 29276
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-3",
+        "exit": 0,
+        "binary_sha256": "63160dd921e0bd8413c13ca911de28200bbddd3bfdb7df5c5bef54a439abe101",
+        "wall_seconds": 5.499910362006631,
+        "process_user_seconds": 15.755505,
+        "process_sys_seconds": 2.6931759999999993,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2539.548631971247,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.011885883,
+            "seconds": 1.691232545,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2467.7410730421575,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.055466152,
+            "seconds": 1.7404448719999999,
+            "sender_before": {
+              "MinRTT": 25979,
+              "LatestRTT": 245534,
+              "SmoothedRTT": 174000,
+              "MeanDeviation": 83000,
+              "BytesSent": 1491342,
+              "PacketsSent": 25057,
+              "BytesReceived": 580957539,
+              "PacketsReceived": 524913,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 15258,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 29048
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    ],
+    "local-selected-unshaped": [
+      {
+        "label": "baseline-1",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 6.0149480599793606,
+        "process_user_seconds": 17.231235,
+        "process_sys_seconds": 3.49851,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2256.3743671963693,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.011523056,
+            "seconds": 1.903481691,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2188.9114323057506,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.050964812,
+            "seconds": 1.962147592,
+            "sender_before": {
+              "MinRTT": 30897,
+              "LatestRTT": 281375,
+              "SmoothedRTT": 137000,
+              "MeanDeviation": 86000,
+              "BytesSent": 1968456,
+              "PacketsSent": 34250,
+              "BytesReceived": 580965761,
+              "PacketsReceived": 524701,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 14668,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 39930
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-1",
+        "exit": 0,
+        "binary_sha256": "63160dd921e0bd8413c13ca911de28200bbddd3bfdb7df5c5bef54a439abe101",
+        "wall_seconds": 5.814105420024134,
+        "process_user_seconds": 15.373079999999998,
+        "process_sys_seconds": 3.013893,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2293.325679928439,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.013459472,
+            "seconds": 1.872811757,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              23,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2444.0775037684652,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.054781917,
+            "seconds": 1.7572958669999998,
+            "sender_before": {
+              "MinRTT": 23206,
+              "LatestRTT": 522008,
+              "SmoothedRTT": 247000,
+              "MeanDeviation": 194000,
+              "BytesSent": 1509374,
+              "PacketsSent": 25957,
+              "BytesReceived": 580965565,
+              "PacketsReceived": 525175,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 36934,
+              "BytesInFlight": 0,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 29844
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-2",
+        "exit": 0,
+        "binary_sha256": "63160dd921e0bd8413c13ca911de28200bbddd3bfdb7df5c5bef54a439abe101",
+        "wall_seconds": 5.860947592998855,
+        "process_user_seconds": 15.351865000000004,
+        "process_sys_seconds": 3.158639,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2333.4445870594695,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.015717401,
+            "seconds": 1.840612509,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2338.1815574991906,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.059897463,
+            "seconds": 1.836883574,
+            "sender_before": {
+              "MinRTT": 29013,
+              "LatestRTT": 412771,
+              "SmoothedRTT": 168000,
+              "MeanDeviation": 107000,
+              "BytesSent": 1473793,
+              "PacketsSent": 25225,
+              "BytesReceived": 580954918,
+              "PacketsReceived": 524919,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 13150,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 28963
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-2",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 6.354333371971734,
+        "process_user_seconds": 17.709335999999993,
+        "process_sys_seconds": 3.7835680000000007,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2092.3229268579485,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.011088051,
+            "seconds": 2.052726776,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2052.7518328349374,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.060318597,
+            "seconds": 2.092297387,
+            "sender_before": {
+              "MinRTT": 30535,
+              "LatestRTT": 238216,
+              "SmoothedRTT": 113000,
+              "MeanDeviation": 57000,
+              "BytesSent": 1953609,
+              "PacketsSent": 34332,
+              "BytesReceived": 580957302,
+              "PacketsReceived": 524469,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 18256,
+              "BytesInFlight": 0,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 39243
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-3",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 6.303705990023445,
+        "process_user_seconds": 17.307648999999998,
+        "process_sys_seconds": 3.7515719999999977,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2091.9187282245975,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.009371547,
+            "seconds": 2.053123402,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2058.522482746977,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.060740502,
+            "seconds": 2.086432056,
+            "sender_before": {
+              "MinRTT": 32289,
+              "LatestRTT": 264952,
+              "SmoothedRTT": 150000,
+              "MeanDeviation": 78000,
+              "BytesSent": 1945702,
+              "PacketsSent": 34357,
+              "BytesReceived": 580963981,
+              "PacketsReceived": 524697,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 16408,
+              "BytesInFlight": 0,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 39596
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-3",
+        "exit": 0,
+        "binary_sha256": "63160dd921e0bd8413c13ca911de28200bbddd3bfdb7df5c5bef54a439abe101",
+        "wall_seconds": 6.306745253968984,
+        "process_user_seconds": 15.52425500000001,
+        "process_sys_seconds": 3.0718260000000015,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2432.055246387419,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.011090058,
+            "seconds": 1.76598262,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 1774.6682206157316,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.06441175,
+            "seconds": 2.420152255,
+            "sender_before": {
+              "MinRTT": 32156,
+              "LatestRTT": 257482,
+              "SmoothedRTT": 154000,
+              "MeanDeviation": 94000,
+              "BytesSent": 1474194,
+              "PacketsSent": 25086,
+              "BytesReceived": 580955490,
+              "PacketsReceived": 524868,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 13396,
+              "BytesInFlight": 0,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 28880
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              6
+            ]
+          }
+        ]
+      }
+    ],
+    "local-unshaped": [
+      {
+        "label": "baseline-1",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 6.0582272710162215,
+        "process_user_seconds": 17.826673,
+        "process_sys_seconds": 3.493678,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2210.7419735840726,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.010935549,
+            "seconds": 1.9427718600000001,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2198.711721530531,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.057860101,
+            "seconds": 1.953401737,
+            "sender_before": {
+              "MinRTT": 30050,
+              "LatestRTT": 254337,
+              "SmoothedRTT": 123000,
+              "MeanDeviation": 71000,
+              "BytesSent": 1991178,
+              "PacketsSent": 34517,
+              "BytesReceived": 580964600,
+              "PacketsReceived": 524637,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 13950,
+              "BytesInFlight": 0,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 40064
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-1",
+        "exit": 0,
+        "binary_sha256": "5c004b78f439f6a774692f52e4a9a5120e618f65081a6108c985b9eaab0e895a",
+        "wall_seconds": 5.705354908015579,
+        "process_user_seconds": 16.250549,
+        "process_sys_seconds": 3.0556,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2536.2060660786674,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.01034661,
+            "seconds": 1.693461487,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2336.993481678339,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.057186318,
+            "seconds": 1.837817405,
+            "sender_before": {
+              "MinRTT": 29217,
+              "LatestRTT": 270195,
+              "SmoothedRTT": 154000,
+              "MeanDeviation": 70000,
+              "BytesSent": 1512170,
+              "PacketsSent": 25326,
+              "BytesReceived": 580954954,
+              "PacketsReceived": 524758,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 19154,
+              "BytesInFlight": 0,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 29361
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-2",
+        "exit": 0,
+        "binary_sha256": "5c004b78f439f6a774692f52e4a9a5120e618f65081a6108c985b9eaab0e895a",
+        "wall_seconds": 5.706395873974543,
+        "process_user_seconds": 16.347433000000002,
+        "process_sys_seconds": 2.937067999999999,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2380.1536140007574,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.012084733,
+            "seconds": 1.804491639,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2495.8283471785007,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.056158999,
+            "seconds": 1.720858448,
+            "sender_before": {
+              "MinRTT": 30224,
+              "LatestRTT": 249090,
+              "SmoothedRTT": 164000,
+              "MeanDeviation": 85000,
+              "BytesSent": 1533556,
+              "PacketsSent": 25641,
+              "BytesReceived": 580958982,
+              "PacketsReceived": 524895,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 13960,
+              "BytesInFlight": 0,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 29501
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-2",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 6.155978608003352,
+        "process_user_seconds": 17.576926,
+        "process_sys_seconds": 3.748776000000001,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2201.545483575321,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.011313768,
+            "seconds": 1.950887378,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2176.5272361452307,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.055489285,
+            "seconds": 1.973311992,
+            "sender_before": {
+              "MinRTT": 28588,
+              "LatestRTT": 237651,
+              "SmoothedRTT": 103000,
+              "MeanDeviation": 60000,
+              "BytesSent": 1977021,
+              "PacketsSent": 34404,
+              "BytesReceived": 580967453,
+              "PacketsReceived": 524716,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 15888,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 40088
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "baseline-3",
+        "exit": 0,
+        "binary_sha256": "e7ca132574f985b01d980dfc5eb666b3cfe38fe04017e9a9367f66969bd63710",
+        "wall_seconds": 6.106499571993481,
+        "process_user_seconds": 17.873194999999996,
+        "process_sys_seconds": 3.576080000000001,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2164.0840630913394,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.012068297,
+            "seconds": 1.984658253,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2181.581215918715,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.057691382,
+            "seconds": 1.968740501,
+            "sender_before": {
+              "MinRTT": 30621,
+              "LatestRTT": 248989,
+              "SmoothedRTT": 104000,
+              "MeanDeviation": 62000,
+              "BytesSent": 1998377,
+              "PacketsSent": 34650,
+              "BytesReceived": 580976134,
+              "PacketsReceived": 524829,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 13810,
+              "BytesInFlight": 0,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 40080
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "label": "candidate-3",
+        "exit": 0,
+        "binary_sha256": "5c004b78f439f6a774692f52e4a9a5120e618f65081a6108c985b9eaab0e895a",
+        "wall_seconds": 5.8114012440200895,
+        "process_user_seconds": 16.442290999999997,
+        "process_sys_seconds": 3.074050999999997,
+        "passed": true,
+        "transfers": [
+          {
+            "direction": "ordinary -> declared server",
+            "mbps": 2419.373820267798,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.011056805,
+            "seconds": 1.775239221,
+            "sender_before": {},
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "direction": "declared server -> ordinary",
+            "mbps": 2344.3470936151252,
+            "bytes": 536870912,
+            "sha256": "4d0ff2b892d1567a76ec8a24e19605a841aa77d2be88606faee6f8bf541771b8",
+            "first_mib_seconds": 0.064895775,
+            "seconds": 1.832052646,
+            "sender_before": {
+              "MinRTT": 29261,
+              "LatestRTT": 540248,
+              "SmoothedRTT": 169000,
+              "MeanDeviation": 120000,
+              "BytesSent": 1518792,
+              "PacketsSent": 25189,
+              "BytesReceived": 580957451,
+              "PacketsReceived": 524875,
+              "BytesLost": 0,
+              "PacketsLost": 0,
+              "CongestionControl": "bbr-v3",
+              "CongestionWindow": 13248,
+              "BytesInFlight": 83,
+              "SlowStart": false,
+              "SlowStartExits": 1,
+              "ApplicationLimitedRTTSamples": 28868
+            },
+            "controllers": [
+              "bbr-v3",
+              "bbr-v3"
+            ],
+            "link_drop_delta": [
+              0,
+              0
+            ],
+            "quic_loss_delta": [
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "cleanup": {
+    "hosts": [
+      {
+        "host": "100.64.0.11",
+        "readback": "MainPID=696\n1.102.4\n  long version: 1.102.4-73-t1f00235ed\n  go version: go1.26.6\n"
+      },
+      {
+        "host": "100.64.0.36",
+        "readback": "MainPID=2251338\n1.102.2\n  tailscale commit: 36f560220bfb381b2850ed7ed934e473b1958d86-dirty\n  long version: 1.102.2-10-t36f560220\n  go version: go1.26.5\nqbench-20260906065821-j\n"
+      }
+    ],
+    "note": "No current quicwg or qbench units remain. Existing 20260906 namespace preserved."
+  },
+  "evidence_root": "/workspace/tailscale-performance-results/20260929-500m",
+  "evidence_sha256": {
+    "D-alloc-bench.txt": "cc88fb8631185f39cd4a406f47e6640ba90ba9716426ddf5aebe706ef2668cea",
+    "E-alloc-bench.txt": "784092c98d371179fc49701b17f3198f2c58e11d8cafb9f28dcb731f8e5dde14",
+    "E-capability-race.txt": "129bb4089ba29ff38b9f6fe40b5ef3d5aa2e901e92f34fde2ad743b0832a87d0",
+    "E-library-short.txt": "88f7e30e2a736c76f988dabf748e8fc18dde003b3e206ea6c709a16844f1e29d",
+    "E-local-derp.json": "871053b8fb0552758612c0c7cf02b5676860ea0f89caa79490c5ed059bf0ab8d",
+    "E-local-derp.log": "8f91613749a6ab09943c31b6501b24b3d510569698c26cab6607320e840bf644",
+    "E-race.txt": "74776e4019f86030753224314fefbc15842bf624faebd95b18d5bc95af2868a8",
+    "F-app-race.txt": "33f92bb7415a918c867d4b1939f912f8771636917c7061fb23a607ddf3679e1e",
+    "F-pool_reuse_linux_test.go": "b421bbbf1493aa381a77acdcafa900fa9553e7ea8eb8458bb81885ec8bcfa5fb",
+    "F-tsnet-race.txt": "511364cf016715b6635db02f1a966b03c9396348203cc9febb7f4d55ea7b697c",
+    "candidate-overlay.json": "bcd91759cabd6ad0e3568aab9e457ab1f760730c5de37f9df06ffff65bd48ba0",
+    "cleanup-readback.json": "ca131a4c8042a8fd96ae939cddf5f5098212b61b5b8f6c6f7422996df7a50997",
+    "final-pinned-packages.txt": "cf69edbaa2ef67cdaafa9cc050bb8f66dfa0f815889af0c71ea064f7651071cb",
+    "final-pinned-race.txt": "172680f570bbaf08a0f86e9024ce2998835b35cc7c05ef6d7b1b9fa5bb0472ee",
+    "local-500m/baseline-1.json": "1c3d756fd8006650b6309819f7a4315bc3ee4c15f80166aae374dad1d228776a",
+    "local-500m/baseline-1.log": "5b47cf6fa46d629e3e163eb6e595a8591eed7e61cc578f17c6556c348568f2fe",
+    "local-500m/baseline-2.json": "fdcecf109c34f2a13231696d29bc88141dcd0abfea7ee8064b12e9049c92fa2e",
+    "local-500m/baseline-2.log": "b8bee361b19b11b257a244d8ae173e6e18860873357e7df3e2d6d84ce7645326",
+    "local-500m/baseline-3.json": "5dcec105c1c7bcb87a0d39d0d2bc8171469e13a314464653dd5a44cc0ccc5f20",
+    "local-500m/baseline-3.log": "adcc8b5a01358a32fc700c0b27b219a840cc599b5adfb3983f252062d3790032",
+    "local-500m/candidate-1.json": "b26cd335721ddf904371dda89d772a87d66f5a527108d5b7d1af9ca2debd15fb",
+    "local-500m/candidate-1.log": "8315bf08f2aaae76979f39d1e8c35fda7a20a55884f8e0577f09d061d6c47881",
+    "local-500m/candidate-2.json": "86c8eddf0431dadcc37e5bf14cfa70d85508c61d942df8ecff4b26fe76f07b2a",
+    "local-500m/candidate-2.log": "a05cfa492d52d4205aad0deaf5deaf0c3f6fc2c2a291590d13ec7b69c629a0ef",
+    "local-500m/candidate-3.json": "9c01d663ea1b100ec351b0522fec9218aa18c21a929b65270d4211981dcdba94",
+    "local-500m/candidate-3.log": "12bc69c95330fd6e18504ed6390fddca1ccf833ba512baa4299385c0c8f235f2",
+    "local-500m/summary.json": "f72510b8fec05299bbd1ec2b9c09682a4fec7ce83088abf5ffc377d1931fd30d",
+    "local-E-500m/baseline-1.json": "18d284c1cd9724ce0c84a3f9a5afbeb233b38a5738305331990eca7142338428",
+    "local-E-500m/baseline-1.log": "a42143b23fa7e287de6808aa29a56ee5b0a001478dde7b17249125ea1bd312d4",
+    "local-E-500m/baseline-2.json": "545f35a8d4176b3a59249ad419b5e741c600dc84bd13475c9100eacfcb9f9217",
+    "local-E-500m/baseline-2.log": "5dec5a61531d3b357d4cc1364bced8c7cb0e71a1b7ab74007eaeb68e4c1d5ad8",
+    "local-E-500m/baseline-3.json": "a106a680aba5cab72d13d1e6300ed10d38c07568b3a755188dfcc42a26bf1bfa",
+    "local-E-500m/baseline-3.log": "67ca61e6bc98f5df7c48c43875d70ca86301102276898dd65a03d20dae9a9723",
+    "local-E-500m/candidate-1.json": "586a97252137b4ddc0d97c269713662351f5b1c406de0cef2bb1fd6e313a9b81",
+    "local-E-500m/candidate-1.log": "b702e21b041532b4ef24c810681afcf59187a07c98354e77f88454d2f0dd0d8e",
+    "local-E-500m/candidate-2.json": "6a1e60b5524464b1e0a4b804d91dd427b2202310af8b3e9004aaa8792b11af2e",
+    "local-E-500m/candidate-2.log": "e9f352a69fe05790ff0cf0f1468830367ed69251221dbb5c59e5e0ac7abdcd70",
+    "local-E-500m/candidate-3.json": "34af2c746f0f7af79edd08ea9456982a45203e7e0ecf68a96693ae42a2deb8a9",
+    "local-E-500m/candidate-3.log": "6b763bb35518ad202f1810d5b77cf19f344f39e04fd94b26f59a6bf85a8d3204",
+    "local-E-500m/summary.json": "a18491efd0b36125edb6c52596bf37f5550125ed465061300e87bd943db5331c",
+    "local-E-unshaped/baseline-1.json": "df7ce749ccd408a7e513d6fbec955a3e97b0eab1e92a8fdaa99171d27f255ddd",
+    "local-E-unshaped/baseline-1.log": "9f94c5859515a1a7c0780d258e1229c4debe01dbb99943e1ed389b8ce67fc927",
+    "local-E-unshaped/baseline-2.json": "d381b19379591d9e8f2c55680bbd053acdea9f00ae847365a2448e30ea57bf91",
+    "local-E-unshaped/baseline-2.log": "3f0ad9ffc3b91ebf9d11c0a2516c943e31e83f40ee3fe0bd39aa6ff1d457c536",
+    "local-E-unshaped/baseline-3.json": "7d90c42af42c117cd637dab9c6d832621b9287932033b493ed8eaef2cd644aff",
+    "local-E-unshaped/baseline-3.log": "781ee7efa4fa6f5294cb9834d7c9386272d090e69cf7a614c6ddd56acd31ccb6",
+    "local-E-unshaped/candidate-1.json": "2ae9f345e183f66c8a67a0fc43f264f203750c6575643219e2869bd30e1f0863",
+    "local-E-unshaped/candidate-1.log": "25436e79bc23fe68e0b8957b84e9ad26210faa15791970302cde5345c04a02dc",
+    "local-E-unshaped/candidate-2.json": "cab75b25d7d10457fdcb9516c18628a4bb4e0251612fb56448a4d797c6c59ebe",
+    "local-E-unshaped/candidate-2.log": "bdcfea070a979f1bbe767261cffab0e7710a48680d7cc36f4417d710138802a9",
+    "local-E-unshaped/candidate-3.json": "c42566bc85f1f3d74f40bfdf9db1a10fa44c37f3db579798040f889036968177",
+    "local-E-unshaped/candidate-3.log": "157bebc3383ea39e222845dcc01c6e00970fa3feafd827009cae9f9fc4626136",
+    "local-E-unshaped/summary.json": "e931975d757b4b636463b1f61b20aaf919da6b8ad68cd2db64f9e98f90e59131",
+    "local-selected-unshaped/baseline-1.json": "b8553f0f899b7afa78caa7713080cf62bff2baccc94e035a4f1a59877088435f",
+    "local-selected-unshaped/baseline-1.log": "ba883c4b216d1e3dad380c867e7a1256aac919ba6dab7e621c9ac59abe233bd1",
+    "local-selected-unshaped/baseline-2.json": "b9b6c24656623441ca2022835c800c0029ae436370cd715de8f1f0d5c88068fa",
+    "local-selected-unshaped/baseline-2.log": "df1824b7c7b074629ae5bc818e65f75d84098fd1814e140ebbf81f59762f22b4",
+    "local-selected-unshaped/baseline-3.json": "ea531bd0ba97377a5c38b0b8c71393d91130193bafbef0059d4d7866ad390eb0",
+    "local-selected-unshaped/baseline-3.log": "3c5dc382c47e3ebce3a38178af901a2eae387c2e19e3a0b2cb6f184f5ccbe932",
+    "local-selected-unshaped/candidate-1.json": "281da11c6a30032c090f9b6ceed07df6856d31c6a14ab68b022f9f043779e7be",
+    "local-selected-unshaped/candidate-1.log": "da69ce1c0a01c00a0f7d8fc799fd583f34765e5f28db018bc800f5ed6e87ba44",
+    "local-selected-unshaped/candidate-2.json": "e8d84c5be91e40ae3e3cccc75c03c64f8c379b94f63eb659876e50881facf66c",
+    "local-selected-unshaped/candidate-2.log": "38a7671526d8a8514eaec7720f0c440a5efee90fc4b48b211358261429d5497a",
+    "local-selected-unshaped/candidate-3.json": "3cfab7358c913c349a1fad023a380333f7158fa26bbfd4f9ebe4c2c974112be3",
+    "local-selected-unshaped/candidate-3.log": "37eecc87e8e8a9f0955c53138bd39ddea9d442c0791cde95f2c1c5d5b35c7396",
+    "local-selected-unshaped/summary.json": "11f2f479ed63800707b2d5de9a7fe7f3754a46aaeda313c6fb696e511e56a805",
+    "local-unshaped/baseline-1.json": "ce313929ce8534999b16e057a7e28e22f298270a6df7574d3131760d00e66f95",
+    "local-unshaped/baseline-1.log": "2a9e946a13ed23bd2e656694731cbb35c9618a2378135635624c846cddf281ee",
+    "local-unshaped/baseline-2.json": "f09769100fb63ad35aea4011846e3de7325dfdec93c00dcc5145a52e8dee0fb0",
+    "local-unshaped/baseline-2.log": "bc5f70c2c0a35b9b49e1366cdea7d88c71ca98d7f5c5ef9267df777b14182e1c",
+    "local-unshaped/baseline-3.json": "d967ed3a6fe73ec0f8d7050a2a50cfec42650ad1eeed2b881fbbf7c8acc7728e",
+    "local-unshaped/baseline-3.log": "f0d7da49fbb0819ef5dcd9ded46952433f19ad097cd81f094ebd390de744cacb",
+    "local-unshaped/candidate-1.json": "d89f374e4701fe2a6b73a05de7606ce80121a1a91714be2943610ef024c18ac2",
+    "local-unshaped/candidate-1.log": "8dcbf2bcb8305f0b94bc789067caddd78e7423063226432f8fd45a446ae732ac",
+    "local-unshaped/candidate-2.json": "f8f4bff599c300cce05a482fe144cd39efc31a421b2db5ba839348d1033ac34b",
+    "local-unshaped/candidate-2.log": "2105f85f8d4599d3c01abf145ffadb61bce3aa61d81d82452dd3c59a8e63722d",
+    "local-unshaped/candidate-3.json": "f3470eafe702256c0b8eaa70eab252fed2d3468bd7ecff76e1fa32532232bf53",
+    "local-unshaped/candidate-3.log": "dce7bc8727b4867dd370df95c85d6c2b278214eaeeac0ac62ac3d3b09a74e8f8",
+    "local-unshaped/summary.json": "705e92866b932eef93bb92ce062e473a6344a3695e7f185925d7884fa2bb99b0",
+    "pinned-module.json": "d177ffd1e014e2dd0644e2606edb762be16bf8dcede17b0a41960fcba8c7d4e2",
+    "quic-D.patch": "835f4cb68056978cdd2573ff2b148602f97ddc4d029339446027a7a0263ec7f3",
+    "quic-E.patch": "232d8731442292848b4a5240a41a982c6d70ed54bd412c07fcd6d4202a6e8974",
+    "quic-candidate.patch": "835f4cb68056978cdd2573ff2b148602f97ddc4d029339446027a7a0263ec7f3",
+    "remote/baseline-mtu-v4-1-runner.json": "ecd758d4163e8f74dcb1be40b8061d5a4174b6dcc933110ffb8360ec0d445d84",
+    "remote/baseline-mtu-v4-1.json": "a6755c464bf11b0f11bb8b41a34b0cc53394d97d8ccc4a3465270f5e6a74691d",
+    "remote/baseline-mtu-v4-1.log": "502a0da0ddc5187737d6a946c5e89a15e2946bfe682543e8695b53b0fc036e10",
+    "remote/baseline-v4-1-runner.json": "791e53f759de1c504aff1ccc6a3b94318fee9dc6913b3b8e22c6423e5c514f10",
+    "remote/baseline-v4-1.json": "842c053093a93af523ae6dc455ee1bd5d3578d92abdad5231e66de418f91d507",
+    "remote/baseline-v4-1.log": "2145ac681953e0ccd7fe8f6fafa247fa93000eb7e39c419dc49215b3e8b34c6f",
+    "remote/baseline-v4-2-runner.json": "9ca04e99b5275d2adfa0a13dc240ea2836b580bdbb12e184c8cf6996317890e7",
+    "remote/baseline-v4-2.json": "d6d196bab613b5f71674a218d2d5b5fa858ff88bd7090864140c0808aa0c2d11",
+    "remote/baseline-v4-2.log": "3e84e44b06fb70bf1b9e91dde47bb7707c5608898859561741fe0ca59a4bd667",
+    "remote/baseline-v4-3-runner.json": "cd89c3166be53c790a66c92637b92a243c1ccc2f561626778a16a2523f75603f",
+    "remote/baseline-v4-3.json": "baaf47377ea1a96c7ddd2d95998298ff175cacfd9b9b0462cfe9d354fc9f2980",
+    "remote/baseline-v4-3.log": "a0ba65caf496f195dc82f369eea5a44353ea36eda25abadfda284d4184813d4e",
+    "remote/candidate-e-mtu-v4-1-runner.json": "a34865f71aa69fd753a37283d8e35d832a11b8c305f571c8f6387f449c9baeec",
+    "remote/candidate-e-mtu-v4-1.json": "32b98b3fb46720be1faaebe14e1697d9c94951075096f2d79067af9c9bd722a3",
+    "remote/candidate-e-mtu-v4-1.log": "6add9d4ca8c5757c5d1abfda56d7d138843685c118ef1ba0b5c1332c5ceaa605",
+    "remote/candidate-e-v4-1-runner.json": "cdecd549edab942269049664f4284f9925e93766492050b9debf6aef8c9760bc",
+    "remote/candidate-e-v4-1.json": "93073b34e9108a9a268b906301c7c162f67d75e8b5640d3787284a5d0d8762bd",
+    "remote/candidate-e-v4-1.log": "0a6f8d6de83a74dc3c02159880c108e2b959c56ce28d609d1698a95c0f98c2aa",
+    "remote/candidate-e-v4-2-runner.json": "2fb9a1f576fa62dc631a6089b677dfc40b49dab46eea738b429df89ef61b0694",
+    "remote/candidate-e-v4-2.json": "f83660574d2566b631f71ab048c793eb1fa151983e721c8a5761dcd9233f6fc2",
+    "remote/candidate-e-v4-2.log": "6db2c878544a2cf12e5d6e21a96fe0435f0eda5fc96709d9e6e89691de9afc2b",
+    "remote/candidate-f-v4-1-runner.json": "318a76cc486cb72e2f7fd49b849315d86004d7aa681fe10e5a0e7ab3ae466d9c",
+    "remote/candidate-f-v4-1.json": "8b19e902bc0634ea207eb2a63a584535716a5650be5a246684e843f248167028",
+    "remote/candidate-f-v4-1.log": "6f5fe4b98cd9d9cd6a657bc703f44be3032e8af7d08042c3b3868ad7acc41f69",
+    "remote/candidate-v4-1-runner.json": "0ce1a60964fdc68ec382b964037d1cd8481f2d4d5960524a7d700325f1cb9d72",
+    "remote/candidate-v4-1.json": "2ae2ded091f591f1f6cab732fb553390065f8ca09e1030845d9278f46e4b3374",
+    "remote/candidate-v4-1.log": "ac4f658db5f519b984410f50ddb98e0938a68b79cc025d6a519f3e94ce0043d9",
+    "remote/candidate-v4-2-runner.json": "dd974772d9138a49f5df6a8a8ecf368ccc784d7d38343d634eb8f47b83cc70f4",
+    "remote/candidate-v4-2.json": "affe5e0930c5bf79011bf118f79629055c42b16c410b5e8a0671b5ad8ae921ec",
+    "remote/candidate-v4-2.log": "6d331fde0f1019ec554346469e69148886dc258a6cfd18151a4be8e20681b06b",
+    "remote/run-e.py": "79d79a2fc8a4bbc0cb798e6037ab1ea59540f8afece346a7a00a682ee66c3c71",
+    "remote/run-f.py": "f2fa72b4b97cefa3eeca1ab4681c72277143c389ee96c5a7215a7d8aa8f09ab3",
+    "remote/run-mtu.py": "436455e936d21f53482df9caa11ec8017393bf0cc33a9c1a122913633c7f99be",
+    "remote/run.py": "38bf45da85074e8a112905ea44742d70bede4d5e26c3eb6d79dcb58a1f269ac1",
+    "remote/runner/kernel-iperf.py": "a291638bef0dbd06a0590ed2c8fbd2dece694b995d9c02b14a10cf2051b7082c",
+    "remote/runner/quicwg-remote.py": "cb94db53c44e30146cd77929bde1a2fa50a91fadaec2f472e7d009c24ec6e029",
+    "remote/runner/wgcompat-remote.py": "7c376877f42134f21954c822c9be4a58b630101df35f69d5c0431e7d6868f101",
+    "send_queue_alloc_test.go": "f3ca4acf7c69715254b46a00f3e75932bff3608ecc4139493c5f1239a199ae67",
+    "summarize.py": "99d0547c3a59c404e352268593064815bc800b87b7118fcabb334f548f63082c",
+    "summary.json": "fb4306ae85dfe40cfb4a34b2937d5a2143ea35d4fa57e3050a005958e508cb3c",
+    "tailscale-E-final.patch": "c60f922dcbecd163571dea8f9b7aa2c5888d8f1f268407bf2c9841facf3c7878",
+    "tailscale-F.patch": "acd2484a028836ea1d52b44ab8499adcf5b51e98eab1b7e8c957dd9acf975f5e",
+    "tailscale-candidate.patch": "c60f922dcbecd163571dea8f9b7aa2c5888d8f1f268407bf2c9841facf3c7878"
+  }
+}
