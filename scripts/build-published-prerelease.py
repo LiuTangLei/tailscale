@@ -17,10 +17,10 @@ import subprocess
 import time
 
 WG = 'github.com/LiuTangLei/wireguard-go'
-WG_VERSION = 'v0.0.32'
+WG_VERSION = 'v0.0.33'
 QUIC = 'github.com/quic-go/quic-go'
 QUIC_FORK = 'github.com/LiuTangLei/quic-go'
-QUIC_VERSION = 'v0.62.0-tailscale.4'
+QUIC_VERSION = 'v0.63.0-tailscale.1.0.20260929072415-cda3ed094749'
 PLATFORMS = ('linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64')
 
 
@@ -51,7 +51,7 @@ def digest(path: Path) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', required=True, type=Path)
-    p.add_argument('--tag', default='v1.102.4-r2')
+    p.add_argument('--tag', default='v1.102.5-r1')
     p.add_argument('--jobs', type=int, default=2)
     a = p.parse_args()
     if not 1 <= a.jobs <= 4:
@@ -92,8 +92,8 @@ def main() -> None:
         'go_version': command(['go', 'version'], env).strip(),
         'dependency_mode': 'published Go modules; no local paths or overlays',
         'dependencies': {
-            WG: {'version': WG_VERSION, 'sum': selected[WG].get('Sum'), 'commit': '9db12db0b654cb37f06dc22df8c8a588b526c25f'},
-            QUIC_FORK: {'version': QUIC_VERSION, 'sum': replacement['Sum'], 'commit': 'ee8197f0b13d5680b9ded758d714c888ec92638b'},
+            WG: {'version': WG_VERSION, 'sum': selected[WG].get('Sum'), 'commit': 'f94334137da3b2b5cc350cf5d257ec7c3237f617'},
+            QUIC_FORK: {'version': QUIC_VERSION, 'sum': replacement['Sum'], 'commit': 'cda3ed094749ffe253e91ab02edf4743003487d0'},
         },
         'assets': [],
         'runtime_scope': 'standalone CLI/daemon binaries; not signed application installers, APKs or IPAs',

@@ -1578,6 +1578,16 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 
 	rs.mu.Lock()
 	rs.inFlight[txID] = func(ipp netip.AddrPort) {
+		// A matching reply proves this probe was sent, even if SendPacket
+		// has not returned yet. The mapped address may use another family.
+		rs.mu.Lock()
+		switch probe.proto {
+		case probeIPv4:
+			rs.report.IPv4CanSend = true
+		case probeIPv6:
+			rs.report.IPv6CanSend = true
+		}
+		rs.mu.Unlock()
 		rs.addNodeLatency(node, ipp, time.Since(sent))
 		cancelSet() // abort other nodes in this set
 	}
