@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"testing"
 
-	"golang.org/x/net/ipv6"
 	"tailscale.com/net/batching"
 	"tailscale.com/net/packet"
 	"tailscale.com/types/nettype"
@@ -27,7 +26,7 @@ type singletonTestConn struct {
 
 var _ batching.Conn = (*singletonTestConn)(nil)
 
-func (c *singletonTestConn) ReadBatch([]ipv6.Message, int) (int, error) {
+func (c *singletonTestConn) ReadBatch([]byte, []batching.ReceivedPacket) (int, error) {
 	return 0, errors.New("unused")
 }
 func (c *singletonTestConn) WriteBatchTo(_ [][]byte, a netip.AddrPort, _ packet.GeneveHeader, _ int) error {

@@ -30,12 +30,12 @@ type packetEngine interface {
 	Done() <-chan struct{}
 	ApplyConfig(*wgcfg.Config) error
 	SetIdentity(key.NodePrivate) error
-	SetPeerConfigFunc(func(key.NodePublic) ([]netip.Prefix, bool))
+	SetPeerConfigFunc(func(key.NodePublic) (wgcfg.PeerConfig, bool))
 	SetRouteFunc(func(netip.Addr) (key.NodePublic, bool))
 	SetPolicy(func(key.NodePublic) bool, func(key.NodePublic, netip.Addr) bool)
 	SetSessionCallback(func(key.NodePublic, PeerWireGuardState))
 	CarrierSessionChanged([32]byte, wgtransport.SessionState)
-	SyncPeer(key.NodePublic, []netip.Prefix)
+	SyncPeer(key.NodePublic, wgcfg.PeerConfig)
 	RemovePeer(key.NodePublic)
 	ActivePeers() []key.NodePublic
 	Status(key.NodePublic) (ipnstate.PeerStatusLite, bool)
@@ -58,8 +58,8 @@ func (p *wgPacketEngine) ApplyConfig(c *wgcfg.Config) error {
 func (p *wgPacketEngine) SetIdentity(k key.NodePrivate) error {
 	return p.dev.SetPrivateKey(key.NodePrivateAs[device.NoisePrivateKey](k))
 }
-func (p *wgPacketEngine) SetPeerConfigFunc(fn func(key.NodePublic) ([]netip.Prefix, bool)) {
-	p.dev.SetPeerLookupFunc(wgcfg.NewPeerLookupFunc(p.dev.Bind(), p.logf, func(k device.NoisePublicKey) ([]netip.Prefix, bool) { return fn(keyFromRaw(k)) }))
+func (p *wgPacketEngine) SetPeerConfigFunc(fn func(key.NodePublic) (wgcfg.PeerConfig, bool)) {
+	p.dev.SetPeerLookupFunc(wgcfg.NewPeerLookupFunc(p.dev.Bind(), p.logf, func(k device.NoisePublicKey) (wgcfg.PeerConfig, bool) { return fn(keyFromRaw(k)) }))
 }
 func (p *wgPacketEngine) SetRouteFunc(fn func(netip.Addr) (key.NodePublic, bool)) {
 	if fn == nil {
@@ -81,9 +81,10 @@ func (p *wgPacketEngine) SetSessionCallback(fn func(key.NodePublic, PeerWireGuar
 	})
 }
 func (p *wgPacketEngine) CarrierSessionChanged([32]byte, wgtransport.SessionState) {}
-func (p *wgPacketEngine) SyncPeer(k key.NodePublic, ips []netip.Prefix) {
+func (p *wgPacketEngine) SyncPeer(k key.NodePublic, conf wgcfg.PeerConfig) {
 	if peer, ok := p.dev.LookupActivePeer(k.Raw32()); ok {
-		peer.SetAllowedIPs(ips)
+		peer.SetPresharedKey(conf.PresharedKey)
+		peer.SetAllowedIPs(conf.AllowedIPs)
 	}
 }
 func (p *wgPacketEngine) RemovePeer(k key.NodePublic) { p.dev.RemovePeer(k.Raw32()) }
@@ -148,7 +149,7 @@ func (p *ipPacketEngine) SetIdentity(k key.NodePrivate) error {
 	p.dev.SetLocalIdentity(pub)
 	return nil
 }
-func (p *ipPacketEngine) SetPeerConfigFunc(func(key.NodePublic) ([]netip.Prefix, bool)) {}
+func (p *ipPacketEngine) SetPeerConfigFunc(func(key.NodePublic) (wgcfg.PeerConfig, bool)) {}
 func (p *ipPacketEngine) SetRouteFunc(fn func(netip.Addr) (key.NodePublic, bool)) {
 	if fn == nil {
 		p.dev.SetRouteFunc(nil)
@@ -176,8 +177,8 @@ func (p *ipPacketEngine) SetSessionCallback(fn func(key.NodePublic, PeerWireGuar
 func (p *ipPacketEngine) CarrierSessionChanged(k [32]byte, s wgtransport.SessionState) {
 	p.dev.SessionChanged(k, s)
 }
-func (p *ipPacketEngine) SyncPeer(k key.NodePublic, _ []netip.Prefix) { p.dev.SyncPeer(k.Raw32()) }
-func (p *ipPacketEngine) RemovePeer(k key.NodePublic)                 { p.dev.RemovePeer(k.Raw32()) }
+func (p *ipPacketEngine) SyncPeer(k key.NodePublic, _ wgcfg.PeerConfig) { p.dev.SyncPeer(k.Raw32()) }
+func (p *ipPacketEngine) RemovePeer(k key.NodePublic)                   { p.dev.RemovePeer(k.Raw32()) }
 func (p *ipPacketEngine) ActivePeers() []key.NodePublic {
 	raw := p.dev.ActivePeers()
 	keys := make([]key.NodePublic, len(raw))

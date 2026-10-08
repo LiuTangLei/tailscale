@@ -29,12 +29,12 @@ func attachSTUNNodes(dst, public *tailcfg.DERPMap) error {
 	}
 	ids := make([]int, 0, len(public.Regions))
 	for id := range public.Regions {
-		ids = append(ids, id)
+		ids = append(ids, int(id))
 	}
 	slices.Sort(ids)
 	var nodes []*tailcfg.DERPNode
 	for _, id := range ids {
-		r := public.Regions[id]
+		r := public.Regions[tailcfg.DERPRegionID(id)]
 		if r == nil {
 			continue
 		}

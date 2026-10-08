@@ -74,8 +74,9 @@ func TestActualInjectInboundGSOOverlapFlags(t *testing.T) {
 				for _, flags := range []byte{0x10, 0x11, 0x18, 0x19} {
 					t.Run(fmt.Sprintf("v%d-payload%d-N%d-flags%x", version, payload, count, flags), func(t *testing.T) {
 						raw, opts := overlapTCPRecord(version, payload, count, flags)
-						want, ws := overlapOutputs(count, len(raw))
-						n, err := tun.GSOSplit(bytes.Clone(raw), opts, want, ws, PacketStartOffset)
+						slab := make([]byte, 2*(1<<16-1))
+						metas := make([]tun.ReadPacket, count)
+						n, err := tun.GSOSplit(bytes.Clone(raw), opts, slab, metas, tun.ReadPacketSpacing)
 						if err != nil || n != count {
 							t.Fatalf("disjoint %d %v", n, err)
 						}
@@ -95,20 +96,20 @@ func TestActualInjectInboundGSOOverlapFlags(t *testing.T) {
 						pkt.GSOOptions = stack.GSO{Type: gsoType, L3HdrLen: uint16(ipLen), MSS: uint16(payload), CsumOffset: 16, NeedsCsum: true}
 						writer := &gsoContractWriter{}
 						w := &Wrapper{tdev: writer}
-						bufs, sizes := overlapOutputs(count, len(raw))
-						if err := w.InjectInboundPacketBuffer(pkt, bufs, sizes); err != nil {
+						outSlab := make([]byte, 2*(1<<16-1))
+						outMetas := make([]tun.ReadPacket, count)
+						bufs := make([][]byte, count)
+						if err := w.InjectInboundPacketBuffer(pkt, outSlab, outMetas, bufs); err != nil {
 							t.Fatal(err)
 						}
 						if len(writer.packets) != count {
 							t.Fatalf("written %d want %d", len(writer.packets), count)
 						}
 						for i := range writer.packets {
-							if !bytes.Equal(writer.packets[i], want[i][PacketStartOffset:PacketStartOffset+ws[i]]) {
-								t.Errorf("actual InjectInbound overlap differs segment%d/%d TCPflags got=%x want=%x", i, count, writer.packets[i][ipLen+13], want[i][PacketStartOffset+ipLen+13])
+							if !bytes.Equal(writer.packets[i], slab[metas[i].Offset:metas[i].Offset+metas[i].Size]) {
+								t.Errorf("actual InjectInbound overlap differs segment%d/%d TCPflags got=%x want=%x", i, count, writer.packets[i][ipLen+13], slab[metas[i].Offset+ipLen+13])
 							}
-							if len(bufs[i]) != cap(bufs[i]) {
-								t.Error("caller length not restored")
-							}
+
 						}
 					})
 				}

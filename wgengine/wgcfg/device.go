@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
-	"net/netip"
 	"strconv"
 
 	"github.com/LiuTangLei/wireguard-go/conn"
@@ -16,6 +15,7 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/ipn"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/clientmetric"
 )
 
 var (
@@ -47,15 +47,38 @@ var (
 
 // NewDevice returns a wireguard-go Device configured for Tailscale use.
 func NewDevice(tunDev tun.Device, bind conn.Bind, logger *device.Logger) *device.Device {
-	return device.NewDevice(tunDev, bind, logger, getDeviceOptions()...)
+	return device.NewDevice(tunDev, bind, logger, append(getMemoryOptions(), getDeviceMetrics())...)
 }
 
+func getDeviceMetrics() device.Option {
+	return device.WithMetrics(device.Metrics{
+		MessageInitiationTXAttemptInitial: metricMessageInitiationTXAttemptInitial,
+		MessageInitiationTXAttemptRetry:   metricMessageInitiationTXAttemptRetry,
+		MessageResponseTXAttempt:          metricMessageResponseTXAttempt,
+		MessageCookieReplyTXAttempt:       metricMessageCookieReplyTXAttempt,
+		HandshakeInitiatorCompleted:       metricHandshakeInitiatorCompleted,
+		HandshakeResponderCompleted:       metricHandshakeResponderCompleted,
+		MessageTransportRXDroppedReplay:   metricMessageTransportRXDroppedReplay,
+	})
+}
+
+var (
+	metricMessageInitiationTXAttemptInitial = clientmetric.NewCounter("wireguard_message_initiation_tx_attempt_initial")
+	metricMessageInitiationTXAttemptRetry   = clientmetric.NewCounter("wireguard_message_initiation_tx_attempt_retry")
+	metricMessageResponseTXAttempt          = clientmetric.NewCounter("wireguard_message_response_tx_attempt")
+	metricMessageCookieReplyTXAttempt       = clientmetric.NewCounter("wireguard_message_cookie_reply_tx_attempt")
+	metricHandshakeInitiatorCompleted       = clientmetric.NewCounter("wireguard_handshake_initiator_completed")
+	metricHandshakeResponderCompleted       = clientmetric.NewCounter("wireguard_handshake_responder_completed")
+	metricMessageTransportRXDroppedReplay   = clientmetric.NewCounter("wireguard_message_transport_rx_dropped_replay")
+)
+
 // NewPeerLookupFunc returns a [device.PeerLookupFunc] that lazily
-// creates peers using allowedIPs as the source of each peer's allowed
-// IPs. The peer's endpoint is derived from its public key via bind.
-func NewPeerLookupFunc(bind conn.Bind, logf logger.Logf, allowedIPs func(device.NoisePublicKey) ([]netip.Prefix, bool)) device.PeerLookupFunc {
+// creates peers using peerConfig as the source of each peer's allowed IPs and
+// optional pre-shared key. The peer's endpoint is derived from its public key
+// via bind.
+func NewPeerLookupFunc(bind conn.Bind, logf logger.Logf, peerConfig func(device.NoisePublicKey) (PeerConfig, bool)) device.PeerLookupFunc {
 	return func(pubk device.NoisePublicKey) (_ *device.NewPeerConfig, ok bool) {
-		ips, ok := allowedIPs(pubk)
+		conf, ok := peerConfig(pubk)
 		if !ok {
 			return nil, false
 		}
@@ -65,8 +88,9 @@ func NewPeerLookupFunc(bind conn.Bind, logf logger.Logf, allowedIPs func(device.
 			return nil, false
 		}
 		return &device.NewPeerConfig{
-			AllowedIPs: ips,
-			Endpoint:   ep,
+			AllowedIPs:   conf.AllowedIPs,
+			PresharedKey: conf.PresharedKey,
+			Endpoint:     ep,
 		}, true
 	}
 }

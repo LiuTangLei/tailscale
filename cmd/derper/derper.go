@@ -11,6 +11,7 @@
 package main // import "tailscale.com/cmd/derper"
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"crypto/tls"
@@ -31,9 +32,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	runtimemetrics "runtime/metrics"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -79,9 +80,10 @@ var (
 	bootstrapDNS    = flag.String("bootstrap-dns-names", "", "optional comma-separated list of hostnames to make available at /bootstrap-dns")
 	unpublishedDNS  = flag.String("unpublished-bootstrap-dns-names", "", "optional comma-separated list of hostnames to make available at /bootstrap-dns and not publish in the list. If an entry contains a slash, the second part names a DNS record to poll for its TXT record with a `0` to `100` value for rollout percentage.")
 
-	verifyClients   = flag.Bool("verify-clients", false, "verify clients to this DERP server through a local tailscaled instance.")
-	verifyClientURL = flag.String("verify-client-url", "", "if non-empty, an admission controller URL for permitting client connections; see tailcfg.DERPAdmitClientRequest")
-	verifyFailOpen  = flag.Bool("verify-client-url-fail-open", true, "whether we fail open if --verify-client-url is unreachable")
+	verifyClients    = flag.Bool("verify-clients", false, "verify clients to this DERP server through a local tailscaled instance.")
+	verifyClientURL  = flag.String("verify-client-url", "", "if non-empty, an admission controller URL for permitting client connections; see tailcfg.DERPAdmitClientRequest")
+	verifyFailOpen   = flag.Bool("verify-client-url-fail-open", true, "whether we fail open if --verify-client-url is unreachable")
+	disallowAppNames = flag.String("disallow-app-names", "", "optional comma-separated list of client-advertised app names to refuse connections from. Trusted mesh peers are exempt.")
 
 	socket = flag.String("socket", "", "optional alternate path to tailscaled socket (only relevant when using --verify-clients)")
 
@@ -194,6 +196,9 @@ func main() {
 	s.SetTailscaledSocketPath(*socket)
 	s.SetVerifyClientURL(*verifyClientURL)
 	s.SetVerifyClientURLFailOpen(*verifyFailOpen)
+	if *disallowAppNames != "" {
+		s.SetDisallowedAppNames(strings.Split(*disallowAppNames, ","))
+	}
 	s.SetTCPWriteTimeout(*tcpWriteTimeout)
 	if *rateConfigPath != "" {
 		if err := s.LoadAndApplyRateConfig(*rateConfigPath); err != nil {
@@ -299,6 +304,7 @@ func main() {
 		}
 	}))
 	debug.Handle("traffic", "Traffic check", http.HandlerFunc(s.ServeDebugTraffic))
+	debug.Handle("clients/", "Connected clients", http.HandlerFunc(s.ServeDebugClients))
 	debug.Handle("set-mutex-profile-fraction", "SetMutexProfileFraction", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s := r.FormValue("rate")
 		if s == "" || r.Header.Get("Sec-Debug") != "derp" {
@@ -373,7 +379,21 @@ func main() {
 				}
 				tlsRequestVersion.Add(label, 1)
 				tlsActiveVersion.Add(label, 1)
-				defer tlsActiveVersion.Add(label, -1)
+				// Handlers that hijack the connection (DERP, its
+				// WebSocket flavor, CONNECT) return before the
+				// connection is done, so the active gauge must be
+				// held until the hijacked connection closes rather
+				// than until the handler returns.
+				htw := &hijackTrackingResponseWriter{
+					ResponseWriter: w,
+					onConnClose:    func() { tlsActiveVersion.Add(label, -1) },
+				}
+				w = htw
+				defer func() {
+					if !htw.hijacked {
+						tlsActiveVersion.Add(label, -1)
+					}
+				}()
 
 				if r.Method == "CONNECT" {
 					serveConnect(s, w, r)
@@ -530,19 +550,6 @@ func (ln *rateLimitedListener) Accept() (net.Conn, error) {
 	return cn, nil
 }
 
-func init() {
-	expvar.Publish("go_sync_mutex_wait_seconds", expvar.Func(func() any {
-		const name = "/sync/mutex/wait/total:seconds" // Go 1.20+
-		var s [1]runtimemetrics.Sample
-		s[0].Name = name
-		runtimemetrics.Read(s[:])
-		if v := s[0].Value; v.Kind() == runtimemetrics.KindFloat64 {
-			return v.Float64()
-		}
-		return 0
-	}))
-}
-
 type templateData struct {
 	ShowAbuseInfo bool
 	Disabled      bool
@@ -623,3 +630,58 @@ func getHomeHandler(val string) (_ http.Handler, ok bool) {
 	}
 	return nil, false
 }
+
+// hijackTrackingResponseWriter wraps an http.ResponseWriter and watches
+// for the handler hijacking the connection, in which case it arranges
+// for onConnClose to run once when the hijacked connection is closed.
+// It exists so the TLS active-connection gauge tracks the lifetime of
+// hijacked connections (DERP and CONNECT), whose handlers return well
+// before the connection is done.
+type hijackTrackingResponseWriter struct {
+	http.ResponseWriter
+	onConnClose func()
+
+	// hijacked reports whether Hijack was called successfully. It is
+	// only used from the handler's goroutine, so it needs no locking.
+	hijacked bool
+}
+
+// Unwrap supports http.ResponseController.
+func (w *hijackTrackingResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *hijackTrackingResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *hijackTrackingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("underlying ResponseWriter does not support hijacking")
+	}
+	c, brw, err := hj.Hijack()
+	if err != nil {
+		return c, brw, err
+	}
+	w.hijacked = true
+	return &closeHookConn{Conn: c, onClose: w.onConnClose}, brw, nil
+}
+
+// closeHookConn is a net.Conn wrapper that runs onClose once when the
+// connection is closed.
+type closeHookConn struct {
+	net.Conn
+	onClose   func()
+	closeOnce sync.Once
+}
+
+func (c *closeHookConn) Close() error {
+	c.closeOnce.Do(c.onClose)
+	return c.Conn.Close()
+}
+
+// NetConn returns the underlying connection, letting code that walks
+// connection wrappers (such as derpserver's TCP RTT stats) reach the
+// *net.TCPConn below.
+func (c *closeHookConn) NetConn() net.Conn { return c.Conn }

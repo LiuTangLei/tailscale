@@ -258,7 +258,9 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(nodeAuthReply, proof)
 	}
 	w.Header().Set(http3.CapsuleProtocolHeader, "?1")
-	if g.b.factory.cfg.TCPStreams { w.Header().Set(tcpStreamsHeader, "1") }
+	if g.b.factory.cfg.TCPStreams {
+		w.Header().Set(tcpStreamsHeader, "1")
+	}
 	// Only authenticated CONNECT replies advertise this metadata, never
 	// public pages or unauthenticated discovery responses.
 	w.Header().Set(serverHintHeader, serverHintValue(g.b.factory.cfg.Server))

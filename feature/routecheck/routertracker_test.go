@@ -17,6 +17,7 @@ import (
 	"tailscale.com/ipn/ipnstate"
 	netroutecheck "tailscale.com/net/routecheck"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tailcfg/nodecap"
 	"tailscale.com/types/opt"
 )
 
@@ -210,8 +211,8 @@ func makeSelfNodeWithRouteCheckEnabled(t *testing.T) tailcfg.NodeView {
 	t.Helper()
 	self := (&tailcfg.Node{
 		CapMap: tailcfg.NodeCapMap{
-			tailcfg.NodeAttrClientSideReachability:           nil,
-			tailcfg.NodeAttrClientSideReachabilityRouteCheck: nil,
+			nodecap.ClientSideReachability:           nil,
+			nodecap.ClientSideReachabilityRouteCheck: nil,
 		},
 	}).View()
 	if !netroutecheck.IsEnabled(self) {
@@ -250,7 +251,7 @@ func makeNode(id tailcfg.NodeID, opts ...nodeOptFunc) *tailcfg.Node {
 		Name:              fmt.Sprintf("node%d", id),
 		Online:            new(true),
 		MachineAuthorized: true,
-		HomeDERP:          int(id),
+		HomeDERP:          tailcfg.DERPRegionID(id),
 		Addresses:         addresses,
 		AllowedIPs:        addresses,
 	}

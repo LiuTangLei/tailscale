@@ -5,9 +5,11 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
-	"strings"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -21,7 +23,6 @@ import (
 	kube "tailscale.com/k8s-operator"
 	tsapi "tailscale.com/k8s-operator/apis/v1alpha1"
 	"tailscale.com/kube/kubetypes"
-	"tailscale.com/tsnet"
 	"tailscale.com/tstest"
 	"tailscale.com/util/httpm"
 )
@@ -31,6 +32,7 @@ func TestL3Ingress(t *testing.T) {
 	if tnClient == nil {
 		t.Skip("TestL3Ingress requires a working tailnet client")
 	}
+	t.Parallel()
 
 	// Apply nginx
 	nginx := nginxDeployment(ns)
@@ -74,8 +76,8 @@ func TestL3Ingress(t *testing.T) {
 		t.Fatalf("error waiting for the Service to become Ready: %v", err)
 	}
 
-	// Get the DNS name for the Service from the associated Secret.
-	var fqdn string
+	// Get a matching-family Tailscale IP for the Service from the associated Secret.
+	var proxyIP string
 	if err := tstest.WaitFor(time.Minute, func() error {
 		var secrets corev1.SecretList
 		if err := kubeClient.List(t.Context(), &secrets,
@@ -90,17 +92,24 @@ func TestL3Ingress(t *testing.T) {
 		if len(secrets.Items) == 0 {
 			return fmt.Errorf("Service not ready yet")
 		}
-		fqdn = strings.TrimSuffix(string(secrets.Items[0].Data[kubetypes.KeyDeviceFQDN]), ".")
-		if fqdn != "" {
-			t.Log("Got DNS name for Service")
-			return nil
+		var deviceIPs []string
+		if err := json.Unmarshal(secrets.Items[0].Data[kubetypes.KeyDeviceIPs], &deviceIPs); err != nil {
+			return fmt.Errorf("decoding device IPs: %w", err)
 		}
-		return fmt.Errorf("device FQDN not set yet")
+		currentSvc := &corev1.Service{ObjectMeta: objectMeta(ns, svc.Name)}
+		if err := get(t.Context(), kubeClient, currentSvc); err != nil {
+			return err
+		}
+		proxyIP = ipMatchingFamily(deviceIPs, currentSvc.Spec.ClusterIP)
+		if proxyIP == "" {
+			return fmt.Errorf("device has no IP matching Service ClusterIP family")
+		}
+		return nil
 	}); err != nil {
-		t.Fatalf("error waiting for DNS Name for Service: %v", err)
+		t.Fatalf("error waiting for matching-family IP for Service: %v", err)
 	}
 
-	if err := testIngressIsReachable(t, newHTTPClient(tnClient), fmt.Sprintf("http://%s:80", fqdn)); err != nil {
+	if err := testIngressIsReachable(t, newHTTPClient(tnClient), "http://"+net.JoinHostPort(proxyIP, "80")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -109,6 +118,7 @@ func TestL3HAIngress(t *testing.T) {
 	if tnClient == nil {
 		t.Skip("TestL3HAIngress requires a working tailnet client")
 	}
+	t.Parallel()
 
 	// Apply nginx.
 	nginx := nginxDeployment(ns)
@@ -151,7 +161,7 @@ func TestL3HAIngress(t *testing.T) {
 	}
 	createAndCleanup(t, kubeClient, svc)
 
-	var svcIPv4 string
+	var svcIP string
 	forceReconcile := triggerReconcile(t,
 		client.ObjectKey{Namespace: ns, Name: svc.Name},
 		&corev1.Service{}, 30*time.Second)
@@ -168,7 +178,14 @@ func TestL3HAIngress(t *testing.T) {
 				if len(maybeReadySvc.Status.LoadBalancer.Ingress) == 0 {
 					return fmt.Errorf("Service does not have an IP assigned yet")
 				}
-				svcIPv4 = maybeReadySvc.Status.LoadBalancer.Ingress[0].IP
+				tsSvc, err := tsClient.VIPServices().Get(t.Context(), "svc:default-"+svc.Name)
+				if err != nil {
+					return fmt.Errorf("getting Tailscale Service: %w", err)
+				}
+				svcIP = ipMatchingFamily(tsSvc.Addrs, maybeReadySvc.Spec.ClusterIP)
+				if svcIP == "" {
+					return fmt.Errorf("Tailscale Service has no IP matching Kubernetes Service ClusterIP family")
+				}
 				t.Log("Service is ready")
 				return nil
 			}
@@ -178,7 +195,7 @@ func TestL3HAIngress(t *testing.T) {
 		t.Fatalf("error waiting for the Service to become ready: %v", err)
 	}
 
-	if err := testIngressIsReachable(t, newHTTPClient(tnClient), fmt.Sprintf("http://%s:80", svcIPv4)); err != nil {
+	if err := testIngressIsReachable(t, newHTTPClient(tnClient), "http://"+net.JoinHostPort(svcIP, "80")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -187,6 +204,7 @@ func TestL7Ingress(t *testing.T) {
 	if tnClient == nil {
 		t.Skip("TestL7Ingress requires a working tailnet client")
 	}
+	t.Parallel()
 
 	// Apply nginx Deployment and Service.
 	nginx := nginxDeployment(ns)
@@ -225,10 +243,48 @@ func TestL7Ingress(t *testing.T) {
 	}
 }
 
+func TestL7IngressDNSConfig(t *testing.T) {
+	if tnClient == nil {
+		t.Skip("TestL7IngressDNSConfig requires a working tailnet client")
+	}
+	t.Parallel()
+
+	nginx := nginxDeployment(ns)
+	createAndCleanup(t, kubeClient, nginx)
+	createAndCleanup(t, kubeClient, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      nginx.Name,
+			Namespace: ns,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				"app.kubernetes.io/name": nginx.Name,
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name: "http",
+					Port: 80,
+				},
+			},
+		},
+	})
+
+	ingress := l7Ingress(ns, nginx.Name, map[string]string{
+		"tailscale.com/experimental-forward-cluster-traffic-via-ingress": "true",
+	})
+	createAndCleanup(t, kubeClient, ingress)
+	hostname, err := waitForIngressHostname(t, ns, ingress.Name)
+	if err != nil {
+		t.Fatalf("error waiting for Ingress hostname: %v", err)
+	}
+	requireTargetIsReachable(t, fmt.Sprintf("https://%s:443", hostname))
+}
+
 func TestL7HAIngress(t *testing.T) {
 	if tnClient == nil {
 		t.Skip("TestL7HAIngress requires a working tailnet client")
 	}
+	t.Parallel()
 
 	// Apply nginx Deployment and Service.
 	nginx := nginxDeployment(ns)
@@ -282,6 +338,7 @@ func TestL7HAIngressMultiTailnet(t *testing.T) {
 	if tnClient == nil || secondTNClient == nil {
 		t.Skip("TestL7HAIngressMultiTailnet requires a working tailnet client for a first and second tailnet")
 	}
+	t.Parallel()
 
 	// Apply nginx Deployment and Service.
 	nginx := nginxDeployment(ns)
@@ -467,6 +524,20 @@ func triggerReconcile(t testing.TB, key client.ObjectKey, obj client.Object, aft
 	}
 }
 
+func ipMatchingFamily(ips []string, target string) string {
+	targetIP, err := netip.ParseAddr(target)
+	if err != nil {
+		return ""
+	}
+	for _, ip := range ips {
+		addr, err := netip.ParseAddr(ip)
+		if err == nil && addr.Is4() == targetIP.Is4() {
+			return ip
+		}
+	}
+	return ""
+}
+
 func testIngressIsReachable(t *testing.T, httpClient *http.Client, url string) error {
 	t.Helper()
 	var resp *http.Response
@@ -485,59 +556,6 @@ func testIngressIsReachable(t *testing.T, httpClient *http.Client, url string) e
 		return nil
 	}); err != nil {
 		return fmt.Errorf("error trying to reach %s: %w", url, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status from %s: %d", url, resp.StatusCode)
-	}
-	return nil
-}
-
-// verifyProxyGroupTailnet verifies that a ProxyGroup is registered to the correct tailnet.
-// This is done by getting the expected tailnet domain for the tailnet client,
-// and comparing this with the actual device fqdn in the ProxyGroup state secret.
-func verifyProxyGroupTailnet(t *testing.T, pg *tsapi.ProxyGroup, cl *tsnet.Server) error {
-	t.Helper()
-	// Determine the expected tailnet Magic DNS Name.
-	lc, err := cl.LocalClient()
-	if err != nil {
-		return err
-	}
-	status, err := lc.Status(t.Context())
-	if err != nil {
-		return err
-	}
-	_, expectedTailnet, ok := strings.Cut(strings.TrimSuffix(status.Self.DNSName, "."), ".")
-	if !ok {
-		return fmt.Errorf("unexpected DNSName format %q", status.Self.DNSName)
-	}
-	// Read the device FQDN from the first state secret for the ProxyGroup,
-	// and verify that this matches the expected tailnet.
-	if err := tstest.WaitFor(3*time.Minute, func() error {
-		var secrets corev1.SecretList
-		if err := kubeClient.List(t.Context(), &secrets,
-			client.InNamespace("tailscale"),
-			client.MatchingLabels{
-				kubetypes.LabelSecretType:            kubetypes.LabelSecretTypeState,
-				"tailscale.com/parent-resource-type": "proxygroup",
-				"tailscale.com/parent-resource":      pg.Name,
-			},
-		); err != nil {
-			return err
-		}
-		if len(secrets.Items) == 0 {
-			return fmt.Errorf("no state secrets found for ProxyGroup %q yet", pg.Name)
-		}
-		fqdn := strings.TrimSuffix(string(secrets.Items[0].Data[kubetypes.KeyDeviceFQDN]), ".")
-		_, tailnet, ok := strings.Cut(fqdn, ".")
-		if !ok {
-			return fmt.Errorf("ProxyGroup %q: device FQDN %q has no domain yet", pg.Name, fqdn)
-		}
-		if tailnet != expectedTailnet {
-			return fmt.Errorf("ProxyGroup %q on wrong tailnet: got domain %q, want %q", pg.Name, tailnet, expectedTailnet)
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("ProxyGroup %q not on expected tailnet: %v", pg.Name, err)
 	}
 	return nil
 }

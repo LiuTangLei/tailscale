@@ -104,7 +104,7 @@ func TestH3ServerDeclarationsStayPerPeerUnderConcurrentMesh(t *testing.T) {
 				buf := make([]byte, 2048)
 				sizes := []int{0}
 				eps := make([]conn.Endpoint, 1)
-				n, err := receives[to]([][]byte{buf}, sizes, eps)
+				n, err := receiveTestSlots(receives[to], [][]byte{buf}, sizes, eps)
 				if err != nil {
 					errorsCh <- err
 					return

@@ -634,7 +634,7 @@ func TestStateMachine(t *testing.T) {
 		// Verify login finished but need machine auth using backend state
 		c.Assert(isFullyAuthenticated(b), qt.IsTrue)
 		c.Assert(needsMachineAuth(b), qt.IsTrue)
-		nm := b.NetMap()
+		nm := b.NetMapNoPeers()
 		c.Assert(nm, qt.IsNotNil)
 		// For an empty netmap (after initial login), SelfNode may not be valid yet.
 		// In this case, we can't check MachineAuthorized, but needsMachineAuth already verified the state.
@@ -661,7 +661,7 @@ func TestStateMachine(t *testing.T) {
 		// nn[0] is a state notification after machine auth granted
 		c.Assert(len(nn), qt.Equals, 1)
 		// Verify machine authorized using backend state
-		nm := b.NetMap()
+		nm := b.NetMapNoPeers()
 		c.Assert(nm, qt.IsNotNil)
 		c.Assert(nm.SelfNode.Valid(), qt.IsTrue)
 		c.Assert(nm.SelfNode.MachineAuthorized(), qt.IsTrue)
@@ -1765,7 +1765,7 @@ func buildNetmapWithPeers(self tailcfg.NodeView, peers ...tailcfg.NodeView) *net
 	}
 
 	derpmap := &tailcfg.DERPMap{
-		Regions: make(map[int]*tailcfg.DERPRegion),
+		Regions: make(map[tailcfg.DERPRegionID]*tailcfg.DERPRegion),
 	}
 	makeDERPRegionForNode := func(n *tailcfg.Node) {
 		if n.HomeDERP == 0 {
@@ -1884,7 +1884,7 @@ type mockEngine struct {
 
 	filter, jailedFilter *filter.Filter
 
-	peerConfigFn func(key.NodePublic) (allowedIPs []netip.Prefix, ok bool)
+	peerConfigFn func(key.NodePublic) (config wgcfg.PeerConfig, ok bool)
 
 	statusCb wgengine.StatusCallback
 }
@@ -1990,10 +1990,9 @@ func (e *mockEngine) Ping(ip netip.Addr, pingType tailcfg.PingType, size int, cb
 func (e *mockEngine) InstallCaptureHook(packet.CaptureCallback) {}
 
 func (e *mockEngine) SetPeerByIPPacketFunc(func(netip.Addr) (_ key.NodePublic, ok bool)) {}
-func (e *mockEngine) SetPeerPolicyFuncs(func(key.NodePublic, key.NodePublic) bool, func(key.NodePublic, key.NodePublic, netip.Addr) bool) {
-}
+func (e *mockEngine) SetPeerPolicyFuncs(func(key.NodePublic, key.NodePublic) bool, func(key.NodePublic, key.NodePublic, netip.Addr) bool) {}
 func (e *mockEngine) SetPeerForIPFunc(func(netip.Addr) (_ wgengine.PeerForIP, ok bool)) {}
-func (e *mockEngine) SetPeerConfigFunc(fn func(key.NodePublic) (allowedIPs []netip.Prefix, ok bool)) {
+func (e *mockEngine) SetPeerConfigFunc(fn func(key.NodePublic) (config wgcfg.PeerConfig, ok bool)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.peerConfigFn = fn
@@ -2008,14 +2007,17 @@ func (e *mockEngine) PeerAllowedIPs(k key.NodePublic) (_ []netip.Prefix, ok bool
 	if fn == nil {
 		return nil, false
 	}
-	return fn(k)
+	conf, ok := fn(k)
+	return conf.AllowedIPs, ok
 }
 
-func (e *mockEngine) SyncDevicePeer(key.NodePublic)  {}
-func (e *mockEngine) ResetDevicePeer(key.NodePublic) {}
+func (e *mockEngine) SyncDevicePeer(key.NodePublic)             {}
+func (e *mockEngine) MarkDevicePeerForHandshake(key.NodePublic) {}
 func (e *mockEngine) SetPeerSessionStateFunc(func(key.NodePublic, wgengine.PeerWireGuardState)) {
 }
-func (e *mockEngine) SetNetLogSource(wgengine.NetLogSource)                            {}
+func (e *mockEngine) SetNetLogSource(wgengine.NetLogSource) {}
+func (e *mockEngine) SetPeerPriorityMessageOnEstablishmentFunc(fn func(key.NodePublic) (msg []byte)) {
+}
 func (e *mockEngine) SetWGPeerLookup(func(wgString string) (tsString string, ok bool)) {}
 func (e *mockEngine) ProbeLocks()                                                      {}
 
@@ -2035,7 +2037,7 @@ func (e *mockEngine) Done() <-chan struct{} {
 
 // hasValidNetMap returns true if the backend has a valid network map with a valid self node.
 func hasValidNetMap(b *LocalBackend) bool {
-	nm := b.NetMap()
+	nm := b.NetMapNoPeers()
 	return nm != nil && nm.SelfNode.Valid()
 }
 
@@ -2054,8 +2056,8 @@ func needsLogin(b *LocalBackend) bool {
 // needsMachineAuth returns true if the user has logged in but the machine is not yet authorized.
 // This includes the case where we have a netmap but no valid SelfNode yet (empty netmap after initial login).
 func needsMachineAuth(b *LocalBackend) bool {
-	// Note: b.NetMap() and b.Prefs() handle their own locking
-	nm := b.NetMap()
+	// Note: b.NetMapNoPeers() and b.Prefs() handle their own locking
+	nm := b.NetMapNoPeers()
 	prefs := b.Prefs()
 	if prefs.LoggedOut() || nm == nil {
 		return false
@@ -2079,8 +2081,8 @@ func hasAuthURL(b *LocalBackend) bool {
 // canRouteTraffic returns true if the backend is capable of routing traffic.
 // This requires a valid netmap, machine authorization, and WantRunning preference.
 func canRouteTraffic(b *LocalBackend) bool {
-	// Note: b.NetMap() and b.Prefs() handle their own locking
-	nm := b.NetMap()
+	// Note: b.NetMapNoPeers() and b.Prefs() handle their own locking
+	nm := b.NetMapNoPeers()
 	prefs := b.Prefs()
 	return nm != nil &&
 		nm.SelfNode.Valid() &&

@@ -24,6 +24,8 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tailcfg/nodecap"
+	"tailscale.com/tailcfg/peercap"
 	"tailscale.com/types/views"
 )
 
@@ -409,6 +411,29 @@ func TestServeDevConfigMutations(t *testing.T) {
 					},
 				},
 			},
+		},
+		{
+			name: "IPv6_localhost",
+			steps: []step{{
+				command: cmd("serve --bg --https=443 http://[::1]:3000"),
+				want: &ipn.ServeConfig{
+					TCP: map[uint16]*ipn.TCPPortHandler{443: {HTTPS: true}},
+					Web: map[ipn.HostPort]*ipn.WebServerConfig{
+						"foo.test.ts.net:443": {Handlers: map[string]*ipn.HTTPHandler{
+							"/": {Proxy: "http://[::1]:3000"},
+						}},
+					},
+				},
+			}},
+		},
+		{
+			name: "IPv6_localhost_TCP",
+			steps: []step{{
+				command: cmd("serve --tcp=5432 --bg tcp://[::1]:3000"),
+				want: &ipn.ServeConfig{
+					TCP: map[uint16]*ipn.TCPPortHandler{5432: {TCPForward: "[::1]:3000"}},
+				},
+			}},
 		},
 		{
 			name: "path_in_dest",
@@ -886,8 +911,8 @@ func TestServeDevConfigMutations(t *testing.T) {
 					Self: &ipnstate.PeerStatus{
 						DNSName: "foo.test.ts.net",
 						CapMap: tailcfg.NodeCapMap{
-							tailcfg.NodeAttrFunnel:                            nil,
-							tailcfg.CapabilityFunnelPorts + "?ports=443,8443": nil,
+							nodecap.Funnel:                          nil,
+							nodecap.FunnelPorts + "?ports=443,8443": nil,
 						},
 						Tags: ptrToReadOnlySlice([]string{"some-tag"}),
 					},
@@ -931,7 +956,7 @@ func TestServeDevConfigMutations(t *testing.T) {
 							"foo.test.ts.net:443": {Handlers: map[string]*ipn.HTTPHandler{
 								"/": {
 									Proxy:         "http://127.0.0.1:3000",
-									AcceptAppCaps: []tailcfg.PeerCapability{"example.com/cap/foo"},
+									AcceptAppCaps: []peercap.Cap{"example.com/cap/foo"},
 								},
 							}},
 						},
@@ -945,7 +970,7 @@ func TestServeDevConfigMutations(t *testing.T) {
 							"foo.test.ts.net:443": {Handlers: map[string]*ipn.HTTPHandler{
 								"/": {
 									Proxy:         "http://127.0.0.1:3000",
-									AcceptAppCaps: []tailcfg.PeerCapability{"example.com/cap/foo", "example.com/cap/bar"},
+									AcceptAppCaps: []peercap.Cap{"example.com/cap/foo", "example.com/cap/bar"},
 								},
 							}},
 						},
@@ -959,7 +984,7 @@ func TestServeDevConfigMutations(t *testing.T) {
 							"foo.test.ts.net:443": {Handlers: map[string]*ipn.HTTPHandler{
 								"/": {
 									Proxy:         "http://127.0.0.1:3000",
-									AcceptAppCaps: []tailcfg.PeerCapability{"example.com/cap/bar"},
+									AcceptAppCaps: []peercap.Cap{"example.com/cap/bar"},
 								},
 							}},
 						},
@@ -1189,37 +1214,37 @@ func TestAcceptSetAppCapsFlag(t *testing.T) {
 		inputs           []string
 		expectErr        bool
 		expectErrToMatch *regexp.Regexp
-		expectedValue    []tailcfg.PeerCapability
+		expectedValue    []peercap.Cap
 	}{
 		{
 			name:          "valid_simple",
 			inputs:        []string{"example.com/name"},
 			expectErr:     false,
-			expectedValue: []tailcfg.PeerCapability{"example.com/name"},
+			expectedValue: []peercap.Cap{"example.com/name"},
 		},
 		{
 			name:          "valid_unicode",
 			inputs:        []string{"bücher.de/something"},
 			expectErr:     false,
-			expectedValue: []tailcfg.PeerCapability{"bücher.de/something"},
+			expectedValue: []peercap.Cap{"bücher.de/something"},
 		},
 		{
 			name:          "more_valid_unicode",
 			inputs:        []string{"example.tw/某某某"},
 			expectErr:     false,
-			expectedValue: []tailcfg.PeerCapability{"example.tw/某某某"},
+			expectedValue: []peercap.Cap{"example.tw/某某某"},
 		},
 		{
 			name:          "valid_path_slashes",
 			inputs:        []string{"domain.com/path/to/name"},
 			expectErr:     false,
-			expectedValue: []tailcfg.PeerCapability{"domain.com/path/to/name"},
+			expectedValue: []peercap.Cap{"domain.com/path/to/name"},
 		},
 		{
 			name:          "valid_multiple_sets",
 			inputs:        []string{"one.com/foo,two.com/bar"},
 			expectErr:     false,
-			expectedValue: []tailcfg.PeerCapability{"one.com/foo", "two.com/bar"},
+			expectedValue: []peercap.Cap{"one.com/foo", "two.com/bar"},
 		},
 		{
 			name:          "valid_empty_string",
@@ -1238,7 +1263,7 @@ func TestAcceptSetAppCapsFlag(t *testing.T) {
 			name:          "valid_subdomain",
 			inputs:        []string{"sub.domain.com/name"},
 			expectErr:     false,
-			expectedValue: []tailcfg.PeerCapability{"sub.domain.com/name"},
+			expectedValue: []peercap.Cap{"sub.domain.com/name"},
 		},
 		{
 			name:             "invalid_no_path",
@@ -1259,13 +1284,13 @@ func TestAcceptSetAppCapsFlag(t *testing.T) {
 			inputs:           []string{"one.com/foo,bad/bar,two.com/baz"},
 			expectErr:        true,
 			expectErrToMatch: regexp.MustCompile(`"bad/bar"`),
-			expectedValue:    []tailcfg.PeerCapability{"one.com/foo"}, // Parsing will stop after first error
+			expectedValue:    []peercap.Cap{"one.com/foo"}, // Parsing will stop after first error
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			var v []tailcfg.PeerCapability
+			var v []peercap.Cap
 			flag := &acceptAppCapsFlag{Value: &v}
 
 			var err error
@@ -1531,7 +1556,7 @@ func TestMessageForPort(t *testing.T) {
 				CurrentTailnet: &ipnstate.TailnetStatus{MagicDNSSuffix: "test.ts.net"},
 				Self: &ipnstate.PeerStatus{
 					CapMap: tailcfg.NodeCapMap{
-						tailcfg.NodeAttrServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
+						nodecap.ServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
 					},
 				},
 			},
@@ -1575,7 +1600,7 @@ func TestMessageForPort(t *testing.T) {
 				CurrentTailnet: &ipnstate.TailnetStatus{MagicDNSSuffix: "test.ts.net"},
 				Self: &ipnstate.PeerStatus{
 					CapMap: tailcfg.NodeCapMap{
-						tailcfg.NodeAttrServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
+						nodecap.ServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
 					},
 				},
 			},
@@ -1619,7 +1644,7 @@ func TestMessageForPort(t *testing.T) {
 				CurrentTailnet: &ipnstate.TailnetStatus{MagicDNSSuffix: "test.ts.net"},
 				Self: &ipnstate.PeerStatus{
 					CapMap: tailcfg.NodeCapMap{
-						tailcfg.NodeAttrServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
+						nodecap.ServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
 					},
 				},
 			},
@@ -1654,7 +1679,7 @@ func TestMessageForPort(t *testing.T) {
 				CurrentTailnet: &ipnstate.TailnetStatus{MagicDNSSuffix: "test.ts.net"},
 				Self: &ipnstate.PeerStatus{
 					CapMap: tailcfg.NodeCapMap{
-						tailcfg.NodeAttrServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
+						nodecap.ServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
 					},
 				},
 			},
@@ -1689,7 +1714,7 @@ func TestMessageForPort(t *testing.T) {
 				CurrentTailnet: &ipnstate.TailnetStatus{MagicDNSSuffix: "test.ts.net"},
 				Self: &ipnstate.PeerStatus{
 					CapMap: tailcfg.NodeCapMap{
-						tailcfg.NodeAttrServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
+						nodecap.ServiceHost: []tailcfg.RawMessage{svcIPMapJSONRawMSG},
 					},
 				},
 			},
@@ -2616,6 +2641,20 @@ func TestRunServeSetConfig(t *testing.T) {
 		}
 		if stdout.Len() != 0 {
 			t.Errorf("stdout must stay clean, got:\n%s", stdout.String())
+		}
+	})
+
+	t.Run("max_port_does_not_wrap", func(t *testing.T) {
+		lc := &fakeLocalServeClient{config: &ipn.ServeConfig{}}
+		e := &serveEnv{lc: lc, allServices: true, testStdout: &bytes.Buffer{}, testStderr: &bytes.Buffer{}}
+		path := writeTmpServeConfig(t, `{"version":"0.0.1","services":{"svc:foo":{"endpoints":{"tcp:65535":"http://localhost:8080"}}}}`)
+
+		if err := e.runServeSetConfig(context.Background(), []string{path}); err != nil {
+			t.Fatal(err)
+		}
+		svc := lc.config.Services[fooSvc]
+		if svc == nil || svc.TCP[65535] == nil || !svc.TCP[65535].HTTP {
+			t.Errorf("svc:foo TCP/65535 HTTP not applied; got %+v", lc.config.Services)
 		}
 	})
 

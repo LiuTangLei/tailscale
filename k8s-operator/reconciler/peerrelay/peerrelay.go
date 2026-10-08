@@ -17,7 +17,6 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -39,7 +38,6 @@ import (
 	"tailscale.com/kube/kubetypes"
 	"tailscale.com/tstime"
 	"tailscale.com/util/clientmetric"
-	"tailscale.com/util/set"
 )
 
 type (
@@ -55,10 +53,9 @@ type (
 		resolver           func(ctx context.Context, network, host string) ([]netip.Addr, error)
 		logger             *zap.SugaredLogger
 		clock              tstime.Clock
+		reissuer           *tailscaled.Reissuer
 
-		// Metrics related fields
-		mu         sync.Mutex
-		peerRelays set.Slice[types.UID]
+		tracker *reconciler.ResourceTracker
 	}
 
 	// The ReconcilerOptions type contains configuration values for the Reconciler.
@@ -94,11 +91,12 @@ const (
 
 // Constants for condition reasons.
 const (
-	ReasonEndpointsPending   = "EndpointsPending"
-	ReasonPodsPending        = "PodsPending"
-	ReasonAWSConfigInvalid   = "AWSConfigInvalid"
-	ReasonTailnetUnavailable = "TailnetUnavailable"
-	ReasonReady              = "PeerRelayReady"
+	ReasonEndpointsPending       = "EndpointsPending"
+	ReasonPodsPending            = "PodsPending"
+	ReasonAWSConfigInvalid       = "AWSConfigInvalid"
+	ReasonStaticEndpointsInvalid = "StaticEndpointsInvalid"
+	ReasonTailnetUnavailable     = "TailnetUnavailable"
+	ReasonReady                  = "PeerRelayReady"
 )
 
 var (
@@ -129,6 +127,8 @@ func NewReconciler(options ReconcilerOptions) *Reconciler {
 		resolver:           resolver,
 		logger:             options.Logger.Named(reconcilerName),
 		clock:              clock,
+		tracker:            reconciler.NewResourceTracker(gaugePeerRelayResources),
+		reissuer:           tailscaled.NewReissuer(),
 	}
 }
 
@@ -211,25 +211,18 @@ func (r *Reconciler) reportTailnetUnavailable(ctx context.Context, logger *zap.S
 }
 
 func (r *Reconciler) createOrUpdate(ctx context.Context, logger *zap.SugaredLogger, pr *tsapi.PeerRelay) (reconcile.Result, error) {
-	if !slices.Contains(pr.Finalizers, reconciler.FinalizerName) {
-		reconciler.SetFinalizer(pr)
-		if err := r.Update(ctx, pr); err != nil {
-			return reconcile.Result{}, fmt.Errorf("failed to add finalizer to PeerRelay %q: %w", pr.Name, err)
-		}
+	if err := reconciler.EnsureFinalizer(ctx, r.Client, pr, reconciler.Finalizer); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to add finalizer to PeerRelay %q: %w", pr.Name, err)
 	}
 
-	r.mu.Lock()
-	if !r.peerRelays.Contains(pr.UID) {
-		r.peerRelays.Add(pr.UID)
-		logger.Infof("now managing PeerRelay %q", pr.Name)
-	}
-	r.mu.Unlock()
-	gaugePeerRelayResources.Set(int64(r.peerRelays.Len()))
+	r.tracker.Add(pr.UID)
 
 	replicas := int32(1)
 	if pr.Spec.Replicas != nil {
 		replicas = *pr.Spec.Replicas
 	}
+
+	r.reissuer.EnsureState(pr.Name, int(replicas))
 
 	// Belt-and-braces: CEL on the CRD enforces this at admission, but we also validate here to guard against older
 	// clusters without CEL, resources created before the CRD schema landed, or hand-edited status paths. If the user
@@ -244,6 +237,17 @@ func (r *Reconciler) createOrUpdate(ctx context.Context, logger *zap.SugaredLogg
 		return reconcile.Result{}, nil
 	}
 
+	// Belt-and-braces for the same reasons as above: the Pattern on spec.staticEndpoints entries only rejects
+	// obvious junk at admission, and Go's netip.ParseAddrPort is the authoritative parser.
+	static, err := parseStaticEndpoints(pr)
+	if err != nil {
+		operatorutils.SetPeerRelayCondition(pr, tsapi.PeerRelayReady, metav1.ConditionFalse, ReasonStaticEndpointsInvalid, err.Error(), r.clock, logger)
+		if err := r.Status().Update(ctx, pr); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed to update PeerRelay status for %q: %w", pr.Name, err)
+		}
+		return reconcile.Result{}, nil
+	}
+
 	for i := int32(0); i < replicas; i++ {
 		desired := r.peerRelayService(pr, i)
 		if err := r.ensureService(ctx, logger, desired); err != nil {
@@ -252,10 +256,10 @@ func (r *Reconciler) createOrUpdate(ctx context.Context, logger *zap.SugaredLogg
 	}
 
 	// Read the LB addresses assigned by the cloud so each pod's config file can advertise its own public endpoint
-	// via RelayServerStaticEndpoints. On first reconcile the LBs aren't provisioned yet , endpointsByReplica ends
-	// up empty and the configs are written without static endpoints; the Watches-triggered reconcile that fires
-	// when the LB IP lands will fill them in.
-	endpoints, err := r.readEndpoints(ctx, logger, pr)
+	// via RelayServerStaticEndpoints. On first reconcile the LBs aren't provisioned yet, so each replica only has
+	// the spec.staticEndpoints entries, if any; the Watches-triggered reconcile that fires when the LB IP lands
+	// will fill in the rest.
+	endpoints, err := r.readEndpoints(ctx, logger, pr, replicas, static)
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed to read endpoints for PeerRelay %q: %w", pr.Name, err)
 	}
@@ -313,7 +317,7 @@ func peerRelayReady(pr *tsapi.PeerRelay) bool {
 	return false
 }
 
-func (r *Reconciler) readEndpoints(ctx context.Context, logger *zap.SugaredLogger, pr *tsapi.PeerRelay) ([]tsapi.PeerRelayEndpoint, error) {
+func (r *Reconciler) readEndpoints(ctx context.Context, logger *zap.SugaredLogger, pr *tsapi.PeerRelay, replicas int32, static []netip.AddrPort) ([]tsapi.PeerRelayEndpoint, error) {
 	var list corev1.ServiceList
 	if err := r.List(ctx, &list, client.InNamespace(r.tailscaleNamespace), client.MatchingLabels(peerRelayLabels(pr.Name))); err != nil {
 		return nil, fmt.Errorf("failed to list Services: %w", err)
@@ -324,6 +328,8 @@ func (r *Reconciler) readEndpoints(ctx context.Context, logger *zap.SugaredLogge
 		prevByReplica[ep.Replica] = append(prevByReplica[ep.Replica], ep)
 	}
 
+	port := int32(peerRelayPort(pr))
+
 	var endpoints []tsapi.PeerRelayEndpoint
 	for i := range list.Items {
 		svc := &list.Items[i]
@@ -332,8 +338,10 @@ func (r *Reconciler) readEndpoints(ctx context.Context, logger *zap.SugaredLogge
 			prev = prevByReplica[idx]
 		}
 
-		endpoints = append(endpoints, r.peerRelayEndpoints(ctx, logger, svc, prev)...)
+		endpoints = append(endpoints, r.peerRelayEndpoints(ctx, logger, svc, prev, port)...)
 	}
+
+	endpoints = mergeStaticEndpoints(endpoints, replicas, static)
 
 	// Sorted by replica then address so the list is stable across reconciles, which keeps status updates and the
 	// resulting tailscaled config free of spurious churn. status.endpoints is keyed on both fields, so the pair
@@ -346,6 +354,80 @@ func (r *Reconciler) readEndpoints(ctx context.Context, logger *zap.SugaredLogge
 	})
 
 	return endpoints, nil
+}
+
+// parseStaticEndpoints parses spec.staticEndpoints into netip.AddrPort values. The CRD's Pattern on the AddrPort
+// type only rejects obvious junk at admission; this is the authoritative parse.
+func parseStaticEndpoints(pr *tsapi.PeerRelay) ([]netip.AddrPort, error) {
+	var static []netip.AddrPort
+	seen := make(map[netip.Addr]int, len(pr.Spec.StaticEndpoints))
+	for i, s := range pr.Spec.StaticEndpoints {
+		ap, err := netip.ParseAddrPort(s)
+		if err != nil {
+			return nil, fmt.Errorf("spec.staticEndpoints[%d]: %q is not a valid address:port: %w", i, s, err)
+		}
+		if ap.Addr().Zone() != "" {
+			return nil, fmt.Errorf("spec.staticEndpoints[%d]: %q must not carry an IPv6 zone", i, s)
+		}
+		if ap.Port() == 0 {
+			return nil, fmt.Errorf("spec.staticEndpoints[%d]: %q must not use port 0", i, s)
+		}
+		// status.endpoints allows an address only once per replica, so a second entry for the same address
+		// would silently overwrite the first's port. Reject it so the user picks one.
+		if j, ok := seen[ap.Addr()]; ok {
+			return nil, fmt.Errorf("spec.staticEndpoints[%d]: %q repeats the address of spec.staticEndpoints[%d]", i, s, j)
+		}
+		seen[ap.Addr()] = i
+		static = append(static, ap)
+	}
+	return static, nil
+}
+
+// mergeStaticEndpoints adds the spec.staticEndpoints entries to every replica's endpoint list. status.endpoints is
+// a map list keyed on (replica, address), so an address may appear only once per replica: when a static endpoint
+// names an address the replica's load balancer already provides, the static entry's port wins, since it is a
+// deliberate user statement (e.g. an external DNAT rewrites the port). The merge is idempotent, which matters
+// because the endpoints derived from a Service fall back to the previously published, already merged status
+// entries when a hostname lookup fails.
+func mergeStaticEndpoints(endpoints []tsapi.PeerRelayEndpoint, replicas int32, static []netip.AddrPort) []tsapi.PeerRelayEndpoint {
+	for i := range replicas {
+		for _, ap := range static {
+			endpoints = mergeEndpoint(endpoints, tsapi.PeerRelayEndpoint{
+				Replica: i,
+				Address: ap.Addr().String(),
+				Port:    int32(ap.Port()),
+			})
+		}
+	}
+	return endpoints
+}
+
+// mergeEndpoint appends ep to endpoints, or overwrites the port of an existing entry with the same replica and
+// address. Addresses are compared as IPs when both parse, so a non-canonical form from the cloud still matches,
+// and as strings otherwise.
+func mergeEndpoint(endpoints []tsapi.PeerRelayEndpoint, ep tsapi.PeerRelayEndpoint) []tsapi.PeerRelayEndpoint {
+	addr, err := netip.ParseAddr(ep.Address)
+	idx := slices.IndexFunc(endpoints, func(other tsapi.PeerRelayEndpoint) bool {
+		if other.Replica != ep.Replica {
+			return false
+		}
+		if other.Address == ep.Address {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+
+		otherAddr, otherErr := netip.ParseAddr(other.Address)
+		return otherErr == nil && otherAddr == addr
+	})
+
+	if idx < 0 {
+		return append(endpoints, ep)
+	}
+
+	endpoints[idx].Port = ep.Port
+	return endpoints
 }
 
 func (r *Reconciler) writeStatus(ctx context.Context, logger *zap.SugaredLogger, pr *tsapi.PeerRelay, endpoints []tsapi.PeerRelayEndpoint, replicas int32, ss *appsv1.StatefulSet) error {
@@ -365,7 +447,7 @@ func (r *Reconciler) writeStatus(ctx context.Context, logger *zap.SugaredLogger,
 
 	switch {
 	case int32(len(addressed)) < replicas:
-		message := fmt.Sprintf("%d of %d replicas have a public IP", len(addressed), replicas)
+		message := fmt.Sprintf("%d of %d replicas have an endpoint", len(addressed), replicas)
 		operatorutils.SetPeerRelayCondition(pr, tsapi.PeerRelayReady, metav1.ConditionFalse, ReasonEndpointsPending, message, r.clock, logger)
 	case readyReplicas < replicas:
 		message := fmt.Sprintf("%d of %d pods are ready", readyReplicas, replicas)
@@ -404,15 +486,12 @@ func (r *Reconciler) delete(ctx context.Context, logger *zap.SugaredLogger, pr *
 		return reconcile.Result{}, fmt.Errorf("failed to delete Services for PeerRelay %q: %w", pr.Name, err)
 	}
 
-	reconciler.RemoveFinalizer(pr)
-	if err := r.Update(ctx, pr); err != nil {
+	if err := reconciler.ClearFinalizer(ctx, r.Client, pr, reconciler.Finalizer); err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed to remove finalizer from PeerRelay %q: %w", pr.Name, err)
 	}
 
-	r.mu.Lock()
-	r.peerRelays.Remove(pr.UID)
-	r.mu.Unlock()
-	gaugePeerRelayResources.Set(int64(r.peerRelays.Len()))
+	r.tracker.Remove(pr.UID)
+	r.reissuer.RemoveState(pr.Name)
 
 	return reconcile.Result{}, nil
 }
@@ -448,12 +527,17 @@ func (r *Reconciler) deleteServicesFrom(ctx context.Context, logger *zap.Sugared
 }
 
 func (r *Reconciler) ensureConfigSecret(ctx context.Context, logger *zap.SugaredLogger, pr *tsapi.PeerRelay, idx int32, endpoints []tsapi.PeerRelayEndpoint) error {
-	authKey, err := r.reuseOrMintAuthKey(ctx, pr, idx)
+	tsClient, err := r.tsClients.For(pr.Spec.Tailnet)
+	if err != nil {
+		return fmt.Errorf("failed to resolve Tailscale API client for tailnet %q: %w", pr.Spec.Tailnet, err)
+	}
+
+	authKey, err := r.getAuthKey(ctx, tsClient, pr, idx)
 	if err != nil {
 		return err
 	}
 
-	desired, err := r.peerRelayConfigSecret(pr, idx, endpoints, authKey)
+	desired, err := r.peerRelayConfigSecret(pr, idx, endpoints, authKey, tsClient.LoginURL())
 	if err != nil {
 		return fmt.Errorf("failed to build config Secret: %w", err)
 	}
@@ -464,41 +548,6 @@ func (r *Reconciler) ensureConfigSecret(ctx context.Context, logger *zap.Sugared
 	}
 
 	return nil
-}
-
-func (r *Reconciler) reuseOrMintAuthKey(ctx context.Context, pr *tsapi.PeerRelay, idx int32) (*string, error) {
-	var existing corev1.Secret
-	err := r.Get(ctx, types.NamespacedName{Namespace: r.tailscaleNamespace, Name: configSecretName(pr.Name, idx)}, &existing)
-	switch {
-	case apierrors.IsNotFound(err):
-		key, err := r.mintAuthKey(ctx, pr)
-		if err != nil {
-			return nil, err
-		}
-		return &key, nil
-	case err != nil:
-		return nil, fmt.Errorf("failed to get config Secret: %w", err)
-	}
-
-	if existingKey := tailscaled.AuthKeyFromConfigSecret(&existing); existingKey != nil {
-		return existingKey, nil
-	}
-
-	key, err := r.mintAuthKey(ctx, pr)
-	if err != nil {
-		return nil, err
-	}
-
-	return &key, nil
-}
-
-func (r *Reconciler) mintAuthKey(ctx context.Context, pr *tsapi.PeerRelay) (string, error) {
-	client, err := r.tsClients.For(pr.Spec.Tailnet)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve Tailscale API client for tailnet %q: %w", pr.Spec.Tailnet, err)
-	}
-
-	return tailscaled.NewAuthKey(ctx, client, r.peerRelayTags(pr))
 }
 
 func (r *Reconciler) ensureStateSecret(ctx context.Context, logger *zap.SugaredLogger, pr *tsapi.PeerRelay, idx int32) error {

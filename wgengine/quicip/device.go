@@ -236,17 +236,7 @@ func (d *Device) Up() error {
 	if err := d.bind.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		return err
 	}
-	var fns []conn.ReceiveFunc
-	var err error
-	grows := false
-	if dynamic, ok := d.bind.(interface {
-		OpenIP(uint16, int) ([]conn.ReceiveFunc, uint16, error)
-	}); ok {
-		fns, _, err = dynamic.OpenIP(0, packetOffset)
-		grows = true
-	} else {
-		fns, _, err = d.bind.Open(0)
-	}
+	fns, _, err := d.bind.Open(0)
 	if err != nil {
 		return err
 	}
@@ -257,7 +247,7 @@ func (d *Device) Up() error {
 	d.started = true
 	for _, fn := range fns {
 		d.workers.Add(1)
-		go d.receive(fn, grows)
+		go d.receive(fn)
 	}
 	d.workers.Add(1)
 	go d.transmit()
@@ -282,20 +272,9 @@ func (d *Device) failed() { go d.Close() }
 
 func (d *Device) transmit() {
 	defer d.workers.Done()
-	read := d.tun.Read
-	bufferSize := packetOffset + maxIPPacket
-	if dynamic, ok := d.tun.(interface {
-		ReadWithBufferGrowth([][]byte, []int, int) (int, error)
-	}); ok {
-		read = dynamic.ReadWithBufferGrowth
-		bufferSize = packetOffset + 2048
-	}
 	count := d.tun.BatchSize()
-	bufs := make([][]byte, count)
-	sizes := make([]int, count)
-	for i := range bufs {
-		bufs[i] = make([]byte, bufferSize)
-	}
+	slab := make([]byte, 2*(1<<16-1))
+	packets := make([]tun.ReadPacket, count)
 	batch := make([][]byte, 0, d.bind.BatchSize())
 	var target *peer
 	var ep conn.Endpoint
@@ -317,7 +296,7 @@ func (d *Device) transmit() {
 		batch = batch[:0]
 	}
 	for {
-		n, err := read(bufs, sizes, packetOffset)
+		n, err := d.tun.Read(slab, packets)
 		if err != nil {
 			select {
 			case <-d.stop:
@@ -326,12 +305,12 @@ func (d *Device) transmit() {
 			}
 			return
 		}
-		if n < 0 || n > len(bufs) {
+		if n < 0 || n > len(packets) {
 			d.failed()
 			return
 		}
 		for i := 0; i < n; i++ {
-			size := sizes[i]
+			size := packets[i].Size
 			if size <= 0 {
 				continue
 			}
@@ -339,7 +318,7 @@ func (d *Device) transmit() {
 				d.counters.Malformed.Add(1)
 				continue
 			}
-			_, dst, err := ParseIP(bufs[i][packetOffset : packetOffset+size])
+			_, dst, err := ParseIP(slab[packets[i].Offset : packets[i].Offset+size])
 			if err != nil {
 				d.counters.Malformed.Add(1)
 				continue
@@ -376,7 +355,7 @@ func (d *Device) transmit() {
 				}
 				ep = box.ep
 			}
-			batch = append(batch, bufs[i][:packetOffset+size])
+			batch = append(batch, slab[packets[i].Offset-packetOffset:packets[i].Offset+size])
 		}
 		flush()
 		// Refresh identity after control-plane invalidation, including a peer
@@ -393,33 +372,14 @@ func (d *Device) transmit() {
 
 type authenticatedEndpoint interface{ AuthenticatedPeerKey() [32]byte }
 
-func (d *Device) receive(fn conn.ReceiveFunc, grows bool) {
+func (d *Device) receive(fn conn.ReceiveFunc) {
 	defer d.workers.Done()
-	bufferSize := packetOffset + maxIPPacket
-	if grows {
-		bufferSize = packetOffset + 2048
-	}
 	count := d.bind.BatchSize()
-	storage := make([][]byte, count)
-	data := make([][]byte, count)
+	slab := make([]byte, 2*(1<<16-1))
+	packets := make([]conn.ReceivedPacket, count)
 	out := make([][]byte, count)
-	sizes := make([]int, count)
-	eps := make([]conn.Endpoint, count)
-	for i := range storage {
-		storage[i] = make([]byte, bufferSize)
-		data[i] = storage[i][packetOffset:]
-	}
 	for {
-		var n int
-		var err error
-		if grows {
-			n, err = fn(storage, sizes, eps)
-			for i := range storage {
-				data[i] = storage[i][packetOffset:]
-			}
-		} else {
-			n, err = fn(data, sizes, eps)
-		}
+		n, err := fn(slab, packets)
 		if err != nil {
 			select {
 			case <-d.stop:
@@ -434,15 +394,15 @@ func (d *Device) receive(fn conn.ReceiveFunc, grows bool) {
 		}
 		accepted := 0
 		for i := 0; i < n; i++ {
-			size := sizes[i]
+			size := packets[i].Size
 			if size <= 0 {
 				continue
 			}
-			if size > len(data[i]) {
+			if packets[i].Offset < packetOffset || packets[i].Offset+size > len(slab) {
 				d.counters.Malformed.Add(1)
 				continue
 			}
-			a, ok := eps[i].(authenticatedEndpoint)
+			a, ok := packets[i].Endpoint.(authenticatedEndpoint)
 			if !ok {
 				d.counters.PeerDenied.Add(1)
 				continue
@@ -452,7 +412,7 @@ func (d *Device) receive(fn conn.ReceiveFunc, grows bool) {
 				d.counters.PeerDenied.Add(1)
 				continue
 			}
-			src, _, err := ParseIP(data[i][:size])
+			src, _, err := ParseIP(packets[i].Bytes(slab))
 			if err != nil {
 				d.counters.Malformed.Add(1)
 				continue
@@ -464,11 +424,11 @@ func (d *Device) receive(fn conn.ReceiveFunc, grows bool) {
 			}
 			// Associate physical endpoints only AFTER authenticated-peer and source-IP
 			// checks. Never infer permission from IP address alone.
-			if aware, ok := eps[i].(conn.PeerAwareEndpoint); ok {
+			if aware, ok := packets[i].Endpoint.(conn.PeerAwareEndpoint); ok {
 				aware.FromPeer(k)
 			}
 			d.getPeer(k).rx.Add(uint64(size))
-			out[accepted] = storage[i][:packetOffset+size]
+			out[accepted] = slab[packets[i].Offset-packetOffset : packets[i].Offset+size]
 			accepted++
 		}
 		if accepted > 0 {

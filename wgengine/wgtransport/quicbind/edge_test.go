@@ -94,7 +94,7 @@ func TestSingleSidedRebindReconnect(t *testing.T) {
 						sizes := make([]int, 1)
 						eps := make([]conn.Endpoint, 1)
 						for {
-							_, err := fns[i^1]([][]byte{buf}, sizes, eps)
+							_, err := receiveTestSlots(fns[i^1], [][]byte{buf}, sizes, eps)
 							if err != nil {
 								delivered <- err
 								return
@@ -158,7 +158,7 @@ func TestCloseUnblocksReceiveAndSend(t *testing.T) {
 	fns := p.open(t)
 	done := make(chan error, 1)
 	go func() {
-		_, e := fns[0]([][]byte{make([]byte, 1500)}, make([]int, 1), make([]conn.Endpoint, 1))
+		_, e := receiveTestSlots(fns[0], [][]byte{make([]byte, 1500)}, make([]int, 1), make([]conn.Endpoint, 1))
 		done <- e
 	}()
 	if e := p.backends[0].Close(); e != nil {

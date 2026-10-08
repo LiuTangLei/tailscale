@@ -29,10 +29,15 @@ import (
 	"time"
 
 	"tailscale.com/control/controlclient"
+	"tailscale.com/envknob"
 	"tailscale.com/health"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/store/mem"
+	"tailscale.com/net/netmon"
+	"tailscale.com/net/tsdial"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tailcfg/nodecap"
+	"tailscale.com/tailcfg/peercap"
 	"tailscale.com/tsd"
 	"tailscale.com/tstest"
 	"tailscale.com/types/logger"
@@ -395,7 +400,7 @@ func TestServeConfigServices(t *testing.T) {
 		SelfNode: (&tailcfg.Node{
 			Name: "example.ts.net",
 			CapMap: tailcfg.NodeCapMap{
-				tailcfg.NodeAttrServiceHost: []tailcfg.RawMessage{tailcfg.RawMessage(svcIPMapJSON)},
+				nodecap.ServiceHost: []tailcfg.RawMessage{tailcfg.RawMessage(svcIPMapJSON)},
 			},
 		}).View(),
 		UserProfiles: map[tailcfg.UserID]tailcfg.UserProfileView{
@@ -838,7 +843,7 @@ func TestServeHTTPProxyHeaders(t *testing.T) {
 func TestServeHTTPProxyGrantHeader(t *testing.T) {
 	b := newTestBackend(t)
 
-	nm := b.NetMap()
+	nm := b.NetMapWithPeers()
 	matches, err := filter.MatchesFromFilterRules([]tailcfg.FilterRule{
 		{
 			SrcIPs: []string{"100.150.151.152"},
@@ -893,7 +898,7 @@ func TestServeHTTPProxyGrantHeader(t *testing.T) {
 			"example.ts.net:443": {Handlers: map[string]*ipn.HTTPHandler{
 				"/": {
 					Proxy:         testServ.URL,
-					AcceptAppCaps: []tailcfg.PeerCapability{"example.com/cap/interesting", "example.com/cap/boring"},
+					AcceptAppCaps: []peercap.Cap{"example.com/cap/interesting", "example.com/cap/boring"},
 				},
 			}},
 		},
@@ -1086,6 +1091,25 @@ func Test_reverseProxyConfiguration(t *testing.T) {
 			wantsURL:      mustCreateURL(t, "https://example3.com"),
 		},
 	})
+}
+
+func TestServeMaxIdleConnsPerHost(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		env  string
+		want int
+	}{
+		{name: "default", want: 0},
+		{name: "configured", env: "100", want: 100},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			envknob.SetenvForTest(t, "TS_DEBUG_SERVE_MAX_IDLE_CONNS_PER_HOST", tt.env)
+			rp := &reverseProxy{lb: &LocalBackend{dialer: tsdial.NewDialer(netmon.NewStatic())}}
+			if got := rp.getTransport().MaxIdleConnsPerHost; got != tt.want {
+				t.Errorf("MaxIdleConnsPerHost = %d, want %d", got, tt.want)
+			}
+		})
+	}
 }
 
 func mustCreateURL(t *testing.T, u string) url.URL {

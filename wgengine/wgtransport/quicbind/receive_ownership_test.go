@@ -51,13 +51,13 @@ func TestReadHostReusesAddressWithoutChangingEndpoint(t *testing.T) {
 	endpoints := []conn.Endpoint{first, first, second, second}
 	call := 0
 	g.workers.Add(1)
-	g.readHost(func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+	g.readHost(func(slab []byte, packets []conn.ReceivedPacket) (int, error) {
 		if call == len(endpoints) {
 			return 0, net.ErrClosed
 		}
-		clear(bufs[0][:21])
-		bufs[0][0], bufs[0][20] = 0x40, byte(call)
-		sizes[0], eps[0] = 21, endpoints[call]
+		clear(slab[:21])
+		slab[0], slab[20] = 0x40, byte(call)
+		packets[0].Size, packets[0].Endpoint = 21, endpoints[call]
 		call++
 		return 1, nil
 	})

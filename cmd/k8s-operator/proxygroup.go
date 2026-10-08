@@ -15,12 +15,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	dockerref "github.com/distribution/reference"
 	"go.uber.org/zap"
 	xslices "golang.org/x/exp/slices"
-	"golang.org/x/time/rate"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -32,11 +30,11 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"tailscale.com/client/tailscale/v2"
 
 	"tailscale.com/ipn"
 	tsoperator "tailscale.com/k8s-operator"
 	tsapi "tailscale.com/k8s-operator/apis/v1alpha1"
+	"tailscale.com/k8s-operator/reconciler/tailscaled"
 	"tailscale.com/k8s-operator/tsclient"
 	"tailscale.com/kube/egressservices"
 	"tailscale.com/kube/k8s-proxy/conf"
@@ -56,6 +54,7 @@ const (
 	reasonProxyGroupCreating           = "ProxyGroupCreating"
 	reasonProxyGroupInvalid            = "ProxyGroupInvalid"
 	reasonProxyGroupTailnetUnavailable = "ProxyGroupTailnetUnavailable"
+	reasonACMEAccountsPendingDeletion  = "ACMEAccountsPendingDeletion"
 
 	// Copied from k8s.io/apiserver/pkg/registry/generic/registry/store.go@cccad306d649184bf2a0e319ba830c53f65c445c
 	optimisticLockErrorMsg  = "the object has been modified; please apply your changes to the latest version and try again"
@@ -96,12 +95,20 @@ type ProxyGroupReconciler struct {
 	defaultProxyClass string
 	loginServer       string
 
-	mu                   sync.Mutex               // protects following
-	egressProxyGroups    set.Slice[types.UID]     // for egress proxygroups gauge
-	ingressProxyGroups   set.Slice[types.UID]     // for ingress proxygroups gauge
-	apiServerProxyGroups set.Slice[types.UID]     // for kube-apiserver proxygroups gauge
-	authKeyRateLimits    map[string]*rate.Limiter // per-ProxyGroup rate limiters for auth key re-issuance.
-	authKeyReissuing     map[string]bool
+	reissuer *tailscaled.Reissuer
+
+	mu                   sync.Mutex           // protects following
+	egressProxyGroups    set.Slice[types.UID] // for egress proxygroups gauge
+	ingressProxyGroups   set.Slice[types.UID] // for ingress proxygroups gauge
+	apiServerProxyGroups set.Slice[types.UID] // for kube-apiserver proxygroups gauge
+
+	// sharedACMEAccountKey is the operator-wide default for the
+	// shared-ACME-account feature. When true, every ProxyGroup uses the
+	// shared per-tailnet account key unless the ProxyGroup explicitly
+	// opts out via tailscale.com/share-acme-account=false. When false,
+	// only ProxyGroups annotated with tailscale.com/share-acme-account=true
+	// use it.
+	sharedACMEAccountKey bool
 }
 
 func (r *ProxyGroupReconciler) logger(name string) *zap.SugaredLogger {
@@ -354,7 +361,7 @@ func (r *ProxyGroupReconciler) maybeProvision(ctx context.Context, tsClient tscl
 		}
 	}
 
-	role := pgRole(pg, r.tsNamespace)
+	role := pgRole(pg, r.tsNamespace, r.sharedACMEAccountEnabledFor(pg))
 	if _, err := createOrUpdate(ctx, r.Client, r.tsNamespace, role, func(r *rbacv1.Role) {
 		r.ObjectMeta.Labels = role.ObjectMeta.Labels
 		r.ObjectMeta.Annotations = role.ObjectMeta.Annotations
@@ -394,13 +401,36 @@ func (r *ProxyGroupReconciler) maybeProvision(ctx context.Context, tsClient tscl
 		}); err != nil {
 			return r.notReadyErrf(pg, logger, "error provisioning ingress ConfigMap %q: %w", cm.Name, err)
 		}
+
+		// Ensure the shared ACME accounts Secret exists (with finalizer)
+		// when this ProxyGroup opts into the feature. Proxy pods
+		// populate its fields on first cert issuance. See #18251.
+		if r.sharedACMEAccountEnabledFor(pg) {
+			acmeSecret := pgACMEAccountSecret(r.tsNamespace)
+			if _, err := createOrUpdate(ctx, r.Client, r.tsNamespace, acmeSecret, func(existing *corev1.Secret) {
+				if !existing.DeletionTimestamp.IsZero() {
+					// Deletion can't be undone; warn so the account keys
+					// get backed up before the finalizer is removed.
+					msg := fmt.Sprintf("shared ACME accounts Secret %q is marked for deletion but retained by the %q finalizer. Its data remains readable until the finalizer is removed - back it up first to preserve the ACME account keys.", existing.Name, kubetypes.ACMEAccountsFinalizer)
+					r.recorder.Event(existing, corev1.EventTypeWarning, reasonACMEAccountsPendingDeletion, msg)
+					logger.Warn(msg)
+					return
+				}
+				existing.Labels = acmeSecret.Labels
+				if !slices.Contains(existing.Finalizers, kubetypes.ACMEAccountsFinalizer) {
+					existing.Finalizers = append(existing.Finalizers, kubetypes.ACMEAccountsFinalizer)
+				}
+			}); err != nil {
+				return r.notReadyErrf(pg, logger, "error provisioning shared ACME accounts Secret %q: %w", acmeSecret.Name, err)
+			}
+		}
 	}
 
 	defaultImage := r.tsProxyImage
 	if pg.Spec.Type == tsapi.ProxyGroupTypeKubernetesAPIServer {
 		defaultImage = r.k8sProxyImage
 	}
-	ss, err := pgStatefulSet(pg, r.tsNamespace, defaultImage, r.tsFirewallMode, tailscaledPort, proxyClass)
+	ss, err := pgStatefulSet(pg, r.tsNamespace, defaultImage, r.tsFirewallMode, tailscaledPort, proxyClass, r.sharedACMEAccountEnabledFor(pg))
 	if err != nil {
 		return r.notReadyErrf(pg, logger, "error generating StatefulSet spec: %w", err)
 	}
@@ -639,7 +669,7 @@ func (r *ProxyGroupReconciler) cleanupDanglingResources(ctx context.Context, tsC
 
 		// Dangling resource, delete the config + state Secrets, as well as
 		// deleting the device from the tailnet.
-		if err := r.ensureDeviceDeleted(ctx, tsClient, m.tsID, logger); err != nil {
+		if err := tailscaled.EnsureDeviceDeleted(ctx, tsClient, logger, m.tsID); err != nil {
 			return err
 		}
 		if err := r.Delete(ctx, m.stateSecret); err != nil && !apierrors.IsNotFound(err) {
@@ -691,7 +721,7 @@ func (r *ProxyGroupReconciler) maybeCleanup(ctx context.Context, tsClient tsclie
 	}
 
 	for _, m := range metadata {
-		if err := r.ensureDeviceDeleted(ctx, tsClient, m.tsID, logger); err != nil {
+		if err := tailscaled.EnsureDeviceDeleted(ctx, tsClient, logger, m.tsID); err != nil {
 			return false, err
 		}
 	}
@@ -710,20 +740,6 @@ func (r *ProxyGroupReconciler) maybeCleanup(ctx context.Context, tsClient tsclie
 	r.ensureStateRemovedForProxyGroup(pg)
 	r.mu.Unlock()
 	return true, nil
-}
-
-func (r *ProxyGroupReconciler) ensureDeviceDeleted(ctx context.Context, tsClient tsclient.Client, id tailcfg.StableNodeID, logger *zap.SugaredLogger) error {
-	logger.Debugf("deleting device %s from control", string(id))
-	err := tsClient.Devices().Delete(ctx, string(id))
-	switch {
-	case tailscale.IsNotFound(err):
-		logger.Debugf("device %s not found, likely because it has already been deleted from control", string(id))
-	case err != nil:
-		return fmt.Errorf("error deleting device: %w", err)
-	}
-
-	logger.Debugf("device %s deleted from control", string(id))
-	return nil
 }
 
 func (r *ProxyGroupReconciler) ensureConfigSecretsCreated(
@@ -929,7 +945,13 @@ func (r *ProxyGroupReconciler) getAuthKey(ctx context.Context, tsClient tsclient
 
 	if !createAuthKey {
 		var err error
-		createAuthKey, err = r.shouldReissueAuthKey(ctx, tsClient, pg, stateSecret, cfgAuthKey)
+		createAuthKey, err = r.reissuer.ShouldReissue(ctx, tsClient, r.log, tailscaled.ReissueInput{
+			ParentName:  pg.Name,
+			ReplicaName: stateSecret.Name,
+			Kind:        tailscaled.KindProxyGroup,
+			StateSecret: stateSecret,
+			CfgAuthKey:  cfgAuthKey,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -958,69 +980,6 @@ func (r *ProxyGroupReconciler) getAuthKey(ctx context.Context, tsClient tsclient
 	}
 
 	return authKey, nil
-}
-
-// shouldReissueAuthKey returns true if the proxy needs a new auth key. It
-// tracks in-flight reissues via authKeyReissuing to avoid duplicate API calls
-// across reconciles.
-func (r *ProxyGroupReconciler) shouldReissueAuthKey(ctx context.Context, tsClient tsclient.Client, pg *tsapi.ProxyGroup, stateSecret *corev1.Secret, cfgAuthKey *string) (shouldReissue bool, err error) {
-	r.mu.Lock()
-	reissuing := r.authKeyReissuing[stateSecret.Name]
-	r.mu.Unlock()
-
-	if reissuing {
-		// Check if reissue is complete by seeing if request was cleared
-		_, requestStillPresent := stateSecret.Data[kubetypes.KeyReissueAuthkey]
-		if !requestStillPresent {
-			// Containerboot cleared the request, reissue is complete
-			r.mu.Lock()
-			r.authKeyReissuing[stateSecret.Name] = false
-			r.mu.Unlock()
-			r.log.Debugf("auth key reissue completed for %q", stateSecret.Name)
-			return false, nil
-		}
-
-		// Reissue still in-flight; waiting for containerboot to pick up new key
-		r.log.Debugf("auth key already in process of re-issuance, waiting for secret to be updated")
-		return false, nil
-	}
-
-	defer func() {
-		r.mu.Lock()
-		r.authKeyReissuing[stateSecret.Name] = shouldReissue
-		r.mu.Unlock()
-	}()
-
-	brokenAuthkey, ok := stateSecret.Data[kubetypes.KeyReissueAuthkey]
-	if !ok {
-		// reissue hasn't been requested since the key in the secret hasn't been populated
-		return false, nil
-	}
-
-	empty := cfgAuthKey == nil || *cfgAuthKey == ""
-	broken := cfgAuthKey != nil && *cfgAuthKey == string(brokenAuthkey)
-
-	// A new key has been written but the proxy hasn't picked it up yet.
-	if !empty && !broken {
-		return false, nil
-	}
-
-	lim := r.authKeyRateLimits[pg.Name]
-	if !lim.Allow() {
-		r.log.Debugf("auth key re-issuance rate limit exceeded, limit: %.2f, burst: %d, tokens: %.2f",
-			lim.Limit(), lim.Burst(), lim.Tokens())
-		return false, fmt.Errorf("auth key re-issuance rate limit exceeded for ProxyGroup %q, will retry with backoff", pg.Name)
-	}
-
-	r.log.Infof("Proxy failing to auth; attempting cleanup and new key")
-	if tsID := stateSecret.Data[kubetypes.KeyDeviceID]; len(tsID) > 0 {
-		id := tailcfg.StableNodeID(tsID)
-		if err = r.ensureDeviceDeleted(ctx, tsClient, id, r.log); err != nil {
-			return false, err
-		}
-	}
-
-	return true, nil
 }
 
 type FindStaticEndpointErr struct {
@@ -1143,7 +1102,7 @@ func getStaticEndpointAddress(a *corev1.NodeAddress, port uint16) *netip.AddrPor
 }
 
 // ensureStateAddedForProxyGroup ensures the gauge metric for the ProxyGroup resource is updated when the ProxyGroup
-// is created, and initialises per-ProxyGroup rate limits on re-issuing auth keys. r.mu must be held.
+// is created, and initialises per-ProxyGroup auth key re-issuance state. r.mu must be held.
 func (r *ProxyGroupReconciler) ensureStateAddedForProxyGroup(pg *tsapi.ProxyGroup) {
 	switch pg.Spec.Type {
 	case tsapi.ProxyGroupTypeEgress:
@@ -1157,22 +1116,11 @@ func (r *ProxyGroupReconciler) ensureStateAddedForProxyGroup(pg *tsapi.ProxyGrou
 	gaugeIngressProxyGroupResources.Set(int64(r.ingressProxyGroups.Len()))
 	gaugeAPIServerProxyGroupResources.Set(int64(r.apiServerProxyGroups.Len()))
 
-	if _, ok := r.authKeyRateLimits[pg.Name]; !ok {
-		// Allow every replica to have its auth key re-issued quickly the first
-		// time, but with an overall limit of 1 every 30s after a burst.
-		r.authKeyRateLimits[pg.Name] = rate.NewLimiter(rate.Every(30*time.Second), int(pgReplicas(pg)))
-	}
-
-	for i := range pgReplicas(pg) {
-		rep := pgStateSecretName(pg.Name, i)
-		if _, ok := r.authKeyReissuing[rep]; !ok {
-			r.authKeyReissuing[rep] = false
-		}
-	}
+	r.reissuer.EnsureState(pg.Name, int(pgReplicas(pg)))
 }
 
 // ensureStateRemovedForProxyGroup ensures the gauge metric for the ProxyGroup resource type is updated when the
-// ProxyGroup is deleted, and deletes the per-ProxyGroup rate limiter to free memory. r.mu must be held.
+// ProxyGroup is deleted, and drops the per-ProxyGroup auth key re-issuance state to free memory. r.mu must be held.
 func (r *ProxyGroupReconciler) ensureStateRemovedForProxyGroup(pg *tsapi.ProxyGroup) {
 	switch pg.Spec.Type {
 	case tsapi.ProxyGroupTypeEgress:
@@ -1185,10 +1133,7 @@ func (r *ProxyGroupReconciler) ensureStateRemovedForProxyGroup(pg *tsapi.ProxyGr
 	gaugeEgressProxyGroupResources.Set(int64(r.egressProxyGroups.Len()))
 	gaugeIngressProxyGroupResources.Set(int64(r.ingressProxyGroups.Len()))
 	gaugeAPIServerProxyGroupResources.Set(int64(r.apiServerProxyGroups.Len()))
-	delete(r.authKeyRateLimits, pg.Name)
-	for i := range pgReplicas(pg) {
-		delete(r.authKeyReissuing, pgStateSecretName(pg.Name, i))
-	}
+	r.reissuer.RemoveState(pg.Name)
 }
 
 func pgTailscaledConfig(pg *tsapi.ProxyGroup, loginServer string, pc *tsapi.ProxyClass, idx int32, authKey *string, staticEndpoints []netip.AddrPort, oldAdvertiseServices []string) (tailscaledConfigs, error) {
@@ -1345,6 +1290,25 @@ func notReady(reason, msg string) (map[string][]netip.AddrPort, *notReadyReason,
 		reason:  reason,
 		message: msg,
 	}, nil
+}
+
+// sharedACMEAccountEnabledFor reports whether the shared-ACME-account
+// feature should be applied to pg. The per-PG
+// tailscale.com/share-acme-account annotation wins when set; otherwise
+// the operator's OPERATOR_SHARED_ACME_ACCOUNT_KEY setting is the default
+// for every ProxyGroup.
+func (r *ProxyGroupReconciler) sharedACMEAccountEnabledFor(pg *tsapi.ProxyGroup) bool {
+	return sharedACMEAccountEnabled(pg, r.sharedACMEAccountKey)
+}
+
+// sharedACMEAccountEnabled reports whether pg should use the shared ACME
+// account, with the tailscale.com/share-acme-account annotation overriding
+// the operator-wide default.
+func sharedACMEAccountEnabled(pg *tsapi.ProxyGroup, operatorDefault bool) bool {
+	if v, ok := pg.Annotations[AnnotationShareACMEAccount]; ok {
+		return v == "true"
+	}
+	return operatorDefault
 }
 
 func (r *ProxyGroupReconciler) notReadyErrf(pg *tsapi.ProxyGroup, logger *zap.SugaredLogger, format string, a ...any) (map[string][]netip.AddrPort, *notReadyReason, error) {

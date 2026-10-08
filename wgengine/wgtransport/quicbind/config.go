@@ -63,9 +63,9 @@ type Config struct {
 	// TCPStreams enables authenticated HTTP/3 CONNECT streams for an embedded
 	// point-to-point proxy. UDP remains on CONNECT-IP DATAGRAM. Authentication
 	// and revocation belong to the same QUIC session; no alternate transport.
-	TCPStreams bool `json:"tcp_streams,omitempty"`
-	TCPHandler func([32]byte, netip.AddrPort) func(net.Conn) `json:"-"`
-	TCPNodeAddress func([32]byte) netip.Addr `json:"-"`
+	TCPStreams     bool                                          `json:"tcp_streams,omitempty"`
+	TCPHandler     func([32]byte, netip.AddrPort) func(net.Conn) `json:"-"`
+	TCPNodeAddress func([32]byte) netip.Addr                     `json:"-"`
 	// AuthenticationSecret optionally binds node authentication to an embedded
 	// application's additional connection credential. It is never serialized
 	// in a profile or sent on the wire. A zero value preserves Tailnet auth.

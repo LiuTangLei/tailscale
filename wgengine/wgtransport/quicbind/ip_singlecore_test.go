@@ -62,7 +62,7 @@ func TestH3SingleCoreQueuedPacketsFormBatches(t *testing.T) {
 	endpoints := make([]conn.Endpoint, len(buffers))
 	seen := make(map[uint16]bool)
 	for len(seen) < count {
-		n, err := fns[1](buffers, sizes, endpoints)
+		n, err := receiveTestSlots(fns[1], buffers, sizes, endpoints)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -206,11 +206,11 @@ func (b *countingBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		return nil, 0, err
 	}
 	for i, fn := range fns {
-		fns[i] = func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
-			n, err := fn(bufs, sizes, eps)
+		fns[i] = func(slab []byte, packets []conn.ReceivedPacket) (int, error) {
+			n, err := fn(slab, packets)
 			for j := 0; j < n; j++ {
-				if sizes[j] > 0 {
-					eps[j], _ = WrapEndpoint(eps[j])
+				if packets[j].Size > 0 {
+					packets[j].Endpoint, _ = WrapEndpoint(packets[j].Endpoint)
 					b.receives.Add(1)
 				}
 			}

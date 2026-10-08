@@ -41,7 +41,7 @@ func startLabDERP(addr string, logf logger.Logf) (*tailcfg.DERPMap, func(), erro
 	s.StartTLS()
 	endpoint := ln.Addr().(*net.TCPAddr)
 	hash := sha256.Sum256(s.Certificate().Raw)
-	m := &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{
+	m := &tailcfg.DERPMap{Regions: map[tailcfg.DERPRegionID]*tailcfg.DERPRegion{
 		901: {
 			RegionID: 901, RegionCode: "wgcompat-lab", RegionName: "Isolated compatibility test relay",
 			Nodes: []*tailcfg.DERPNode{{

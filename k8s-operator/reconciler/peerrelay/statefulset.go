@@ -33,20 +33,21 @@ func peerRelayHostname(pr *tsapi.PeerRelay, idx int32) string {
 	return fmt.Sprintf("%s-%d", prefix, idx)
 }
 
-func peerRelayTailscaledConfig(pr *tsapi.PeerRelay, idx int32, endpoints []tsapi.PeerRelayEndpoint, authKey *string) ipn.ConfigVAlpha {
+func peerRelayTailscaledConfig(pr *tsapi.PeerRelay, idx int32, endpoints []tsapi.PeerRelayEndpoint, authKey *string, loginServer string) ipn.ConfigVAlpha {
 	conf := ipn.ConfigVAlpha{
 		Version:         "alpha0",
 		AcceptDNS:       "false",
 		AcceptRoutes:    "false",
 		Locked:          "false",
 		Hostname:        new(peerRelayHostname(pr, idx)),
-		RelayServerPort: new(uint16(servicePort)),
+		RelayServerPort: new(peerRelayPort(pr)),
 		AuthKey:         authKey,
 	}
 
-	// Advertise every address the replica's load balancer answers on. A load balancer spanning several
-	// availability zones has one per zone, and a peer that cannot reach one can still reach the relay through
-	// another.
+	if loginServer != "" {
+		conf.ServerURL = &loginServer
+	}
+
 	for _, endpoint := range endpoints {
 		addr, err := netip.ParseAddr(endpoint.Address)
 		if err != nil {
@@ -59,13 +60,13 @@ func peerRelayTailscaledConfig(pr *tsapi.PeerRelay, idx int32, endpoints []tsapi
 	return conf
 }
 
-func (r *Reconciler) peerRelayConfigSecret(pr *tsapi.PeerRelay, idx int32, endpoints []tsapi.PeerRelayEndpoint, authKey *string) (*corev1.Secret, error) {
+func (r *Reconciler) peerRelayConfigSecret(pr *tsapi.PeerRelay, idx int32, endpoints []tsapi.PeerRelayEndpoint, authKey *string, loginServer string) (*corev1.Secret, error) {
 	labels := peerRelayServiceLabels(pr.Name, idx)
 	return tailscaled.NewConfigSecret(tailscaled.ConfigSecretOptions{
 		Name:      configSecretName(pr.Name, idx),
 		Namespace: r.tailscaleNamespace,
 		Labels:    labels,
-		Config:    peerRelayTailscaledConfig(pr, idx, endpoints, authKey),
+		Config:    peerRelayTailscaledConfig(pr, idx, endpoints, authKey, loginServer),
 	})
 }
 

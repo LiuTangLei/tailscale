@@ -12,8 +12,8 @@ func TestPublicSTUNDoesNotChangeRelayDestination(t *testing.T) {
 	relay := &tailcfg.DERPNode{Name: "private-relay", RegionID: 901, STUNPort: -1, InsecureForTests: true}
 	a := &tailcfg.DERPNode{Name: "a", RegionID: 3, HostName: "a.invalid", STUNPort: 3478}
 	b := &tailcfg.DERPNode{Name: "b", RegionID: 1, HostName: "b.invalid"}
-	dst := &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{901: {RegionID: 901, Nodes: []*tailcfg.DERPNode{relay}}}}
-	public := &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{
+	dst := &tailcfg.DERPMap{Regions: map[tailcfg.DERPRegionID]*tailcfg.DERPRegion{901: {RegionID: 901, Nodes: []*tailcfg.DERPNode{relay}}}}
+	public := &tailcfg.DERPMap{Regions: map[tailcfg.DERPRegionID]*tailcfg.DERPRegion{
 		3: {Nodes: []*tailcfg.DERPNode{a}},
 		1: {Nodes: []*tailcfg.DERPNode{{Name: "no-stun", STUNPort: -1}, b}},
 	}}

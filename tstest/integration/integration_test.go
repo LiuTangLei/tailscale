@@ -45,6 +45,7 @@ import (
 	"tailscale.com/net/tstun"
 	"tailscale.com/net/udprelay/status"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tailcfg/nodecap"
 	"tailscale.com/tstest"
 	"tailscale.com/tstest/integration/testcontrol"
 	"tailscale.com/types/key"
@@ -88,8 +89,7 @@ func TestTUNMode(t *testing.T) {
 	tstest.RequireRoot(t)
 	tstest.Parallel(t)
 	env := NewTestEnv(t)
-	env.tunMode = true
-	n1 := NewTestNode(t, env)
+	n1 := NewTestNode(t, env, TUNMode(true))
 	d1 := n1.StartDaemon()
 
 	n1.AwaitResponding()
@@ -845,6 +845,9 @@ func TestOneNodeUpInterruptedDeviceApproval(t *testing.T) {
 }
 
 func TestConfigFileAuthKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a config file can't set unattended mode, so Windows drops the node to NoState; see #20751")
+	}
 	t.Parallel()
 	const authKey = "opensesame"
 	env := NewTestEnv(t, ConfigureControl(func(control *testcontrol.Server) {
@@ -908,10 +911,11 @@ func TestTwoNodes(t *testing.T) {
 		os.WriteFile("n2.log", cleanLog(n2), 0666)
 	})
 
-	n1Socks := n1.AwaitSocksAddr(n1SocksAddrCh)
-	n2Socks := n1.AwaitSocksAddr(n2SocksAddrCh)
-	t.Logf("node1 SOCKS5 addr: %v", n1Socks)
-	t.Logf("node2 SOCKS5 addr: %v", n2Socks)
+	if runtime.GOOS != "windows" {
+		// TODO(yaruk): the service node has no stderr to scrape the address from; see #20443.
+		t.Logf("node1 SOCKS5 addr: %v", n1.AwaitSocksAddr(n1SocksAddrCh))
+		t.Logf("node2 SOCKS5 addr: %v", n1.AwaitSocksAddr(n2SocksAddrCh))
+	}
 
 	n1.AwaitListening()
 	t.Logf("n1 is listening")
@@ -1316,7 +1320,7 @@ func TestNoControlConnWhenDown(t *testing.T) {
 // without the GUI to kick off a Start.
 func TestOneNodeUpWindowsStyle(t *testing.T) {
 	tstest.Parallel(t)
-	env := NewTestEnv(t, canRunAsServiceOnWindows())
+	env := NewTestEnv(t)
 	n1 := NewTestNode(t, env)
 	n1.upFlagGOOS = "windows"
 
@@ -1338,7 +1342,8 @@ func TestClientSideJailing(t *testing.T) {
 	tstest.Parallel(t)
 	env := NewTestEnv(t)
 	registerNode := func() (*TestNode, key.NodePublic) {
-		n := NewTestNode(t, env)
+		// The dial being tested only reaches the listener in userspace networking mode.
+		n := NewTestNode(t, env, TUNMode(false))
 		n.StartDaemon()
 		n.AwaitListening()
 		n.MustUp()
@@ -1446,7 +1451,6 @@ func TestClientSideJailing(t *testing.T) {
 // TestNATPing creates two nodes, n1 and n2, sets up masquerades for both and
 // tries to do bi-directional pings between them.
 func TestNATPing(t *testing.T) {
-	flakytest.Mark(t, "https://github.com/tailscale/tailscale/issues/12169")
 	tstest.Parallel(t)
 	for _, v6 := range []bool{false, true} {
 		env := NewTestEnv(t)
@@ -1532,42 +1536,60 @@ func TestNATPing(t *testing.T) {
 			},
 		}
 
+		// awaitPeerIP waits for n's status to report the peer with node
+		// key peer as having the Tailscale IP want. Masquerade changes
+		// reach the nodes asynchronously via their streaming map
+		// responses, so the status can't be checked immediately after
+		// SetMasqueradeAddresses.
+		awaitPeerIP := func(t *testing.T, n *TestNode, peer key.NodePublic, want netip.Addr) {
+			t.Helper()
+			if err := tstest.WaitFor(20*time.Second, func() error {
+				st, err := n.Status()
+				if err != nil {
+					return err
+				}
+				ps, ok := st.Peer[peer]
+				if !ok {
+					return fmt.Errorf("peer %v not in status", peer.ShortString())
+				}
+				if !slices.Contains(ps.TailscaleIPs, want) {
+					return fmt.Errorf("peer %v has IPs %v; want %v", peer.ShortString(), ps.TailscaleIPs, want)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// ping runs "tailscale ping" with the provided arguments from n,
+		// retrying on failure. A ping can fail transiently right after a
+		// map response changes the peer's addresses, before the engine
+		// has been reconfigured with the new netmap.
+		ping := func(t *testing.T, n *TestNode, args ...string) {
+			t.Helper()
+			args = append([]string{"ping"}, args...)
+			if err := tstest.WaitFor(30*time.Second, func() error {
+				out, err := n.TailscaleForOutput(args...).CombinedOutput()
+				if err != nil {
+					return fmt.Errorf("tailscale %v: %v; output: %s", args, err, out)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+
 		for _, tc := range tests {
 			t.Run(fmt.Sprintf("v6=%t/%v", v6, tc.name), func(t *testing.T) {
 				env.Control.SetMasqueradeAddresses(tc.pairs)
 
-				ipIdx := 0
-				if v6 {
-					ipIdx = 1
-				}
+				awaitPeerIP(t, n1, k2, tc.n1SeesN2IP)
+				awaitPeerIP(t, n2, k1, tc.n2SeesN1IP)
 
-				s1 := n1.MustStatus()
-				n2AsN1Peer := s1.Peer[k2]
-				if got := n2AsN1Peer.TailscaleIPs[ipIdx]; got != tc.n1SeesN2IP {
-					t.Fatalf("n1 sees n2 as %v; want %v", got, tc.n1SeesN2IP)
-				}
-
-				s2 := n2.MustStatus()
-				n1AsN2Peer := s2.Peer[k1]
-				if got := n1AsN2Peer.TailscaleIPs[ipIdx]; got != tc.n2SeesN1IP {
-					t.Fatalf("n2 sees n1 as %v; want %v", got, tc.n2SeesN1IP)
-				}
-
-				if err := n1.Tailscale("ping", tc.n1SeesN2IP.String()).Run(); err != nil {
-					t.Fatal(err)
-				}
-
-				if err := n1.Tailscale("ping", "-peerapi", tc.n1SeesN2IP.String()).Run(); err != nil {
-					t.Fatal(err)
-				}
-
-				if err := n2.Tailscale("ping", tc.n2SeesN1IP.String()).Run(); err != nil {
-					t.Fatal(err)
-				}
-
-				if err := n2.Tailscale("ping", "-peerapi", tc.n2SeesN1IP.String()).Run(); err != nil {
-					t.Fatal(err)
-				}
+				ping(t, n1, tc.n1SeesN2IP.String())
+				ping(t, n1, "-peerapi", tc.n1SeesN2IP.String())
+				ping(t, n2, tc.n2SeesN1IP.String())
+				ping(t, n2, "-peerapi", tc.n2SeesN1IP.String())
 			})
 		}
 	}
@@ -1669,7 +1691,7 @@ func testAutoUpdateDefaults(t *testing.T, useCap bool) {
 				if mr.Node.CapMap == nil {
 					mr.Node.CapMap = make(tailcfg.NodeCapMap)
 				}
-				mr.Node.CapMap[tailcfg.NodeAttrDefaultAutoUpdate] = []tailcfg.RawMessage{
+				mr.Node.CapMap[nodecap.DefaultAutoUpdate] = []tailcfg.RawMessage{
 					tailcfg.RawMessage(fmt.Sprintf("%t", send)),
 				}
 			} else {
@@ -1769,8 +1791,7 @@ func testAutoUpdateDefaults(t *testing.T, useCap bool) {
 func TestDNSOverTCPIntervalResolver(t *testing.T) {
 	tstest.RequireRoot(t)
 	env := NewTestEnv(t)
-	env.tunMode = true
-	n1 := NewTestNode(t, env)
+	n1 := NewTestNode(t, env, TUNMode(true))
 	d1 := n1.StartDaemon()
 
 	n1.AwaitResponding()
@@ -1839,11 +1860,10 @@ func TestNetstackTCPLoopback(t *testing.T) {
 	tstest.RequireRoot(t)
 
 	env := NewTestEnv(t)
-	env.tunMode = true
 	loopbackPort := 5201
 	env.loopbackPort = &loopbackPort
 	loopbackPortStr := strconv.Itoa(loopbackPort)
-	n1 := NewTestNode(t, env)
+	n1 := NewTestNode(t, env, TUNMode(true))
 	d1 := n1.StartDaemon()
 
 	n1.AwaitResponding()
@@ -1978,10 +1998,9 @@ func TestNetstackUDPLoopback(t *testing.T) {
 	tstest.RequireRoot(t)
 
 	env := NewTestEnv(t)
-	env.tunMode = true
 	loopbackPort := 5201
 	env.loopbackPort = &loopbackPort
-	n1 := NewTestNode(t, env)
+	n1 := NewTestNode(t, env, TUNMode(true))
 	d1 := n1.StartDaemon()
 
 	n1.AwaitResponding()
@@ -2125,7 +2144,8 @@ func TestEncryptStateMigration(t *testing.T) {
 	}
 	tstest.Parallel(t)
 	env := NewTestEnv(t)
-	n := NewTestNode(t, env)
+	// A userspace node, because runNode reads the state file from the test's own dir.
+	n := NewTestNode(t, env, TUNMode(false))
 
 	runNode := func(t *testing.T, wantStateKeys []string) {
 		t.Helper()
@@ -2455,11 +2475,10 @@ func TestC2NDebugNetmap(t *testing.T) {
 }
 
 func TestTailnetLock(t *testing.T) {
-
 	// If you run `tailscale lock log` on a node where Tailnet Lock isn't
 	// enabled, you get an error explaining that.
 	t.Run("log-when-not-enabled", func(t *testing.T) {
-		t.Parallel()
+		tstest.Parallel(t)
 
 		env := NewTestEnv(t)
 		n1 := NewTestNode(t, env)
@@ -2496,11 +2515,11 @@ func TestTailnetLock(t *testing.T) {
 	// the signed nodes can talk to each other but the unsigned node cannot
 	// talk to anybody.
 	t.Run("node-connectivity", func(t *testing.T) {
-		t.Parallel()
+		tstest.Parallel(t)
 
 		env := NewTestEnv(t)
 		env.Control.DefaultNodeCapabilities = &tailcfg.NodeCapMap{
-			tailcfg.CapabilityTailnetLock: []tailcfg.RawMessage{},
+			nodecap.TailnetLock: []tailcfg.RawMessage{},
 		}
 
 		// Start two nodes which will be our signing nodes.
@@ -2571,7 +2590,7 @@ func TestTailnetLock(t *testing.T) {
 	t.Run("no-keys-is-error", func(t *testing.T) {
 		for _, verb := range []string{"add", "remove", "revoke-keys"} {
 			t.Run(verb, func(t *testing.T) {
-				t.Parallel()
+				tstest.Parallel(t)
 
 				env := NewTestEnv(t)
 				n1 := NewTestNode(t, env)
@@ -2599,7 +2618,8 @@ func TestTailnetLock(t *testing.T) {
 func TestNodeWithBadStateFile(t *testing.T) {
 	tstest.Parallel(t)
 	env := NewTestEnv(t)
-	n1 := NewTestNode(t, env)
+	// A userspace node keeps its state in the test's temp dir, where the corrupt file can be seeded.
+	n1 := NewTestNode(t, env, TUNMode(false))
 	if err := os.WriteFile(n1.stateFile, []byte("bad json"), 0644); err != nil {
 		t.Fatal(err)
 	}

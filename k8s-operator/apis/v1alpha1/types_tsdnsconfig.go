@@ -45,7 +45,12 @@ var DNSConfigKind = "DNSConfig"
 // NB: if you want cluster workloads to be able to refer to Tailscale Ingress
 // using its MagicDNS name, you must also annotate the Ingress resource with
 // tailscale.com/experimental-forward-cluster-traffic-via-ingress annotation to
-// ensure that the proxy created for the Ingress listens on its Pod IP address.
+// ensure that the proxy created for the Ingress is available via its Pod IP
+// address. The annotation installs rules that DNAT traffic sent to the proxy's
+// Pod IP to its Tailscale IP, and allows the Serve listener on that Tailscale IP
+// to accept packets arriving through the Pod interface. Traffic accepted via this
+// path does not traverse the Tailscale tunnel and is not affected by tailnet
+// ACLs. Restrict access using Kubernetes network policy.
 type DNSConfig struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -119,6 +124,10 @@ type NameserverPod struct {
 	// If specified, applies node selector rules to the pods deployed by the DNSConfig resource.
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitzero"`
+	// Nameserver Pod's image pull Secrets.
+	// https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#PodSpec
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 type DNSConfigStatus struct {

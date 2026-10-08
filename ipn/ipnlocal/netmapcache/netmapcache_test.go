@@ -23,6 +23,7 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"tailscale.com/ipn/ipnlocal/netmapcache"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tailcfg/nodecap"
 	"tailscale.com/tka"
 	"tailscale.com/types/ipproto"
 	"tailscale.com/types/key"
@@ -119,12 +120,12 @@ func init() {
 			User:         30337,
 			Name:         "test.example.com.",
 			Key:          testNodeKey,
-			Capabilities: []tailcfg.NodeCapability{"cap1"},
-			CapMap: map[tailcfg.NodeCapability][]tailcfg.RawMessage{
+			Capabilities: []nodecap.Cap{"cap1"},
+			CapMap: map[nodecap.Cap][]tailcfg.RawMessage{
 				"cap2": nil,
 			},
 		}).View(),
-		AllCaps: set.Of[tailcfg.NodeCapability]("cap1", "cap2"),
+		AllCaps: set.Of[nodecap.Cap]("cap1", "cap2"),
 		NodeKey: testNodeKey,
 
 		DNS: tailcfg.DNSConfig{Domains: []string{"example1.com", "example2.ac.uk"}}, // "dns"
@@ -137,7 +138,7 @@ func init() {
 
 		DERPMap: &tailcfg.DERPMap{ // "derp"
 			HomeParams: &tailcfg.DERPHomeParams{
-				RegionScore: map[int]float64{10: 0.31, 20: 0.141, 30: 0.592},
+				RegionScore: map[tailcfg.DERPRegionID]float64{10: 0.31, 20: 0.141, 30: 0.592},
 			},
 			OmitDefaultRegions: true,
 		},
@@ -276,11 +277,11 @@ func TestUpdateSelfOnly(t *testing.T) {
 		Name:         "alt.example.com.",
 		Key:          testNodeKey,
 		HomeDERP:     6174,
-		Capabilities: []tailcfg.NodeCapability{"cap1", "cap3"},
+		Capabilities: []nodecap.Cap{"cap1", "cap3"},
 	}
 	updated := *testMap // shallow copy
 	updated.SelfNode = newSelf.View()
-	updated.AllCaps = set.Of[tailcfg.NodeCapability]("cap1", "cap3")
+	updated.AllCaps = set.Of[nodecap.Cap]("cap1", "cap3")
 	updated.DNS = tailcfg.DNSConfig{Domains: []string{"example3.org", "example4.horse"}}
 
 	// Empty the peers and profiles so that we can verify the update does not
@@ -352,6 +353,21 @@ func TestUpdatePeers(t *testing.T) {
 		t.Fatalf("Load netmap failed: %v", err)
 	}
 	if diff := diffNetMaps(got, &updated); diff != "" {
+		t.Fatalf("Updated map differs (-got, +want):\n%s", diff)
+	}
+
+	// If we re-apply a previously-removed change, it should be persisted.
+	// See tailscale/tailscale#20795.
+	if err := c.UpdatePeers(t.Context(), []tailcfg.NodeView{testNode2}, nil); err != nil {
+		t.Errorf("UpdatePeers restoring an old peer: %v", err)
+	}
+
+	got2, err := c.Load(t.Context())
+	if err != nil {
+		t.Fatalf("Load netmap failed: %v", err)
+	}
+	updated.Peers = []tailcfg.NodeView{modNode1, testNode2, newNode3} // N.B. sorted
+	if diff := diffNetMaps(got2, &updated); diff != "" {
 		t.Fatalf("Updated map differs (-got, +want):\n%s", diff)
 	}
 }

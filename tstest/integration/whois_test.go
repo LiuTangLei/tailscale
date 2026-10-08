@@ -27,7 +27,8 @@ func TestUserspaceWhoIsProxyMap(t *testing.T) {
 	n1 := NewTestNode(t, env)
 	d1 := n1.StartDaemon()
 
-	n2 := NewTestNode(t, env)
+	// The WhoIs forwarding being tested only happens in userspace networking mode.
+	n2 := NewTestNode(t, env, TUNMode(false))
 	d2 := n2.StartDaemon()
 
 	n1.AwaitListening()

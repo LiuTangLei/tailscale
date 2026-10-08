@@ -405,12 +405,7 @@ func (c *carrierBind) open(port uint16, offset int, grow bool) ([]conn.ReceiveFu
 	g.workers.Add(1)
 	go g.maintainSessions()
 	b.active.Store(g)
-	if grow {
-		return []conn.ReceiveFunc{func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
-			return g.receivePackets(bufs, sizes, eps, offset, true)
-		}}, actual, nil
-	}
-	return []conn.ReceiveFunc{g.receive}, actual, nil
+	return []conn.ReceiveFunc{g.receiveSlab}, actual, nil
 }
 
 func (b *Backend) quicConfig() *quic.Config {
@@ -1097,6 +1092,49 @@ func (p *peer) deliverFrame(s *session, data []byte) {
 		p.g.rxBytes.Add(-int64(len(packet)))
 		p.g.b.counters.ReceiveQueueDrops.Add(1)
 	}
+}
+
+// receiveSlab preserves packet headroom and ownership under the upstream
+// batched receive API. Stop before taking another maximum-size IP packet when
+// the remaining slab cannot hold it; queued packets stay owned by the queue.
+func (g *generation) receiveSlab(slab []byte, packets []conn.ReceivedPacket) (int, error) {
+	const spacing = 64
+	const maxPacket = 65535
+	if len(packets) == 0 || len(slab) < maxPacket+2*spacing {
+		return 0, errors.New("invalid receive slab")
+	}
+	clear(packets)
+	offset := spacing
+	take := func(i int, r received) {
+		if r.owned != nil {
+			defer releasePacket(r.owned)
+		}
+		g.rxBytes.Add(-int64(len(r.data)))
+		if r.peer == nil || !r.peer.stampValid(r.stamp) || len(r.data) > maxPacket {
+			g.b.counters.ReceiveQueueDrops.Add(1)
+			return
+		}
+		size := copy(slab[offset:], r.data)
+		packets[i] = conn.ReceivedPacket{Offset: offset, Size: size, Endpoint: r.ep}
+		offset += size + spacing
+	}
+	select {
+	case <-g.ctx.Done():
+		return 0, net.ErrClosed
+	case r := <-g.rx:
+		take(0, r)
+	}
+	n := 1
+	for n < len(packets) && len(slab)-offset >= maxPacket+spacing {
+		select {
+		case r := <-g.rx:
+			take(n, r)
+			n++
+		default:
+			return n, nil
+		}
+	}
+	return n, nil
 }
 
 func (g *generation) receive(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {

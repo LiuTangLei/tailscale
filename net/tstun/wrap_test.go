@@ -1,6 +1,8 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
+//go:build !ts_omit_netstack
+
 package tstun
 
 import (
@@ -18,6 +20,7 @@ import (
 	"unicode"
 	"unsafe"
 
+	wgtun "github.com/LiuTangLei/wireguard-go/tun"
 	"github.com/LiuTangLei/wireguard-go/tun/tuntest"
 	"github.com/gaissmai/bart"
 	"github.com/google/go-cmp/cmp"
@@ -199,6 +202,13 @@ func newFakeTUN(logf logger.Logf, bus *eventbus.Bus, secure bool) (*fakeTUN, *Wr
 	return ftun.(*fakeTUN), tun
 }
 
+// getSinglePacketReadArgs returns a slab and packets slice sized for passing to
+// [tun.Device.Read] where [tun.Device.BatchSize] returns 1.
+func getSinglePacketReadArgs() (slab []byte, packets []wgtun.ReadPacket) {
+	return make([]byte, MaxPacketSize+(2*wgtun.ReadPacketSpacing)),
+		make([]wgtun.ReadPacket, 1)
+}
+
 func TestReadAndInject(t *testing.T) {
 	bus := eventbustest.NewBus(t)
 	chtun, tun := newChannelTUN(t.Logf, bus, false)
@@ -225,21 +235,18 @@ func TestReadAndInject(t *testing.T) {
 		}(packet)
 	}
 
-	var buf [MaxPacketSize]byte
 	seen := make(map[string]bool)
-	sizes := make([]int, 1)
+	slab, packets := getSinglePacketReadArgs()
 	// We expect the same packets back, in no particular order.
 	for i := range len(written) + len(injected) {
-		packet := buf[:]
-		buffs := [][]byte{packet}
-		numPackets, err := tun.Read(buffs, sizes, 0)
+		numPackets, err := tun.Read(slab, packets)
 		if err != nil {
 			t.Errorf("read %d: error: %v", i, err)
 		}
 		if numPackets != 1 {
 			t.Fatalf("read %d packets, expected %d", numPackets, 1)
 		}
-		packet = packet[:sizes[0]]
+		packet := slab[packets[0].Offset : packets[0].Offset+packets[0].Size]
 		packetLen := len(packet)
 		if packetLen != size {
 			t.Errorf("read %d: got size %d; want %d", i, packetLen, size)
@@ -373,7 +380,6 @@ func TestFilter(t *testing.T) {
 		}
 	}()
 
-	var buf [MaxPacketSize]byte
 	var stats netlogtype.CountsByConnection
 	tun.SetConnectionCounter(stats.Add)
 	for _, tt := range tests {
@@ -381,7 +387,6 @@ func TestFilter(t *testing.T) {
 			var n int
 			var err error
 			var filtered bool
-			sizes := make([]int, 1)
 
 			tunStats := stats.Clone()
 			stats.Reset()
@@ -399,8 +404,10 @@ func TestFilter(t *testing.T) {
 				_, err = tun.Write([][]byte{tt.data}, 0)
 				filtered = tun.lastActivityAtomic.LoadAtomic() == 0
 			} else {
-				chtun.Outbound <- tt.data
-				n, err = tun.Read([][]byte{buf[:]}, sizes, 0)
+				// chtun.Outbound is unbuffered, and won't be drained until the
+				// first Read call.
+				go func() { chtun.Outbound <- tt.data }()
+				n, err = tun.Read(getSinglePacketReadArgs())
 				// In the read direction, errors are fatal, so we return n = 0 instead.
 				filtered = (n == 0)
 			}
@@ -487,9 +494,7 @@ func TestInjectOutboundRecordsUDPFlowState(t *testing.T) {
 
 	// Drain the injected packet via Read. This drives injectedRead, which
 	// is what records the reverse-flow tuple in filter state.
-	var buf [MaxPacketSize]byte
-	sizes := make([]int, 1)
-	if n, err := tun.Read([][]byte{buf[:]}, sizes, 0); err != nil {
+	if n, err := tun.Read(getSinglePacketReadArgs()); err != nil {
 		t.Fatalf("Read: %v", err)
 	} else if n != 1 {
 		t.Fatalf("Read returned %d packets, want 1", n)
@@ -972,12 +977,9 @@ func TestCaptureHook(t *testing.T) {
 	// Loop reading and discarding packets; this ensures that we don't have
 	// packets stuck in vectorOutbound
 	go func() {
-		var (
-			buf   [MaxPacketSize]byte
-			sizes = make([]int, 1)
-		)
+		slab, packets := getSinglePacketReadArgs()
 		for {
-			_, err := w.Read([][]byte{buf[:]}, sizes, 0)
+			_, err := w.Read(slab, packets)
 			if err != nil {
 				return
 			}
@@ -992,10 +994,10 @@ func TestCaptureHook(t *testing.T) {
 	packetBuf := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		Payload: buffer.MakeWithData([]byte("InjectInboundPacketBuffer")),
 	})
-	buffs := make([][]byte, 1)
-	buffs[0] = make([]byte, PacketStartOffset+packetBuf.Size())
-	sizes := make([]int, 1)
-	w.InjectInboundPacketBuffer(packetBuf, buffs, sizes)
+	slab := make([]byte, packetBuf.Size()+(2*WritePacketStartOffset))
+	packets := make([]wgtun.ReadPacket, 1)
+	writeBufs := make([][]byte, 1)
+	w.InjectInboundPacketBuffer(packetBuf, slab, packets, writeBufs)
 
 	packetBuf = stack.NewPacketBuffer(stack.PacketBufferOptions{
 		Payload: buffer.MakeWithData([]byte("InjectOutboundPacketBuffer")),
@@ -1113,11 +1115,12 @@ func TestInterceptOrdering(t *testing.T) {
 	tun.PreFilterPacketOutboundToWireGuardAppConnectorIntercept = orderedFilterFn(3)
 	tun.PostFilterPacketOutboundToWireGuard = orderedFilterFn(4)
 
-	// Read the packet.
-	var buf [MaxPacketSize]byte
-	sizes := make([]int, 1)
-	chtun.Outbound <- udp4("1.2.3.4", "5.6.7.8", 98, 98) // Simulate tun device sending.
-	tun.Read([][]byte{buf[:]}, sizes, 0)
+	// Read the packet. chtun.Outbound is unbuffered, and won't be drained until
+	// first Read call.
+	go func() {
+		chtun.Outbound <- udp4("1.2.3.4", "5.6.7.8", 98, 98) // Simulate tun device sending.
+	}()
+	tun.Read(getSinglePacketReadArgs())
 
 	if seq != numOutboundIntercepts {
 		t.Errorf("got number of intercepts run in Read(): %d; want: %d", seq, numOutboundIntercepts)
@@ -1142,16 +1145,15 @@ func TestInjectedReadCallsAppConnectorHook(t *testing.T) {
 		t.Fatalf("InjectOutbound error: %v", err)
 	}
 
-	var buf [MaxPacketSize]byte
-	sizes := make([]int, 1)
-	tun.Read([][]byte{buf[:]}, sizes, 0)
+	slab, packets := getSinglePacketReadArgs()
+	tun.Read(slab, packets)
 
 	if !called {
 		t.Error("app connector hook was not called in InjectOutbound")
 	}
 
 	wantPkt := udp4("169.254.0.1", "100.25.63.57", 80, 12345)
-	gotPkt := buf[:sizes[0]]
+	gotPkt := slab[packets[0].Offset : packets[0].Offset+packets[0].Size]
 	if !bytes.Equal(wantPkt, gotPkt) {
 		t.Errorf("packet mismatch\nwant:\t% x\ngot:\t% x", wantPkt, gotPkt)
 	}
@@ -1270,79 +1272,106 @@ func TestFilterDropTSMP(t *testing.T) {
 	}
 }
 
-func TestReadWithBufferGrowthPreservesLargePackets(t *testing.T) {
-	for _, injected := range []bool{false, true} {
-		t.Run(fmt.Sprint(injected), func(t *testing.T) {
-			chtun, tun := newChannelTUN(t.Logf, eventbustest.NewBus(t), false)
-			defer tun.Close()
-			want := bytes.Repeat([]byte{0x45}, 60000)
-			if injected {
-				go func() {
-					if err := tun.InjectOutbound(want); err != nil {
-						t.Error(err)
-					}
-				}()
-			} else {
-				go func() { chtun.Outbound <- want }()
+func TestStackGSOToTunGSO(t *testing.T) {
+	tcpPacket := func(l3HdrLen, payloadLen int) []byte {
+		const tcpHdrLen = 20
+		pkt := make([]byte, l3HdrLen+tcpHdrLen+payloadLen)
+		pkt[l3HdrLen+12] = tcpHdrLen / 4 << 4
+		return pkt
+	}
+
+	tests := []struct {
+		name    string
+		pkt     []byte
+		gso     stack.GSO
+		want    wgtun.GSOOptions
+		wantErr bool
+	}{
+		{
+			name: "gso_none_does_not_parse_tcp_header",
+			pkt:  udp4("100.64.0.1", "100.64.0.2", 1234, 5678),
+		},
+		{
+			name: "tcpv4_zero_mss_without_payload",
+			pkt:  tcpPacket(20, 0),
+			gso: stack.GSO{
+				Type:       stack.GSOTCPv4,
+				NeedsCsum:  true,
+				CsumOffset: 16,
+				L3HdrLen:   20,
+			},
+			want: wgtun.GSOOptions{
+				GSOType:    wgtun.GSONone,
+				HdrLen:     40,
+				CsumStart:  20,
+				CsumOffset: 16,
+				NeedsCsum:  true,
+			},
+		},
+		{
+			name: "tcpv6_zero_mss_without_payload",
+			pkt:  tcpPacket(40, 0),
+			gso: stack.GSO{
+				Type:       stack.GSOTCPv6,
+				NeedsCsum:  true,
+				CsumOffset: 16,
+				L3HdrLen:   40,
+			},
+			want: wgtun.GSOOptions{
+				GSOType:    wgtun.GSONone,
+				HdrLen:     60,
+				CsumStart:  40,
+				CsumOffset: 16,
+				NeedsCsum:  true,
+			},
+		},
+		{
+			name: "tcpv4_zero_mss_with_payload",
+			pkt:  tcpPacket(20, 1),
+			gso: stack.GSO{
+				Type:       stack.GSOTCPv4,
+				CsumOffset: 16,
+				L3HdrLen:   20,
+			},
+			wantErr: true,
+		},
+		{
+			name: "tcpv4_nonzero_mss",
+			pkt:  tcpPacket(20, 1),
+			gso: stack.GSO{
+				Type:       stack.GSOTCPv4,
+				NeedsCsum:  true,
+				CsumOffset: 16,
+				MSS:        1200,
+				L3HdrLen:   20,
+			},
+			want: wgtun.GSOOptions{
+				GSOType:    wgtun.GSOTCPv4,
+				HdrLen:     40,
+				CsumStart:  20,
+				CsumOffset: 16,
+				GSOSize:    1200,
+				NeedsCsum:  true,
+			},
+		},
+		{
+			name: "unsupported_gso_type",
+			gso: stack.GSO{
+				Type: stack.GSOGvisor,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := stackGSOToTunGSO(tt.pkt, tt.gso)
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("error = %v != wantErr: %v", err, tt.wantErr)
 			}
-			buffs := [][]byte{make([]byte, 2048+16)}
-			sizes := make([]int, 1)
-			n, err := tun.ReadWithBufferGrowth(buffs, sizes, 16)
-			if err != nil || n != 1 || sizes[0] != len(want) || !bytes.Equal(buffs[0][16:16+sizes[0]], want) {
-				t.Fatalf("large packet was truncated: n=%d size=%d err=%v", n, sizes[0], err)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
 			}
 		})
-	}
-}
-
-// Compare the adaptive IP path to the unchanged legacy path on a jumbo MSS.
-// This covers GSO slots beyond slot zero, which holds the input super-packet.
-func TestGrowingInjectedJumboGSOAgreesWithLegacy(t *testing.T) {
-	_, tun := newChannelTUN(t.Logf, eventbustest.NewBus(t), false)
-	defer tun.Close()
-	raw := make([]byte, 60040)
-	raw[0] = 0x45
-	raw[8] = 64
-	raw[9] = 6
-	binary.BigEndian.PutUint16(raw[2:4], uint16(len(raw)))
-	copy(raw[12:16], []byte{100, 64, 0, 1})
-	copy(raw[16:20], []byte{100, 64, 0, 2})
-	raw[20+12] = 0x50
-	raw[20+13] = 0x10
-	for i := 40; i < len(raw); i++ {
-		raw[i] = byte(i)
-	}
-	var reference [][]byte
-	for _, grow := range []bool{false, true} {
-		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(bytes.Clone(raw))})
-		if _, ok := pkt.NetworkHeader().Consume(20); !ok {
-			t.Fatal("network header")
-		}
-		if _, ok := pkt.TransportHeader().Consume(20); !ok {
-			t.Fatal("transport header")
-		}
-		pkt.GSOOptions = stack.GSO{Type: stack.GSOTCPv4, L3HdrLen: 20, MSS: 9000, CsumOffset: 16}
-		bufs := make([][]byte, 128)
-		sizes := make([]int, 128)
-		for i := range bufs {
-			size := 65535 + 16
-			if grow && i > 0 {
-				size = 2048 + 16
-			}
-			bufs[i] = make([]byte, size)
-		}
-		n, err := tun.injectedRead(tunInjectedRead{packet: pkt}, bufs, sizes, 16, grow)
-		if err != nil || n != 7 {
-			t.Fatalf("GSO failed: n=%d err=%v", n, err)
-		}
-		var got [][]byte
-		for i := range n {
-			got = append(got, bytes.Clone(bufs[i][16:16+sizes[i]]))
-		}
-		if !grow {
-			reference = got
-		} else if !reflect.DeepEqual(reference, got) {
-			t.Fatal("growing buffers changed jumbo GSO packets")
-		}
 	}
 }

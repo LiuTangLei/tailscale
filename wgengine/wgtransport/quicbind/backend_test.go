@@ -204,7 +204,7 @@ func readOne(t testing.TB, fn conn.ReceiveFunc) []byte {
 		buf := make([]byte, maxPacket)
 		sizes := make([]int, 1)
 		eps := make([]conn.Endpoint, 1)
-		n, err := fn([][]byte{buf}, sizes, eps)
+		n, err := receiveTestSlots(fn, [][]byte{buf}, sizes, eps)
 		if err != nil {
 			errCh <- err
 			return
@@ -291,4 +291,15 @@ func TestQUICPinVerification(t *testing.T) {
 	if _, err := a.verify(state, nil); err == nil {
 		t.Fatal("untrusted pin accepted")
 	}
+}
+
+func receiveTestSlots(fn conn.ReceiveFunc, bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+	slab := make([]byte, 2*(1<<16-1))
+	packets := make([]conn.ReceivedPacket, len(bufs))
+	n, err := fn(slab, packets)
+	for i, p := range packets[:n] {
+		sizes[i] = copy(bufs[i], p.Bytes(slab))
+		eps[i] = p.Endpoint
+	}
+	return n, err
 }

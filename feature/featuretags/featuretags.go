@@ -1,10 +1,14 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The featuretags package is a registry of all the ts_omit-able build tags.
+// Package featuretags is a registry of all the ts_omit-able build tags.
 package featuretags
 
-import "tailscale.com/util/set"
+import (
+	"slices"
+
+	"tailscale.com/util/set"
+)
 
 // CLI is a special feature in the [Features] map that works opposite
 // from the others: it is opt-in, rather than opt-out, having a different
@@ -60,6 +64,28 @@ func RequiredBy(ft FeatureTag) set.Set[FeatureTag] {
 		}
 	}
 	return s
+}
+
+// MinTags returns the sorted Go build tags for a minimal build that
+// includes only the features in keep and the features they require.
+// Every other omittable feature in [Features] gets its ts_omit_ tag, and
+// ts_include_cli is added if [CLI] is kept.
+func MinTags(keep ...FeatureTag) []string {
+	kept := set.Set[FeatureTag]{}
+	for _, ft := range keep {
+		kept.AddSet(Requires(ft))
+	}
+	var tags []string
+	if kept.Contains(CLI) {
+		tags = append(tags, "ts_include_cli")
+	}
+	for ft := range Features {
+		if ft != "" && ft.IsOmittable() && !kept.Contains(ft) {
+			tags = append(tags, ft.OmitTag())
+		}
+	}
+	slices.Sort(tags)
+	return tags
 }
 
 // featureDependsOn reports whether feature a (directly or indirectly) depends on b.
@@ -146,6 +172,10 @@ var Features = map[FeatureTag]FeatureMeta{
 	},
 	"completion": {Sym: "Completion", Desc: "CLI shell completion"},
 	"conn25":     {Sym: "Conn25", Desc: "Route traffic for configured domains through connector devices"},
+	"connreject": {
+		Sym:  "ConnReject",
+		Desc: "Connection-rejection diagnostics (TSMP rejects, pendopen timeouts) exposed over debug-rejects LocalAPI and c2n endpoints",
+	},
 	"completion_scripts": {
 		Sym: "CompletionScripts", Desc: "embed CLI shell completion scripts",
 		Deps: []FeatureTag{"completion"},
@@ -164,6 +194,7 @@ var Features = map[FeatureTag]FeatureMeta{
 		Deps: []FeatureTag{"portmapper"},
 	},
 	"desktop_sessions": {Sym: "DesktopSessions", Desc: "Desktop sessions support"},
+	"dnsresolvecache":  {Sym: "DNSResolveCache", Desc: "Persist successful DNS resolutions to disk for use on later boots with broken DNS"},
 	"doctor":           {Sym: "Doctor", Desc: "Diagnose possible issues with Tailscale and its host environment"},
 	"drive":            {Sym: "Drive", Desc: "Tailscale Drive (file server) support"},
 	"flashappliance":   {Sym: "FlashAppliance", Desc: "'tailscale configure flash-appliance' and 'pve-appliance' CLI commands for deploying Tailscale appliance images"},
@@ -186,6 +217,7 @@ var Features = map[FeatureTag]FeatureMeta{
 	"listenrawdisco": {
 		Sym:  "ListenRawDisco",
 		Desc: "Use raw sockets for more robust disco (NAT traversal) message receiving (Linux only)",
+		Deps: []FeatureTag{"udptransport"},
 	},
 	"logtail": {
 		Sym:  "LogTail",
@@ -217,12 +249,21 @@ var Features = map[FeatureTag]FeatureMeta{
 		Desc:                 "PeerAPI server support",
 		ImplementationDetail: true,
 	},
-	"portlist":   {Sym: "PortList", Desc: "Optionally advertise listening service ports"},
-	"portmapper": {Sym: "PortMapper", Desc: "NAT-PMP/PCP/UPnP port mapping support"},
-	"posture":    {Sym: "Posture", Desc: "Device posture checking support"},
+	"portlist": {Sym: "PortList", Desc: "Optionally advertise listening service ports"},
+	"portmapper": {
+		Sym:  "PortMapper",
+		Desc: "NAT-PMP/PCP/UPnP port mapping support",
+		Deps: []FeatureTag{"nattraversal"},
+	},
+	"posture": {Sym: "Posture", Desc: "Device posture checking support"},
 	"dns": {
 		Sym:  "DNS",
 		Desc: "MagicDNS and system DNS configuration support",
+	},
+	"nattraversal": {
+		Sym:  "NATTraversal",
+		Desc: "NAT traversal: STUN, disco hole punching, and UDP peer relay client support (if omitted, direct UDP works only to peers with directly reachable endpoints)",
+		Deps: []FeatureTag{"udptransport"},
 	},
 	"netlog": {
 		Sym:  "NetLog",
@@ -236,6 +277,7 @@ var Features = map[FeatureTag]FeatureMeta{
 		Deps: []FeatureTag{"dbus"},
 	},
 	"serviceclientprefs": {Sym: "ServiceClientPrefs", Desc: "Desktop client service launch preferences"},
+	"favorites":          {Sym: "Favorites", Desc: "Locally-pinned favorite devices, exit nodes, and services"},
 	"qrcodes":            {Sym: "QRCodes", Desc: "QR codes in tailscale CLI"},
 	"relayserver":        {Sym: "RelayServer", Desc: "Relay server"},
 	"remoteconfig": {
@@ -295,6 +337,10 @@ var Features = map[FeatureTag]FeatureMeta{
 	"tap":         {Sym: "Tap", Desc: "Experimental Layer 2 (ethernet) support"},
 	"tpm":         {Sym: "TPM", Desc: "TPM support"},
 	"tundevstats": {Sym: "TUNDevStats", Desc: "Poll TUN device statistics (Linux only)"},
+	"udptransport": {
+		Sym:  "UDPTransport",
+		Desc: "UDP transport to peers (if omitted, all peer traffic is relayed over DERP)",
+	},
 	"unixsocketidentity": {
 		Sym:  "UnixSocketIdentity",
 		Desc: "differentiate between users accessing the LocalAPI over unix sockets (if omitted, all users have full access)",

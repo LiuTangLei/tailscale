@@ -6,13 +6,7 @@
 // network infrastructure. It supports mixed OS types (gokrazy, Ubuntu, Debian)
 // and multi-NIC configurations for scenarios like subnet routing.
 //
-// Prerequisites:
-//   - qemu-system-x86_64 (KVM is used automatically on Linux when /dev/kvm is accessible)
-//   - A built gokrazy natlabapp image (auto-built on first run via "make natlab" in gokrazy/)
-//
-// Run tests with:
-//
-//	go test ./tstest/natlab/vmtest/ --run-vm-tests -v
+// See tstest/natlab/README.md for prerequisites and how to run.
 package vmtest
 
 import (
@@ -344,6 +338,9 @@ func New(t testing.TB, opts ...EnvOption) *Env {
 		o.applyTo(e)
 	}
 	t.Cleanup(func() {
+		if t.Failed() {
+			e.dumpNodeLogs()
+		}
 		e.testStatus.finish(t.Failed())
 		e.eventBus.Publish(VMEvent{
 			Type:    EventTestStatus,
@@ -352,6 +349,24 @@ func New(t testing.TB, opts ...EnvOption) *Env {
 		})
 	})
 	return e
+}
+
+// dumpNodeLogs writes the tail of each node's tailscaled logs, as uploaded
+// to the fake log catcher, to the test log. It runs on test failure. The
+// VM console log dumped by [dumpLogTail] holds only kernel and init output;
+// on gokrazy the processes' own output goes to a remote syslog that the
+// virtual network discards, so this is the only view of what tailscaled
+// was doing.
+func (e *Env) dumpNodeLogs() {
+	if e.server == nil {
+		return
+	}
+	// Nodes run tailscaled and upload its logs whether or not they joined
+	// the tailnet or have an agent, so dump them all. A node that uploaded
+	// nothing gets a one-line note.
+	for _, n := range e.nodes {
+		dumpTail(e.t, n.name, "tailscaled (via logcatcher)", []byte(e.server.NodeLogs(n.vnetNode)), 100)
+	}
 }
 
 // EnvOption configures an [Env] in [New].
@@ -422,6 +437,12 @@ func (e *Env) AddNetwork(opts ...any) *vnet.Network {
 	return e.cfg.AddNetwork(opts...)
 }
 
+// FirstNetwork returns the first existing network. If no network exists, it
+// returns nil.
+func (e *Env) FirstNetwork() *vnet.Network {
+	return e.cfg.FirstNetwork()
+}
+
 // RegisterFile registers a file with the vnet fileserver.
 // It is served at http://files.tailscale/<path>.
 func (e *Env) RegisterFile(path string, data []byte) {
@@ -489,7 +510,7 @@ func (e *Env) AddNode(name string, opts ...any) *Node {
 			n.webServerPort = int(o)
 		case nodeOptDNSMode:
 			switch DNSMode(o) {
-			case DNSDefault, DNSDirect:
+			case DNSDefault, DNSDirect, DNSOpenresolv:
 			default:
 				e.t.Fatalf("AddNode(%q): unsupported DNSMode %q", name, DNSMode(o))
 			}
@@ -525,6 +546,15 @@ func (e *Env) AddNode(name string, opts ...any) *Node {
 
 	n.vnetNode = e.cfg.AddNode(vnetOpts...)
 	n.num = n.vnetNode.Num()
+	// VMTEST_VERBOSE_SYSLOG=1 logs each node's remote syslog (the stdout
+	// and stderr of tailscaled and the other guest processes) into the
+	// test output as it arrives. It is the natlab equivalent of
+	// tstest/integration/nat's --log-tailscaled flag and is the way to
+	// watch a guest live; on failure the tail of tailscaled's logs is
+	// dumped regardless, from the fake log catcher.
+	if os.Getenv("VMTEST_VERBOSE_SYSLOG") == "1" {
+		n.vnetNode.SetVerboseSyslog(true)
+	}
 	return n
 }
 
@@ -540,16 +570,7 @@ func (n *Node) LanIP(net *vnet.Network) netip.Addr {
 	return n.vnetNode.LanIP(net)
 }
 
-// DropControlTraffic sets up a blackhole for control traffic for just this
-// node on all the networks belonging to the node.
-func (n *Node) DropControlTraffic() {
-	for _, network := range n.nets {
-		network.BlackholeControlForAddr(n.LanIP(network))
-	}
-}
-
 // NodeOption types for configuring nodes.
-
 type nodeOptOS OSImage
 type nodeOptNoTailscale struct{}
 type nodeOptTailscaleSSH struct{}
@@ -579,6 +600,16 @@ const (
 	// DNSDirect masks systemd-resolved and installs a plain /etc/resolv.conf
 	// so tailscaled selects the "direct" manager (rewrites resolv.conf itself).
 	DNSDirect DNSMode = "direct"
+
+	// DNSOpenresolv masks systemd-resolved and installs upstream openresolv
+	// (which no cloud image ships), so tailscaled selects the "openresolv"
+	// manager. Its key directory is created empty, so the only snippet ever
+	// registered is Tailscale's own. Before the fix for tailscale/tailscale#20825,
+	// tailscaled handled that state wrong. openresolv reports "no snippets" by
+	// exiting 2, and net/dns treated that non-zero exit as a hard failure.
+	//
+	// openresolv's sources are vendored into the tree; see openresolv.go.
+	DNSOpenresolv DNSMode = "openresolv"
 )
 
 // OS returns a NodeOption that sets the node's operating system image.
@@ -740,8 +771,17 @@ func (e *Env) Start() {
 			if n.joinTailnet {
 				tsStep := e.Step("Tailscale up: " + n.name)
 				tsStep.Begin()
-				if err := e.tailscaleUp(ctx, n); err != nil {
-					return fmt.Errorf("[%s] tailscale up: %w", n.name, err)
+				// Bound "tailscale up" more tightly than the overall
+				// test context. It normally completes in about a second
+				// against the in-process control server, so a node that
+				// is stuck here should fail promptly, with its logs
+				// dumped, rather than hang until go test's timeout panic,
+				// which dumps nothing useful about the node.
+				upCtx, upCancel := context.WithTimeout(ctx, tailscaleUpTimeout)
+				err := e.tailscaleUp(upCtx, n)
+				upCancel()
+				if err != nil {
+					return fmt.Errorf("[%s] tailscale up (limit %v): %w", n.name, tailscaleUpTimeout, err)
 				}
 				st2, err := n.agent.Status(ctx)
 				if err != nil {
@@ -797,6 +837,11 @@ func (e *Env) Start() {
 		}
 	}
 }
+
+// tailscaleUpTimeout bounds one node's "tailscale up" in [Env.Start]. It
+// is far above the roughly one second the command takes against the
+// in-process control server, and far below the test's overall context.
+const tailscaleUpTimeout = 90 * time.Second
 
 // tailscaleUp runs "tailscale up" on the node via TTA.
 func (e *Env) tailscaleUp(ctx context.Context, n *Node) error {
@@ -1117,6 +1162,27 @@ func (e *Env) SetAcceptRoutes(n *Node, on bool) {
 	e.t.Logf("[%s] accept-routes=%v", n.name, on)
 }
 
+// SetAcceptDNS toggles the node's CorpDNS preference (the --accept-dns flag),
+// controlling whether it applies the DNS configuration control sends it.
+//
+// Toggling it off and back on makes tailscaled tear down and reapply its whole
+// DNS configuration, including re-reading the OS's own config, without
+// rebooting the guest. A test can therefore change the OS resolver state
+// mid-run and be sure tailscaled re-reads it.
+func (e *Env) SetAcceptDNS(n *Node, on bool) {
+	e.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if _, err := n.agent.EditPrefs(ctx, &ipn.MaskedPrefs{
+		Prefs:      ipn.Prefs{CorpDNS: on},
+		CorpDNSSet: true,
+	}); err != nil {
+		e.t.Fatalf("SetAcceptDNS(%s, %v): %v", n.name, on, err)
+	}
+	e.t.Logf("[%s] accept-dns=%v", n.name, on)
+}
+
 // ApproveRoutes tells the test control server to approve subnet routes
 // for the given node. The routes should be CIDR strings.
 func (e *Env) ApproveRoutes(n *Node, routes ...string) {
@@ -1309,7 +1375,7 @@ func (e *Env) RotateDiscoKey(n *Node) {
 // "force-prefer-derp" debug action, so its reported NetInfo.PreferredDERP is
 // deterministic. The force lives on the long-lived magicsock.Conn and so
 // persists across an in-process profile switch. It fatals the test on error.
-func (e *Env) ForcePreferredDERP(n *Node, region int) {
+func (e *Env) ForcePreferredDERP(n *Node, region tailcfg.DERPRegionID) {
 	e.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1802,7 +1868,7 @@ func (e *Env) buildSelfSignedDERPMap() *tailcfg.DERPMap {
 	}
 	src := e.server.ControlServer().DERPMap
 	dm := &tailcfg.DERPMap{
-		Regions: make(map[int]*tailcfg.DERPRegion, len(src.Regions)),
+		Regions: make(map[tailcfg.DERPRegionID]*tailcfg.DERPRegion, len(src.Regions)),
 	}
 	for id, srcRegion := range src.Regions {
 		r := *srcRegion
@@ -2258,11 +2324,11 @@ func (e *Env) PingExpect(from, to *Node, wantRoute PingRoute, timeout time.Durat
 		pr, err := from.agent.PingWithOpts(pingCtx, targetIP, tailcfg.PingDisco, local.PingOpts{})
 		pingCancel()
 		if err == nil && pr.Err == "" {
-			if got := classifyPing(pr); got == wantRoute {
-				e.t.Logf("Saw ping type %q", got)
+			got := classifyPing(pr)
+			e.t.Logf("Saw ping type %q", got)
+			if got == wantRoute {
 				return nil
 			} else {
-				e.t.Logf("Saw ping type %q", got)
 				lastRoute = got
 			}
 		}
@@ -2274,7 +2340,68 @@ func (e *Env) PingExpect(from, to *Node, wantRoute PingRoute, timeout time.Durat
 	return fmt.Errorf("ping route = %q, want %q (after %v)", lastRoute, wantRoute, timeout)
 }
 
+// PingSettle retries disco pings every 1 second between nodes from -> to. The
+// intention is to have the route settle into the desired state at ctx timeout,
+// making the last returned type the settled state of the connection. If the
+// connection is direct before the timeout, the method returns early.
+// If no ping has been completed, nil will be returned.
+func (e *Env) PingSettle(from, to *Node, timeout time.Duration) (*ipnstate.PingResult, error) {
+	e.t.Helper()
+	ctx, cancel := context.WithTimeout(e.t.Context(), timeout)
+	defer cancel()
+	toSt, err := to.agent.Status(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ping: can't get %s status: %w", to.name, err)
+	}
+	if len(toSt.Self.TailscaleIPs) == 0 {
+		return nil, fmt.Errorf("ping: %s has no Tailscale IPs", to.name)
+	}
+	targetIP := toSt.Self.TailscaleIPs[0]
+	var lastRes *ipnstate.PingResult
+	n := 0
+	for ctx.Err() == nil {
+		n++
+		e.t.Logf("ping: attempt %d to %v ...", n, targetIP)
+		pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
+		pr, err := from.agent.PingWithOpts(pingCtx, targetIP, tailcfg.PingDisco, local.PingOpts{})
+		pingCancel()
+		if err != nil {
+			e.t.Logf("ping: attempt %d error: %v", n, err)
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		if pr.Err != "" {
+			return nil, errors.New(pr.Err)
+		}
+		e.t.Logf("ping: attempt %d: derp=%d endpoint=%v latency=%v", n, pr.DERPRegionID, pr.Endpoint, pr.LatencySeconds)
+		// When DERP on the result is 0, we have settled onto a direct path.
+		if pr.DERPRegionID == 0 {
+			return pr, nil
+		}
+		lastRes = pr
+		select {
+		case <-ctx.Done():
+			return lastRes, nil
+		case <-time.After(time.Second):
+		}
+	}
+	if lastRes != nil {
+		return lastRes, nil
+	}
+	return nil, fmt.Errorf("ping: ping no response (ctx: %v)", ctx.Err())
+}
+
 // NumNodes returns the current number of nodes configured in the env.
-func (env *Env) NumNodes() int {
-	return len(env.nodes)
+func (e *Env) NumNodes() int {
+	return len(e.nodes)
+}
+
+// DropControlTraffic sets up a blackhole for control traffic for just this
+// node on all the networks belonging to the node.
+func (e *Env) DropControlTraffic(n *Node) {
+	for _, network := range n.nets {
+		network.BlackholeControlForAddr(n.LanIP(network))
+	}
 }

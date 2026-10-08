@@ -166,33 +166,19 @@ func (deadlineError) Temporary() bool { return true }
 func (g *generation) readHost(fn conn.ReceiveFunc) {
 	defer g.workers.Done()
 	count := g.b.host.Bind.BatchSize()
-	bufs := make([][]byte, count)
-	sizes := make([]int, count)
-	eps := make([]conn.Endpoint, count)
-	var geometry []int
-	if host, ok := g.b.host.Bind.(interface{ ReceiveBufferSizes() []int }); ok {
-		geometry = host.ReceiveBufferSizes()
-	}
-	for i := range bufs {
-		// Host Bind receives may read a coalesced UDP GRO datagram before
-		// splitting. A QUIC-sized buffer here silently truncates that datagram.
-		size := 65535
-		if len(geometry) == count && geometry[i] >= 2048 && geometry[i] <= size {
-			size = geometry[i]
-		}
-		bufs[i] = make([]byte, size)
-	}
+	slab := make([]byte, 2*(1<<16-1))
+	packets := make([]conn.ReceivedPacket, count)
 	var addresses bindAddressCache
 	for {
-		n, err := fn(bufs, sizes, eps)
+		n, err := fn(slab, packets)
 		if err != nil {
 			return
 		}
 		for i := 0; i < n; i++ {
-			if sizes[i] <= 0 || sizes[i] > len(bufs[i]) || eps[i] == nil {
+			if packets[i].Size <= 0 || packets[i].Offset < 0 || packets[i].Offset+packets[i].Size > len(slab) || packets[i].Endpoint == nil {
 				continue
 			}
-			data := bufs[i][:sizes[i]]
+			data := packets[i].Bytes(slab)
 			// Only QUIC uses this data plane. Existing discovery was consumed by the
 			// host already. Never forward unknown or plain WG packets to WG in strict
 			// mode, even if a stale/legacy peer sends them to the native socket.
@@ -202,7 +188,7 @@ func (g *generation) readHost(fn conn.ReceiveFunc) {
 			}
 			packet := acquirePacket(data)
 			select {
-			case g.bridge.rx <- rawPacket{packet, addresses.address(eps[i])}:
+			case g.bridge.rx <- rawPacket{packet, addresses.address(packets[i].Endpoint)}:
 				g.b.counters.RawBytesReceived.Add(uint64(len(data)))
 			case <-g.ctx.Done():
 				releasePacket(packet)

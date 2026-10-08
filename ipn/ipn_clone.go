@@ -12,6 +12,7 @@ import (
 
 	"tailscale.com/drive"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tailcfg/peercap"
 	"tailscale.com/types/opt"
 	"tailscale.com/types/persist"
 	"tailscale.com/types/preftype"
@@ -248,7 +249,7 @@ var _HTTPHandlerCloneNeedsRegeneration = HTTPHandler(struct {
 	Path          string
 	Proxy         string
 	Text          string
-	AcceptAppCaps []tailcfg.PeerCapability
+	AcceptAppCaps []peercap.Cap
 	Redirect      string
 }{})
 

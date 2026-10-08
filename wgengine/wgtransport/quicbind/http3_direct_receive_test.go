@@ -98,7 +98,7 @@ func TestDirectHTTPReceiveStillUsesLiveDequeuePolicy(t *testing.T) {
 	sizes, endpoints := make([]int, 1), make([]conn.Endpoint, 1)
 	timer := time.AfterFunc(3*time.Second, func() { pair.backends[1].Close() })
 	defer timer.Stop()
-	n, err := fns[1](buffers, sizes, endpoints)
+	n, err := receiveTestSlots(fns[1], buffers, sizes, endpoints)
 	if err != nil || n != 1 || sizes[0] != 0 || endpoints[0] != nil {
 		t.Fatalf("revoked policy released queued bytes: n=%d size=%d err=%v", n, sizes[0], err)
 	}

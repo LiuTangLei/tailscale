@@ -4,8 +4,6 @@
 package main
 
 import (
-	"maps"
-	"slices"
 	"strings"
 	"testing"
 
@@ -21,6 +19,18 @@ func TestOmitServiceClientPrefs(t *testing.T) {
 		Tags:   "ts_omit_serviceclientprefs,ts_include_cli",
 		BadDeps: map[string]string{
 			"tailscale.com/feature/serviceclientprefs": msg,
+		},
+	}.Check(t)
+}
+
+func TestOmitFavorites(t *testing.T) {
+	const msg = "unexpected with ts_omit_favorites"
+	deptest.DepChecker{
+		GOOS:   "linux",
+		GOARCH: "amd64",
+		Tags:   "ts_omit_favorites,ts_include_cli",
+		BadDeps: map[string]string{
+			"tailscale.com/feature/favorites": msg,
 		},
 	}.Check(t)
 }
@@ -56,6 +66,17 @@ func TestOmitSyslog(t *testing.T) {
 		BadDeps: map[string]string{
 			"log/syslog":                   msg,
 			"tailscale.com/feature/syslog": msg,
+		},
+	}.Check(t)
+}
+
+func TestOmitDNSResolveCache(t *testing.T) {
+	deptest.DepChecker{
+		GOOS:   "linux",
+		GOARCH: "amd64",
+		Tags:   "ts_omit_dnsresolvecache,ts_include_cli",
+		BadDeps: map[string]string{
+			"tailscale.com/feature/dnsresolvecache": "unexpected dnsresolvecache usage with ts_omit_dnsresolvecache",
 		},
 	}.Check(t)
 }
@@ -281,13 +302,7 @@ func TestOmitUseProxy(t *testing.T) {
 }
 
 func minTags() string {
-	var tags []string
-	for _, f := range slices.Sorted(maps.Keys(featuretags.Features)) {
-		if f.IsOmittable() {
-			tags = append(tags, f.OmitTag())
-		}
-	}
-	return strings.Join(tags, ",")
+	return strings.Join(featuretags.MinTags(), ",")
 }
 
 func TestMinTailscaledNoCLI(t *testing.T) {

@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -108,10 +109,16 @@ func expectedSTS(t *testing.T, cl client.Client, opts configOpts) *appsv1.Statef
 		ImagePullPolicy: "Always",
 	}
 	if opts.shouldEnableForwardingClusterTrafficViaIngress {
-		tsContainer.Env = append(tsContainer.Env, corev1.EnvVar{
-			Name:  "EXPERIMENTAL_ALLOW_PROXYING_CLUSTER_TRAFFIC_VIA_INGRESS",
-			Value: "true",
-		})
+		tsContainer.Env = append(tsContainer.Env,
+			corev1.EnvVar{
+				Name:  "EXPERIMENTAL_ALLOW_PROXYING_CLUSTER_TRAFFIC_VIA_INGRESS",
+				Value: "true",
+			},
+			corev1.EnvVar{
+				Name:  "TS_SERVE_ALLOW_ALL_INTERFACES",
+				Value: "true",
+			},
+		)
 	}
 	var annots map[string]string
 	var volumes []corev1.Volume
@@ -249,7 +256,7 @@ func expectedSTS(t *testing.T, cl client.Client, opts configOpts) *appsv1.Statef
 							Name:    "sysctler",
 							Image:   "tailscale/tailscale",
 							Command: []string{"/bin/sh", "-c"},
-							Args:    []string{"sysctl -w net.ipv4.ip_forward=1 && if sysctl net.ipv6.conf.all.forwarding; then sysctl -w net.ipv6.conf.all.forwarding=1; fi"},
+							Args:    []string{"echo 1 > /proc/sys/net/ipv4/ip_forward && if [ -e /proc/sys/net/ipv6/conf/all/forwarding ]; then echo 1 > /proc/sys/net/ipv6/conf/all/forwarding; fi"},
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: new(true),
 							},
@@ -660,12 +667,6 @@ func mustCreate(t *testing.T, client client.Client, obj client.Object) {
 		t.Fatalf("creating %q: %v", obj.GetName(), err)
 	}
 }
-func mustCreateAll(t *testing.T, client client.Client, objs ...client.Object) {
-	t.Helper()
-	for _, obj := range objs {
-		mustCreate(t, client, obj)
-	}
-}
 
 func mustDeleteAll(t *testing.T, client client.Client, objs ...client.Object) {
 	t.Helper()
@@ -726,6 +727,11 @@ func expectEqual[T any, O ptrObject[T]](t *testing.T, client client.Client, want
 	// so just remove it from both got and want.
 	got.SetResourceVersion("")
 	want.SetResourceVersion("")
+	// controller-runtime v0.20+ populates TypeMeta on objects returned by the
+	// fake client. Strip it so tests can continue to build expected objects
+	// without setting Kind/APIVersion explicitly.
+	got.GetObjectKind().SetGroupVersionKind(schema.GroupVersionKind{})
+	want.GetObjectKind().SetGroupVersionKind(schema.GroupVersionKind{})
 	for _, modifier := range modifiers {
 		modifier(want)
 		modifier(got)

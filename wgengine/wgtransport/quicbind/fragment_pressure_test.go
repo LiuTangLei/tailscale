@@ -18,7 +18,7 @@ func TestLostFragmentsDoNotBlockNewPackets(t *testing.T) {
 	}
 	want := bytes.Repeat([]byte{7}, 1280)
 	for i := 0; i < 100; i++ {
-		id := uint32(1000+i)
+		id := uint32(1000 + i)
 		if p, err := r.consume(fragment(id, len(want), 0, want[:1150]), now.Add(time.Millisecond)); err != nil || p != nil {
 			t.Fatalf("new packet starved by abandoned fragments: %v", err)
 		}
@@ -37,7 +37,9 @@ func TestFragmentPressureEvictsOldestOnly(t *testing.T) {
 	now := time.Unix(1234, 0)
 	for i := 0; i < maxAssemblies; i++ {
 		_, err := r.consume(fragment(uint32(i+1), 6, 0, []byte("abc")), now.Add(time.Duration(i)*time.Millisecond))
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := r.consume(fragment(100, 6, 0, []byte("abc")), now.Add(time.Second)); err != nil {
 		t.Fatal(err)
@@ -47,6 +49,8 @@ func TestFragmentPressureEvictsOldestOnly(t *testing.T) {
 	}
 	for i := 2; i <= maxAssemblies; i++ {
 		got, err := r.consume(fragment(uint32(i), 6, 3, []byte("def")), now.Add(time.Second))
-		if err != nil || string(got) != "abcdef" { t.Fatalf("newer message lost: %v", err) }
+		if err != nil || string(got) != "abcdef" {
+			t.Fatalf("newer message lost: %v", err)
+		}
 	}
 }

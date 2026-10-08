@@ -5,18 +5,17 @@ package tailcfg_test
 
 import (
 	"encoding/json"
-	"log"
 	"net/netip"
 	"os"
 	"reflect"
 	"regexp"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
 	"tailscale.com/ipn/ipnstate"
 	. "tailscale.com/tailcfg"
+	"tailscale.com/tailcfg/peercap"
 	"tailscale.com/tstest/deptest"
 	"tailscale.com/types/key"
 	"tailscale.com/types/opt"
@@ -351,6 +350,7 @@ func TestNodeEqual(t *testing.T) {
 		"ComputedName", "computedHostIfDifferent", "ComputedNameWithHost",
 		"DataPlaneAuditLogID", "Expired", "SelfNodeV4MasqAddrForThisPeer",
 		"SelfNodeV6MasqAddrForThisPeer", "IsWireGuardOnly", "IsJailed", "ExitNodeDNSResolvers",
+		"StableTailnetID",
 	}
 	if have := fieldsOf(reflect.TypeFor[Node]()); !reflect.DeepEqual(have, nodeHandles) {
 		t.Errorf("Node.Equal check might be out of sync\nfields: %q\nhandled: %q\n",
@@ -403,6 +403,21 @@ func TestNodeEqual(t *testing.T) {
 		{
 			&Node{StableID: "node-abcd"},
 			&Node{StableID: "node-abcd"},
+			true,
+		},
+		{
+			&Node{StableTailnetID: "tailnet-abcd"},
+			&Node{},
+			false,
+		},
+		{
+			&Node{StableTailnetID: "tailnet-abcd"},
+			&Node{StableTailnetID: "tailnet-efgh"},
+			false,
+		},
+		{
+			&Node{StableTailnetID: "tailnet-abcd"},
+			&Node{StableTailnetID: "tailnet-abcd"},
 			true,
 		},
 		{
@@ -796,57 +811,6 @@ func TestNodeIsRouter(t *testing.T) {
 	}
 }
 
-func FuzzNodeIsRouter(f *testing.F) {
-	encodePrefixes := func(f *testing.F, prefixes ...netip.Prefix) string {
-		f.Helper()
-		out := make([]string, len(prefixes))
-		for i, p := range prefixes {
-			out[i] = p.String()
-		}
-		return strings.Join(out, " ")
-	}
-	decodePrefixes := func(t *testing.T, prefixes string) []netip.Prefix {
-		t.Helper()
-		var out []netip.Prefix
-		for p := range strings.FieldsSeq(prefixes) {
-			pfx, err := netip.ParsePrefix(p)
-			if err != nil {
-				log.Printf("skipping %q: %v", prefixes, err)
-				t.Skipf("%q: %v", prefixes, err)
-			}
-			out = append(out, pfx)
-		}
-		return out
-	}
-
-	for _, tc := range nodeIsRouterCases {
-		addresses := encodePrefixes(f, tc.node.Addresses...)
-		allowedIPs := encodePrefixes(f, tc.node.AllowedIPs...)
-		f.Logf("addresses=%q allowedIPs=%q", addresses, allowedIPs)
-		f.Add(addresses, allowedIPs)
-	}
-	f.Fuzz(func(t *testing.T, addresses, allowedIPs string) {
-		n := Node{
-			Addresses:  decodePrefixes(t, addresses),
-			AllowedIPs: decodePrefixes(t, allowedIPs),
-		}
-		ps := peerStatusFromNode(n.View())
-		t.Logf("%v %v", n.Addresses, n.AllowedIPs)
-
-		if len(n.Addresses) != len(ps.TailscaleIPs) ||
-			len(n.AllowedIPs) != ps.AllowedIPs.Len() {
-			t.Skip("n and ps are not equivalent")
-		}
-
-		gotN := n.IsRouter()
-		gotPS := ps.IsRouter()
-		if gotN != gotPS {
-			t.Errorf("mismatched node %t, peer status %t; addresses=%q allowedIPs=%q",
-				gotN, gotPS, addresses, allowedIPs)
-		}
-	})
-}
-
 func peerStatusFromNode(n NodeView) *ipnstate.PeerStatus {
 	ps := &ipnstate.PeerStatus{
 		ID:        n.StableID(),
@@ -1081,23 +1045,23 @@ func TestMarshalToRawMessageAndBack(t *testing.T) {
 	}
 	tests := []struct {
 		name    string
-		capType PeerCapability
+		capType peercap.Cap
 		val     testRule
 	}{
 		{
 			name:    "empty",
 			val:     testRule{},
-			capType: PeerCapability("foo"),
+			capType: peercap.Cap("foo"),
 		},
 		{
 			name:    "some-values",
 			val:     testRule{Ports: []int{80, 443}, Name: "foo"},
-			capType: PeerCapability("foo"),
+			capType: peercap.Cap("foo"),
 		},
 		{
 			name:    "all-values",
 			val:     testRule{Ports: []int{80, 443}, Name: "foo", ToggleOn: true, Groups: inner{Groups: []string{"foo", "bar"}}, Addrs: []netip.AddrPort{testip}},
-			capType: PeerCapability("foo"),
+			capType: peercap.Cap("foo"),
 		},
 	}
 	for _, tc := range tests {

@@ -3,7 +3,6 @@
 package wgengine
 
 import (
-	"tailscale.com/net/tsaddr"
 	"tailscale.com/wgengine/wgtransport"
 )
 
@@ -30,18 +29,9 @@ func (e *userspaceEngine) sendSessionDiscoNotifications() {
 			if closing || !e.peerCurrentlyAllowed(k) {
 				continue
 			}
-			fn := e.peerConfigFn.Load()
-			if fn == nil {
-				continue
-			}
-			ips, ok := (*fn)(k)
-			if !ok {
-				continue
-			}
-			for _, p := range ips {
-				if p.IsSingleIP() && tsaddr.IsTailscaleIP(p.Addr()) {
-					e.sendTSMPDiscoAdvertisement(p.Addr())
-					break
+			if payload := e.magicConn.PriorityMessageForPeer(k); len(payload) > 0 {
+				if err := e.tundev.InjectOutbound(payload); err != nil {
+					e.logf("QUIC session discovery advertisement: %v", err)
 				}
 			}
 		}

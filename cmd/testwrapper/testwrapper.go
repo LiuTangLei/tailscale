@@ -128,6 +128,7 @@ type testAttempt struct {
 	start, end    time.Time
 	isMarkedFlaky bool   // set if the test is marked as flaky
 	issueURL      string // set if the test is marked as flaky
+	inferredFail  bool   // outcome assumed because the package died, not reported by `go test`
 	// raceDetected is true on a per-test event if that test's output
 	// contained a race report, and true on a pkgFinished event if any
 	// test in the package -- or the package's own output -- did.
@@ -145,6 +146,7 @@ type failedTest struct {
 	attempts          int           // number of retry attempts run so far
 	totalRetryElapsed time.Duration // total time spent across retry attempts
 	everPassed        bool          // a retry attempt passed
+	inferredFail      bool          // the first failure was assumed, not reported by `go test`
 }
 
 // packageTests describes what to run.
@@ -261,28 +263,29 @@ func testFuncNames(path string) ([]string, error) {
 	return names, sc.Err()
 }
 
-// runTests runs the tests in pt and sends the results on ch. It sends a
-// testAttempt for each test and a final testAttempt per pkg with pkgFinished
-// set to true. Package build errors will not emit a testAttempt (as no valid
-// JSON is produced) but the [os/exec.ExitError] will be returned.
+// runTests runs the tests in the packages matching patterns in a single
+// "go test" invocation and sends the results on ch. It sends a testAttempt
+// for each test and a final testAttempt per pkg with pkgFinished set to
+// true. Package build errors will not emit a testAttempt (as no valid JSON
+// is produced) but the [os/exec.ExitError] will be returned.
 // It calls close(ch) when it's done.
-func runTests(ctx context.Context, attempt int, pt *packageTests, goTestArgs, testArgs []string, ch chan<- *testAttempt) error {
+func runTests(ctx context.Context, attempt int, patterns []string, goTestArgs, testArgs []string, ch chan<- *testAttempt) error {
 	defer close(ch)
 	args := []string{"test"}
 	args = append(args, goTestArgs...)
-	args = append(args, pt.Pattern)
-	if len(pt.Tests) > 0 {
-		// Specific tests requested (e.g. flaky test retry).
-		runArg := strings.Join(pt.Tests, "|")
-		args = append(args, "--run", runArg)
-	} else if shardSpec := os.Getenv("TS_TEST_SHARD"); shardSpec != "" {
+	args = append(args, patterns...)
+	if shardSpec := os.Getenv("TS_TEST_SHARD"); shardSpec != "" {
 		// Automatic test-name sharding: list tests and filter by hash.
-		shardTests, err := testsForShard(ctx, pt.Pattern, shardSpec)
+		if len(patterns) != 1 {
+			return fmt.Errorf("TS_TEST_SHARD requires a single package pattern per go test invocation; got %q", patterns)
+		}
+		pattern := patterns[0]
+		shardTests, err := testsForShard(ctx, pattern, shardSpec)
 		if err != nil {
 			return err
 		}
 		if len(shardTests) == 0 {
-			ch <- &testAttempt{pkg: pt.Pattern, outcome: outcomeSkip, pkgFinished: true}
+			ch <- &testAttempt{pkg: pattern, outcome: outcomeSkip, pkgFinished: true}
 			return nil
 		}
 		quoted := make([]string, len(shardTests))
@@ -350,6 +353,7 @@ func runTests(ctx context.Context, attempt int, pt *packageTests, goTestArgs, te
 				for _, test := range pkgTests {
 					if test.testName != "" && test.outcome == outcomeUnknown {
 						test.outcome = outcomeFail
+						test.inferredFail = true
 						ch <- test
 					}
 				}
@@ -698,6 +702,79 @@ func writeFlakeSummary(path string, flaky []*failedTest, repo string) {
 	}
 }
 
+// writeResultsSummary renders the per-test results panel and JSON for the Windows results feature.
+func writeResultsSummary(summaryPath, jsonPath, pkgOnly string, results map[string]testOutcome, retried map[string]bool, pkgFatal bool) {
+	type result struct {
+		Package string
+		Test    string
+		Outcome string
+	}
+	var rows []result
+	for key, outcome := range results {
+		pkg, test, _ := strings.Cut(key, "\t")
+		if pkgOnly != "" && pkg != pkgOnly {
+			continue
+		}
+		out := string(outcome)
+		if outcome == outcomeFail && retried[key] {
+			out = "retried"
+		}
+		rows = append(rows, result{Package: pkg, Test: test, Outcome: out})
+	}
+	slices.SortFunc(rows, func(a, b result) int {
+		return strings.Compare(a.Test, b.Test)
+	})
+
+	if jsonPath != "" {
+		if j, err := json.Marshal(rows); err != nil {
+			log.Printf("testwrapper: marshaling results JSON: %v", err)
+		} else if err := os.WriteFile(jsonPath, j, 0o644); err != nil {
+			log.Printf("testwrapper: writing results JSON %s: %v", jsonPath, err)
+		}
+	}
+
+	f, err := os.OpenFile(summaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("testwrapper: opening summary file %s: %v", summaryPath, err)
+		return
+	}
+	defer f.Close()
+
+	title := "Windows integration test results"
+	if pkgOnly == "" {
+		title = "Test results"
+	}
+	fmt.Fprintf(f, "\n### %s\n\n", title)
+	if len(rows) == 0 {
+		fmt.Fprintln(f, "_No tests ran._")
+		if pkgFatal {
+			fmt.Fprintln(f, "\n_⚠️ A package did not complete (build error or timeout); results may be partial._")
+		}
+		return
+	}
+	var pass, fail, skip int
+	fmt.Fprintln(f, "| Result | Test |")
+	fmt.Fprintln(f, "|--------|------|")
+	for _, r := range rows {
+		var icon string
+		switch r.Outcome {
+		case "pass":
+			icon, pass = "✅", pass+1
+		case "retried":
+			icon, pass = "✅ (retried)", pass+1
+		case "skip":
+			icon, skip = "⚠️", skip+1
+		default:
+			icon, fail = "❌", fail+1
+		}
+		fmt.Fprintf(f, "| %s | `%s` |\n", icon, r.Test)
+	}
+	fmt.Fprintf(f, "\n**%d passed, %d failed, %d skipped**\n", pass, fail, skip)
+	if pkgFatal {
+		fmt.Fprintln(f, "\n_⚠️ A package did not complete (build error or timeout); results may be partial._")
+	}
+}
+
 // buildPackageTests groups failedTests by package into the wire format
 // flakeapp expects.
 //
@@ -733,6 +810,12 @@ func buildPackageTests(fts []*failedTest, fakeRepo string) []packageTests {
 		out = append(out, pt)
 	}
 	return out
+}
+
+// isGoFile reports whether arg names a Go source file rather than a
+// package pattern.
+func isGoFile(arg string) bool {
+	return strings.HasSuffix(arg, ".go")
 }
 
 func main() {
@@ -784,18 +867,34 @@ func main() {
 	}
 
 	// First pass: run every package once, collect failed tests for retry.
+	//
+	// All package patterns go to one "go test" invocation so the go
+	// command can build, link, and run them in parallel, exactly as it
+	// does for a single "./..." pattern. Test-name sharding lists tests
+	// per package, and .go file arguments each form their own
+	// "command-line-arguments" package, so those keep one invocation
+	// per argument.
+	batches := [][]string{packages}
+	if os.Getenv("TS_TEST_SHARD") != "" || slices.ContainsFunc(packages, isGoFile) {
+		batches = nil
+		for _, p := range packages {
+			batches = append(batches, []string{p})
+		}
+	}
 	var failed []*failedTest
 	var pkgFatal bool // a package produced a non-test fatal (build error, etc.)
-	for _, pkgPattern := range packages {
-		pt := &packageTests{Pattern: pkgPattern}
+
+	resultsSummary := os.Getenv("TS_TESTWRAPPER_RESULTS_SUMMARY") != ""
+	allResults := map[string]testOutcome{}
+	for _, patterns := range batches {
 		ch := make(chan *testAttempt)
 		runErrCh := make(chan error, 1)
 		go func() {
 			defer close(runErrCh)
-			runErrCh <- runTests(ctx, 1, pt, goTestArgs, testArgs, ch)
+			runErrCh <- runTests(ctx, 1, patterns, goTestArgs, testArgs, ch)
 		}()
 
-		// Collect failed tests in this package on the side; we use the count
+		// Collect failed tests in this batch on the side; we use the count
 		// when a package reports a fail to decide if the failure is explained
 		// by retryable test failures or is a separate package-level fatal.
 		var pkgFailedTests []*failedTest
@@ -803,9 +902,11 @@ func main() {
 			// Go assigns the package name "command-line-arguments" when you
 			// `go test FILE` rather than `go test PKG`. It's more
 			// convenient for us to specify files in tests, so fix tr.pkg
-			// so that subsequent testwrapper attempts run correctly.
+			// so that subsequent testwrapper attempts run correctly. File
+			// arguments always run one per batch, so the batch's only
+			// pattern is the file.
 			if tr.pkg == "command-line-arguments" {
-				tr.pkg = packages[0]
+				tr.pkg = patterns[0]
 			}
 			if tr.pkgFinished {
 				if tr.raceDetected {
@@ -828,6 +929,9 @@ func main() {
 				printPkgOutcome(tr.pkg, tr.outcome, tr.cached, tr.end.Sub(tr.start))
 				continue
 			}
+			if resultsSummary && tr.testName != "" {
+				allResults[tr.pkg+"\t"+tr.testName] = tr.outcome
+			}
 			if testingVerbose || tr.outcome == outcomeFail {
 				io.Copy(os.Stdout, &tr.logs)
 			}
@@ -839,6 +943,7 @@ func main() {
 				testName:          tr.testName,
 				firstFailDuration: tr.end.Sub(tr.start),
 				issueURL:          tr.issueURL, // real if Mark()'d, else "".
+				inferredFail:      tr.inferredFail,
 			})
 		}
 		failed = append(failed, pkgFailedTests...)
@@ -880,6 +985,19 @@ func main() {
 	}
 	if path := os.Getenv("GITHUB_STEP_SUMMARY"); path != "" {
 		writeFlakeSummary(path, flaky, repo)
+		if resultsSummary {
+			retried := map[string]bool{}
+			for _, ft := range flaky {
+				key := ft.pkg + "\t" + ft.testName
+				if ft.inferredFail {
+					// It never failed on its own, so it isn't a flake.
+					allResults[key] = outcomePass
+					continue
+				}
+				retried[key] = true
+			}
+			writeResultsSummary(path, os.Getenv("TS_TESTWRAPPER_RESULTS_JSON"), os.Getenv("TS_TESTWRAPPER_RESULTS_PKG"), allResults, retried, pkgFatal)
+		}
 	}
 	if len(permanent) > 0 {
 		j, _ := json.Marshal(buildPackageTests(permanent, ""))

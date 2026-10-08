@@ -79,8 +79,8 @@ func TestTransportEngineLifecycle(t *testing.T) {
 		t.Fatal("identity change not delivered")
 	}
 	peer := key.NewNode().Public()
-	e.ResetDevicePeer(peer)
-	e.SetPeerConfigFunc(func(key.NodePublic) ([]netip.Prefix, bool) { return nil, false })
+	e.MarkDevicePeerForHandshake(peer)
+	e.SetPeerConfigFunc(func(key.NodePublic) (wgcfg.PeerConfig, bool) { return wgcfg.PeerConfig{}, false })
 	e.SyncDevicePeer(peer)
 	for range 2 {
 		select {
