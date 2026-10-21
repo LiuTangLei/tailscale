@@ -159,6 +159,15 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusNotFound)
 		return
 	}
+	// ListenEarly may send public SETTINGS before client Finished arrives.
+	// A private CONNECT must still use a completed, authenticated TLS channel.
+	select {
+	case <-q.HandshakeComplete():
+	case <-r.Context().Done():
+		return
+	case <-g.ctx.Done():
+		return
+	}
 	var k [32]byte
 	var requestProof nodeProof
 	var authenticatedPeer *peer
@@ -303,14 +312,21 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *peer) openHTTP3(q *quic.Conn, attempts ...lifecycleStamp) (*session, error) {
-	return p.openHTTP3Context(p.ctx, q, attempts...)
+	return p.openHTTP3Context(p.ctx, q, new(connectionSetupStats), attempts...)
 }
-func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, attempts ...lifecycleStamp) (_ *session, reterr error) {
+func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, setup *connectionSetupStats, attempts ...lifecycleStamp) (_ *session, reterr error) {
+	stageStarted := time.Now()
+	setup.Stage = "settings"
 	attempt := p.lifecycleStamp()
 	if len(attempts) == 1 {
 		attempt = attempts[0]
 	}
 	defer func() {
+		if setup.Stage == "settings" {
+			setup.SettingsMicros = time.Since(stageStarted).Microseconds()
+		} else {
+			setup.AuthMicros = time.Since(stageStarted).Microseconds()
+		}
 		if reterr != nil {
 			p.g.b.counters.HandshakeErrors.Add(1)
 			_ = q.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeMessageError), "CONNECT-IP failed")
@@ -336,6 +352,9 @@ func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, attempts .
 	if !s.EnableDatagrams || !s.EnableExtendedConnect {
 		return nil, errors.New("HTTP/3 peer did not negotiate DATAGRAM and Extended CONNECT")
 	}
+	setup.SettingsMicros = time.Since(stageStarted).Microseconds()
+	stageStarted = time.Now()
+	setup.Stage = "authentication"
 	// Bound the wait for the peer to grant bidirectional stream credit too.
 	// OpenRequestStream uses this context only while opening; the returned
 	// stream remains alive after the temporary handshake context is canceled.
@@ -406,5 +425,6 @@ func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, attempts .
 		p.rememberServerHint(session, peerServerHint)
 	}
 	p.g.b.counters.HTTP3Tunnels.Add(1)
+	setup.Stage = "established"
 	return session, nil
 }

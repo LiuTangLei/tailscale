@@ -83,21 +83,22 @@ type Backend struct {
 type carrierBind struct{ b *Backend }
 
 type generation struct {
-	b         *Backend
-	ctx       context.Context
-	cancel    context.CancelFunc
-	transport *quic.Transport
-	listener  *quic.Listener
-	pc        net.PacketConn
-	bridge    *bindPacketConn
-	h3        *http3State
-	peersMu   sync.Mutex
-	peers     map[[32]byte]*peer
-	rx        chan received
-	workers   sync.WaitGroup
-	txBytes   atomic.Int64
-	rxBytes   atomic.Int64
-	port      uint16
+	b             *Backend
+	ctx           context.Context
+	cancel        context.CancelFunc
+	transport     *quic.Transport
+	listener      *quic.EarlyListener
+	pc            net.PacketConn
+	bridge        *bindPacketConn
+	h3            *http3State
+	peersMu       sync.Mutex
+	peers         map[[32]byte]*peer
+	rx            chan received
+	workers       sync.WaitGroup
+	txBytes       atomic.Int64
+	rxBytes       atomic.Int64
+	port          uint16
+	socketBuffers *socketBufferStats // immutable after Open; nil for magicsock
 }
 
 type received struct {
@@ -148,6 +149,15 @@ type peer struct {
 	retired          atomic.Bool   // actor was evicted; it can never be revived
 	epoch            atomic.Uint64 // changes on explicit reset/revocation, not ordinary reconnect
 	nextID           atomic.Uint32
+	setup            atomic.Pointer[connectionSetupStats] // last completed outgoing attempt
+}
+
+type connectionSetupStats struct {
+	TLSMicros      int64  `json:"tls_us"`
+	SettingsMicros int64  `json:"settings_us"`
+	AuthMicros     int64  `json:"auth_us"`
+	TotalMicros    int64  `json:"total_us"`
+	Stage          string `json:"stage"` // failed stage, or established
 }
 type datagramChannel interface {
 	SendDatagram([]byte) error
@@ -345,15 +355,8 @@ func (c *carrierBind) open(port uint16, offset int, grow bool) ([]conn.ReceiveFu
 			rollback()
 			return nil, 0, err
 		}
-		// Best effort socket sizing, no global sysctl changes. Native *UDPConn lets
-		// quic-go keep recvmmsg/sendmsg GSO/ECN instead of hiding its descriptors.
-		if buffered, ok := udp.(interface {
-			SetReadBuffer(int) error
-			SetWriteBuffer(int) error
-		}); ok {
-			_ = buffered.SetReadBuffer(4 << 20)
-			_ = buffered.SetWriteBuffer(4 << 20)
-		}
+		// Preserve the original socket so quic-go retains GSO/ECN and batched I/O.
+		g.socketBuffers = configureSocketBuffers(udp, b.host.Logf)
 		g.pc = udp
 	} else {
 		g.bridge = newBindPacketConn(g)
@@ -383,17 +386,18 @@ func (c *carrierBind) open(port uint16, offset int, grow bool) ([]conn.ReceiveFu
 		},
 	}
 	qc := b.quicConfig()
-	listener, err := g.transport.Listen(b.tlsConfig(nil), qc)
+	// Send HTTP/3 SETTINGS in the server's first flight. Early acceptance is
+	// not peer authorization: CONNECT still requires the completed TLS channel
+	// and current node proof, and client 0-RTT remains disabled.
+	listener, err := g.transport.ListenEarly(b.tlsConfig(nil), qc)
 	if err != nil {
 		rollback()
 		return nil, 0, err
 	}
 	g.listener = listener
-	if b.factory.cfg.HTTP3 {
-		if err := g.initHTTP3(); err != nil {
-			rollback()
-			return nil, 0, err
-		}
+	if err := g.initHTTP3(); err != nil {
+		rollback()
+		return nil, 0, err
 	}
 	// Preserve host discovery/DERP processing even when QUIC uses its own socket.
 	for _, fn := range fns {
@@ -409,10 +413,7 @@ func (c *carrierBind) open(port uint16, offset int, grow bool) ([]conn.ReceiveFu
 }
 
 func (b *Backend) quicConfig() *quic.Config {
-	streams, uni := int64(-1), int64(-1)
-	if b.factory.cfg.HTTP3 {
-		streams, uni = 16, 8
-	}
+	streams, uni := int64(16), int64(8)
 	if b.factory.cfg.TCPStreams {
 		streams = 256
 	}
@@ -727,28 +728,9 @@ func (g *generation) accept() {
 		if err != nil {
 			return
 		}
-		if g.h3 != nil {
-			armAdmissionDeadline(q, g.b.timing.authTimeout)
-			g.workers.Add(1)
-			go func() { defer g.workers.Done(); _ = g.h3.server.ServeQUICConn(q) }()
-			continue
-		}
-		if !g.b.identityOK.Load() {
-			q.CloseWithError(1, "inactive node identity")
-			continue
-		}
-		key, err := g.b.factory.verify(q.ConnectionState().TLS, nil)
-		if err != nil {
-			g.b.counters.HandshakeErrors.Add(1)
-			q.CloseWithError(1, "untrusted peer")
-			continue
-		}
-		p, err := g.peer(key, nil)
-		if err != nil {
-			q.CloseWithError(1, "peer not available")
-			continue
-		}
-		p.install(q, false)
+		armAdmissionDeadline(q, g.b.timing.authTimeout)
+		g.workers.Add(1)
+		go func() { defer g.workers.Done(); _ = g.h3.server.ServeQUICConn(q) }()
 	}
 }
 
@@ -760,19 +742,11 @@ func (p *peer) preferredOutgoing(hint uint32) bool {
 	if p.g.b.factory.cfg.TCPStreams {
 		return !p.g.b.factory.cfg.Server
 	}
-	if p.g.b.factory.cfg.HTTP3 && hint != serverUnknown && hint <= serverYes && p.g.b.factory.cfg.Server != (hint == serverYes) {
+	if hint != serverUnknown && hint <= serverYes && p.g.b.factory.cfg.Server != (hint == serverYes) {
 		return !p.g.b.factory.cfg.Server
 	}
 	local := p.g.b.localNodeKey()
 	return bytes.Compare(local[:], p.cfg.key[:]) < 0
-}
-
-func (p *peer) install(q *quic.Conn, outgoing bool) *session {
-	return p.installChannel(q, outgoing, q)
-}
-
-func (p *peer) installChannel(q *quic.Conn, outgoing bool, channel datagramChannel, authenticatedServerHint ...uint32) *session {
-	return p.installBoundChannel(q, outgoing, channel, nil, authenticatedServerHint...)
 }
 
 func (p *peer) installBoundChannel(q *quic.Conn, outgoing bool, channel datagramChannel, attempt *lifecycleStamp, authenticatedServerHint ...uint32) *session {
@@ -802,7 +776,7 @@ func (p *peer) installBoundChannel(q *quic.Conn, outgoing bool, channel datagram
 	// the old one (remote restart/rebind). Rejecting it until idle timeout can
 	// produce an endless successful-TLS-but-no-data reconnect loop.
 	if old != nil && old.q.Context().Err() == nil && old.outgoing == preferredOutgoing && !preferred {
-		if !p.g.b.factory.cfg.HTTP3 || p.g.b.factory.cfg.TCPStreams {
+		if p.g.b.factory.cfg.TCPStreams {
 			p.mu.Unlock()
 			q.CloseWithError(0, "duplicate connection")
 			return old
@@ -901,7 +875,14 @@ func (p *peer) getSessionContext(parent context.Context, replace *session) (*ses
 	if profile := p.g.b.browserProfileForPeer(p.cfg.key, true); profile != "" {
 		cfg.ClientHelloProfile = profile
 	}
+	started := time.Now()
+	setup := &connectionSetupStats{Stage: "tls"}
+	defer func() {
+		setup.TotalMicros = time.Since(started).Microseconds()
+		p.setup.Store(setup)
+	}()
 	q, err := p.g.transport.Dial(ctx, remote, tlsConfig, cfg)
+	setup.TLSMicros = time.Since(started).Microseconds()
 	if err != nil {
 		p.g.b.counters.HandshakeErrors.Add(1)
 		if replace == nil {
@@ -909,14 +890,7 @@ func (p *peer) getSessionContext(parent context.Context, replace *session) (*ses
 		}
 		return nil, err
 	}
-	if p.g.b.factory.cfg.HTTP3 {
-		return p.openHTTP3Context(ctx, q, attempt)
-	}
-	s := p.install(q, true)
-	if s == nil {
-		return nil, net.ErrClosed
-	}
-	return s, nil
+	return p.openHTTP3Context(ctx, q, setup, attempt)
 }
 
 func (p *peer) run() {
@@ -941,7 +915,7 @@ func (p *peer) run() {
 		case <-p.ctx.Done():
 			return
 		case packet := <-p.tx:
-			if ipBatchSupported && p.g.b.factory.cfg.HTTP3 && !p.g.b.factory.cfg.TCPStreams {
+			if ipBatchSupported && !p.g.b.factory.cfg.TCPStreams {
 				p.sendQueuedIPBatch(packet)
 				continue
 			}

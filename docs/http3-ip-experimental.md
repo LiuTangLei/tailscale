@@ -8,15 +8,16 @@ on the native IP engine, not WireGuard ciphertext with an `h3` ALPN label.
 | Mode | Default distribution | IP engine |
 | --- | --- | --- |
 | `native` | Available, default | Existing Tailscale-compatible WG/AWG fork |
-| `quic-ip` | Explicit opt-in | Native IP over authenticated QUIC DATAGRAM |
 | `http3-ip` | Explicit experimental opt-in | Native IP over HTTP/3 CONNECT-IP |
-| `quic` (WG-over-QUIC) | Rejected | Available only in `ts_dev_wg_over_quic` builds |
+| `quic-ip` (raw QUIC) | Removed | Old managed profiles migrate to HTTP/3 |
+| `quic` (WG-over-QUIC) | Rejected | Removed |
 
-Both mode resolution and version-1 QUIC configuration reject WG-over-QUIC in
-normal builds. An injected factory cannot bypass the mode gate. For a legacy
-peer use `native`; there is no silent protocol downgrade. Development comparison
-builds must explicitly use `go build -tags ts_dev_wg_over_quic` and the remote
-comparison script additionally requires `--dev-wg-over-quic`.
+Mode resolution rejects raw QUIC providers and version-1 configurations. An
+injected factory cannot bypass the mode gate. Old managed `quic-ip` profiles
+retain their identity and pins while migrating to H3. Explicit raw environment
+or embedding configurations must be changed to `http3-ip` with an H3 config;
+raw-only peers must upgrade too. For a legacy WG peer use `native`; there is no
+silent protocol downgrade or build tag that restores a retired carrier.
 
 ## Actual wire behavior
 
@@ -25,6 +26,14 @@ SETTINGS, Extended CONNECT with `:protocol=connect-ip`, and a successful respons
 with `Capsule-Protocol: ?1` before installing an IP session. HTTP Datagrams carry
 the request stream's Quarter Stream ID, context ID 0, and the IP packet. Normal
 packet transmission is unreliable DATAGRAM, not a reliable stream tunnel.
+
+The server uses 0.5-RTT to send public SETTINGS before receiving client Finished.
+Private CONNECT authentication still waits for the completed TLS channel.
+Client 0-RTT is disabled: the chromium-h3 adapter, ticket replay protection and
+connection-bound node authentication need separate resumption support first.
+No FEC or IP/UDP retransmission is implemented. The embedded reliable TCP stream
+API uses QUIC's existing loss recovery; VPN TCP packets retain their inner TCP
+stack's retransmission behavior.
 
 The stream also consumes DATAGRAM capsules and validates address/route capsule
 syntax. Remote capsules never grant addresses or routes in the Tailnet: the

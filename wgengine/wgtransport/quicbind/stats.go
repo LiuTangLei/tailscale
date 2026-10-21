@@ -37,6 +37,9 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	}
 	c := &b.counters
 	out["http3"] = f.cfg.HTTP3
+	out["http3_early_settings"] = true
+	out["zero_rtt_enabled"] = false
+	out["datagram_retransmission"] = false
 	out["http3_receive_queue_capacity"] = http3ReceiveQueueCapacity
 	out["quic_receive_queue_capacity"] = quicReceiveQueueCapacity
 	out["http3_requests"] = c.HTTP3Requests.Load()
@@ -76,6 +79,9 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["ip_batch_packets"] = c.IPBatchPackets.Load()
 	out["identity_ok"] = b.identityOK.Load()
 	if g := b.active.Load(); g != nil {
+		if g.socketBuffers != nil {
+			out["udp_socket_buffers"] = *g.socketBuffers
+		}
 		out["tx_queued_bytes"] = g.txBytes.Load()
 		out["rx_queued_bytes"] = g.rxBytes.Load()
 		g.peersMu.Lock()
@@ -93,6 +99,9 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 		for _, p := range ps {
 			hint := b.peerServerHint(p.cfg.key)
 			detail := map[string]any{"peer": hex.EncodeToString(p.cfg.key[:]), "remote_server_known": hint != serverUnknown, "remote_server": hint == serverYes, "browser_eligible_next_outbound": b.browserProfileEligible(p.cfg.key, true), "browser_fingerprint": "none"}
+			if setup := p.setup.Load(); setup != nil {
+				detail["last_outgoing_setup"] = *setup
+			}
 			details = append(details, detail)
 			p.mu.Lock()
 			s := p.session

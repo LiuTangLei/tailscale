@@ -1,7 +1,7 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Package quicbind carries IP packets over authenticated QUIC DATAGRAMs.
+// Package quicbind carries IP packets over authenticated HTTP/3 CONNECT-IP.
 // The host Bind is an I/O interface, not a WireGuard encryption requirement.
 // Retired WireGuard-over-QUIC payloads are always rejected.
 package quicbind
@@ -32,7 +32,6 @@ import (
 	"tailscale.com/wgengine/wgtransport"
 )
 
-const IPALPN = "quic-ip/1" // Native IP; never interchangeable with WG ciphertext.
 const maxPeers = 256
 
 // Config is immutable for the lifetime of a backend. Certificate pins are
@@ -50,7 +49,7 @@ type Config struct {
 	InitialPacketSize uint16       `json:"initial_packet_size,omitempty"`
 	QueuePackets      int          `json:"queue_packets,omitempty"`
 	Peers             []PeerConfig `json:"peers"`
-	// HTTP3 selects a real CONNECT-IP request, not raw DATAGRAMs with h3 ALPN.
+	// HTTP3 must be true. Raw QUIC IP was removed; every tunnel uses CONNECT-IP.
 	HTTP3 bool `json:"http3,omitempty"`
 	// BBRv3 is retained for source/JSON compatibility with existing callers.
 	// Deprecated: all connections use the published fork's tuned BBRv3;
@@ -109,16 +108,10 @@ type peerConfig struct {
 }
 
 func (f *Factory) Mode() wgtransport.Mode {
-	if f.cfg.HTTP3 {
-		return wgtransport.HTTP3IP
-	}
-	return wgtransport.QUICIP
+	return wgtransport.HTTP3IP
 }
 func (f *Factory) protocol() string {
-	if f.cfg.HTTP3 {
-		return "h3"
-	}
-	return IPALPN
+	return "h3"
 }
 
 func Load(path string) (*Factory, error) {
@@ -182,26 +175,23 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	default:
 		return nil, errors.New("QUIC config must be version 2 with payload=ip")
 	}
-	var h3URL *url.URL
-	if c.HTTP3 {
-		var err error
-		h3URL, err = parseHTTP3URL(c.HTTP3URL)
-		if err != nil {
-			return nil, err
+	if !c.HTTP3 {
+		return nil, fmt.Errorf("%w: raw QUIC IP was removed; use http3=true with CONNECT-IP URLs", wgtransport.ErrUnsupported)
+	}
+	h3URL, err := parseHTTP3URL(c.HTTP3URL)
+	if err != nil {
+		return nil, err
+	}
+	// Keep QUIC's 1200-byte initial size on unknown/mobile paths. The
+	// negotiated IP-fragment extension supplies the inner IPv6 MTU until
+	// path MTU discovery permits whole IP datagrams; never require an
+	// oversized Initial that can fail before the tunnel even negotiates.
+	if c.HTTP3TCPListen != "" {
+		host, port, err := net.SplitHostPort(c.HTTP3TCPListen)
+		portNumber, portErr := strconv.Atoi(port)
+		if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 || net.ParseIP(host) == nil {
+			return nil, errors.New("invalid HTTP/3 TCP listen address")
 		}
-		// Keep QUIC's 1200-byte initial size on unknown/mobile paths. The
-		// negotiated IP-fragment extension supplies the inner IPv6 MTU until
-		// path MTU discovery permits whole IP datagrams; never require an
-		// oversized Initial that can fail before the tunnel even negotiates.
-		if c.HTTP3TCPListen != "" {
-			host, port, err := net.SplitHostPort(c.HTTP3TCPListen)
-			portNumber, portErr := strconv.Atoi(port)
-			if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 || net.ParseIP(host) == nil {
-				return nil, errors.New("invalid HTTP/3 TCP listen address")
-			}
-		}
-	} else if c.HTTP3URL != "" || c.HTTP3TCPListen != "" || c.Server {
-		return nil, errors.New("HTTP/3 options require http3=true")
 	}
 	if c.IO == "" {
 		c.IO = "magicsock"
@@ -212,7 +202,7 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	if c.AuthenticationSecret != ([32]byte{}) && !c.AutoTrust {
 		return nil, errors.New("an application authentication secret requires automatic H3 node trust")
 	}
-	if c.AutoTrust && (!c.HTTP3 || c.IO != "magicsock") {
+	if c.AutoTrust && c.IO != "magicsock" {
 		return nil, errors.New("automatic node trust requires HTTP/3 native IP over magicsock")
 	}
 	if c.IO == "udp" && !supportsIndependentUDP(runtime.GOOS) {
@@ -221,7 +211,7 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	if c.HTTP3TCPListen != "" && !supportsIndependentUDP(runtime.GOOS) {
 		return nil, fmt.Errorf("public HTTPS listening is not supported inside the %s VPN client", runtime.GOOS)
 	}
-	if c.TCPStreams && (!c.AutoTrust || !c.HTTP3 || c.TCPNodeAddress == nil) {
+	if c.TCPStreams && (!c.AutoTrust || c.TCPNodeAddress == nil) {
 		return nil, errors.New("TCP streams require H3 node authentication and embedded node addressing")
 	}
 	if c.TCPMSS != 0 && (c.TCPMSS < 536 || c.TCPMSS > 1220) {
@@ -305,13 +295,9 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 			return nil, errors.New("TLS pin must map to exactly one WG peer")
 		}
 		pc := peerConfig{key: key, pin: pin, server: p.Server}
-		if c.HTTP3 {
-			pc.http3URL, err = parseHTTP3URL(p.HTTP3URL)
-			if err != nil {
-				return nil, fmt.Errorf("peer HTTP/3 URL: %w", err)
-			}
-		} else if p.HTTP3URL != "" {
-			return nil, errors.New("peer http3_url requires http3=true")
+		pc.http3URL, err = parseHTTP3URL(p.HTTP3URL)
+		if err != nil {
+			return nil, fmt.Errorf("peer HTTP/3 URL: %w", err)
 		}
 		if c.IO == "udp" {
 			ap, err := net.ResolveUDPAddr("udp", p.Endpoint)
@@ -394,20 +380,15 @@ func (f *Factory) verify(cs tls.ConnectionState, expected *[32]byte) ([32]byte, 
 }
 
 func (f *Factory) tlsConfig(expected *[32]byte) *tls.Config {
-	clientAuth := tls.RequireAnyClientCert
-	if f.cfg.HTTP3 && expected == nil {
-		clientAuth = tls.NoClientCert
-	}
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13, NextProtos: []string{f.protocol()}, Certificates: []tls.Certificate{f.cert},
-		// The client pins the TLS server. Raw QUIC additionally pins the TLS
-		// client; HTTP/3 authenticates the peer inside the CONNECT request
-		// instead, keeping ordinary public-site TLS free of CertificateRequest.
-		InsecureSkipVerify: true, ClientAuth: clientAuth,
+		// The client pins the TLS server. CONNECT authenticates the peer,
+		// keeping ordinary public-site TLS free of CertificateRequest.
+		InsecureSkipVerify: true, ClientAuth: tls.NoClientCert,
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			// Browsers may fetch the public site without a client certificate.
 			// The CONNECT handler always requires a pinned, live peer identity.
-			if f.cfg.HTTP3 && expected == nil && len(cs.PeerCertificates) == 0 {
+			if expected == nil && len(cs.PeerCertificates) == 0 {
 				return nil
 			}
 			_, err := f.verify(cs, expected)

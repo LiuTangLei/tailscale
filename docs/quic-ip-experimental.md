@@ -1,4 +1,9 @@
-# Native QUIC IP data-plane experiment
+# Native QUIC IP data-plane experiment (historical)
+
+Raw QUIC IP is removed. This document preserves earlier experiments, not current
+setup instructions. Use [HTTP/3 CONNECT-IP](http3-ip-experimental.md). Old managed
+profiles migrate without changing their identity or pins; explicit raw profiles
+and raw-only peers require an upgrade.
 
 ## Scope and baseline
 

@@ -21,7 +21,6 @@ func TestH3FixedPathMSSLimits(t *testing.T) {
 		{"default", Config{HTTP3: true, IO: "magicsock"}, 1096, 1076},
 		{"historical1400", Config{HTTP3: true, IO: "magicsock", InitialPacketSize: 1400}, 1296, 1276},
 		{"udp-pmtu-unchanged", Config{HTTP3: true, IO: "udp", InitialPacketSize: 1200}, 0, 0},
-		{"raw-quic-unchanged", Config{IO: "magicsock", InitialPacketSize: 1200}, 0, 0},
 		{"reliable-stream-unchanged", Config{HTTP3: true, IO: "magicsock", TCPStreams: true, InitialPacketSize: 1200}, 0, 0},
 		{"explicit-lower-cap", Config{HTTP3: true, IO: "magicsock", InitialPacketSize: 1200, TCPMSS: 800}, 800, 800},
 	} {

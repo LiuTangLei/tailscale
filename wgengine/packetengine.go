@@ -120,7 +120,7 @@ func newIPPacketEngine(t tun.Device, b conn.Bind, mode ...wgtransport.Mode) (*ip
 	if err != nil {
 		return nil, err
 	}
-	protocol := string(wgtransport.QUICIP)
+	protocol := string(wgtransport.HTTP3IP)
 	if len(mode) > 0 {
 		protocol = string(mode[0])
 	}

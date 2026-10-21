@@ -15,7 +15,7 @@ import (
 )
 
 func TestNativeIPDataPlaneActualQUIC(t *testing.T) {
-	for _, mode := range []string{"udp", "magicsock", "http3-udp", "http3-magicsock"} {
+	for _, mode := range []string{"http3-udp", "http3-magicsock"} {
 		t.Run(mode, func(t *testing.T) {
 			pair := newTestPair(t, mode, func(c *Config) { c.Version = 2; c.Payload = "ip" })
 			var devices [2]*quicip.Device

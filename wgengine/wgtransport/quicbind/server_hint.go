@@ -90,7 +90,7 @@ func (b *Backend) ensureServerHint(k [32]byte) {
 // browser clients. Eligibility is only a future-dial condition, not proof that a
 // browser TLS stack is actually in use.
 func (b *Backend) browserProfileEligible(k [32]byte, outgoing bool) bool {
-	return b.factory.cfg.HTTP3 && !b.factory.cfg.Server && outgoing && b.peerServerHint(k) == serverYes
+	return !b.factory.cfg.Server && outgoing && b.peerServerHint(k) == serverYes
 }
 
 func (b *Backend) browserProfileForPeer(k [32]byte, outgoing bool) string {

@@ -2,14 +2,15 @@
 
 The application packet engine and its carrier are separate. `native` preserves
 the existing Tailscale-compatible WireGuard/AWG fork and the exact magicsock
-Bind. `quic-ip` and `http3-ip` create a native IP packet engine, never a WG Device.
+Bind. `http3-ip` creates a native IP packet engine, never a WG Device.
 
 ## Distribution policy
 
 - `native`: default and compatibility path for WG/AWG peers.
-- `quic-ip`: native IP through QUIC DATAGRAM.
 - `http3-ip`: native IP through a real HTTP/3 CONNECT-IP request and HTTP Datagrams.
-- Retired `quic` / version-1 WG-over-QUIC configurations are always rejected.
+- Raw `quic-ip` and version-1 WG-over-QUIC providers are removed. Old managed
+  `quic-ip` profiles migrate to H3 while retaining identities and pins. Explicit
+  raw environment/embedding configurations fail with an upgrade instruction.
 
 Selection uses `wgengine.Config.Transport` / `tsnet.Server.Transport`, or the
 explicit experimental environment configuration. Version-1 WG-over-QUIC JSON
@@ -32,7 +33,7 @@ authorized Tailnet peers authenticate without requiring a manual pin list.
 
 Desktop/server independent UDP uses host-protected sockets. Mobile/browser
 clients must use magicsock until separate-socket VPN-service rebind/protection
-is implemented. Native QUIC-IP and HTTP/3 both support that host path. An
+is implemented. HTTP/3 supports that host path. An
 in-memory `NewFactoryWithCertificate` is provided for embedding clients.
 
 ## HTTP/3 scope
@@ -42,7 +43,19 @@ CONNECT, HTTP Datagrams, capsule receive support and bounded negotiated packet
 fragmentation. Public HTTP/3 GET and optional HTTPS/TCP GET serve a small page;
 they cannot open a tunnel without current peer authorization. Tunnel proof is
 bound to a TLS exporter and the exact request target, not a reusable bearer
-secret. Raw native QUIC continues to use its separately authenticated profile.
+secret. The server sends public SETTINGS before client Finished, but a private
+CONNECT still waits for TLS completion and current peer authentication.
+
+Client 0-RTT remains disabled. IP/UDP uses unreliable DATAGRAMs: no FEC,
+application retransmission, ACK-wait queue or reliable-stream fallback is added.
+The optional embedded TCP stream API uses QUIC's normal reliable loss recovery;
+it does not change the delivery contract of UDP packets in the VPN.
+
+Independent sockets request 8 MiB receive / 4 MiB send buffers, retry smaller
+sizes when a platform rejects the request, and report actual kernel sizes in
+`udp_socket_buffers`. No global socket limits are changed. Per-peer
+`last_outgoing_setup` reports TLS, SETTINGS, authentication and total durations
+in microseconds for the last completed outgoing attempt, including failed stages.
 
 This is not a universal MASQUE proxy, a Chromium fingerprint implementation or
 a claim of indistinguishable browser traffic. STUN/disco are still managed by

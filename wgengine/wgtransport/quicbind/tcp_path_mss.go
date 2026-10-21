@@ -15,7 +15,7 @@ const h3TCPDatagramHeadroom = 64
 
 func (c Config) tcpMSSLimit(ipVersion byte) uint16 {
 	limit := c.TCPMSS
-	if !c.HTTP3 || c.IO != "magicsock" || c.TCPStreams {
+	if c.IO != "magicsock" || c.TCPStreams {
 		return limit
 	}
 	size := c.InitialPacketSize

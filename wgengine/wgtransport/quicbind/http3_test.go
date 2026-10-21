@@ -25,6 +25,12 @@ func TestProductionRejectsLegacyConfig(t *testing.T) {
 	}
 }
 
+func TestProductionRejectsRawQUICBeforeReadingIdentity(t *testing.T) {
+	if _, err := NewFactory(Config{Version: 2, Payload: "ip", Certificate: "missing"}); !errors.Is(err, wgtransport.ErrUnsupported) {
+		t.Fatalf("raw QUIC config reached identity loading: %v", err)
+	}
+}
+
 func TestHTTP3PublicPageDoesNotAuthorizeTunnel(t *testing.T) {
 	p := newTestPair(t, "http3-udp", func(c *Config) { c.Server = true })
 	p.open(t)

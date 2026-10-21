@@ -333,10 +333,10 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	if mode == "" {
 		mode = wgtransport.Mode(envknob.String("TS_EXPERIMENTAL_WG_TRANSPORT"))
 	}
-	if mode == wgtransport.QUIC {
-		return nil, fmt.Errorf("%w: WG-over-QUIC was removed; use native, quic-ip or http3-ip", wgtransport.ErrUnsupported)
+	if mode == wgtransport.QUIC || mode == wgtransport.QUICIP {
+		return nil, fmt.Errorf("%w: non-H3 QUIC was removed; use native or http3-ip", wgtransport.ErrUnsupported)
 	}
-	if (mode == wgtransport.QUICIP || mode == wgtransport.HTTP3IP) && transportChoice.Factory == nil {
+	if mode == wgtransport.HTTP3IP && transportChoice.Factory == nil {
 		path := envknob.String("TS_EXPERIMENTAL_QUIC_CONFIG")
 		if path == "" {
 			return nil, fmt.Errorf("%w: quic requires TS_EXPERIMENTAL_QUIC_CONFIG with trusted peer pins; native fallback is forbidden", wgtransport.ErrUnsupported)
@@ -607,7 +607,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	e.logf("Packet transport: %s", e.transport.Mode())
 	// Each backend owns exactly one filtered TUN reader. Native QUIC-IP never
 	// constructs a WG Device, not even for status or a hidden handshake.
-	if e.transport.Mode() == wgtransport.QUICIP || e.transport.Mode() == wgtransport.HTTP3IP {
+	if e.transport.Mode() == wgtransport.HTTP3IP {
 		e.logf("Creating native QUIC IP engine (no WireGuard device)...")
 		e.packet, err = newIPPacketEngine(e.tundev, e.transport.Bind(), e.transport.Mode())
 		if err != nil {
@@ -976,7 +976,7 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 		if err := e.packet.ApplyConfig(cfg); err != nil {
 			// A rejected native-IP profile must not leave the previous identity
 			// usable while the control plane has already switched profiles.
-			if e.transport.Mode() == wgtransport.QUICIP || e.transport.Mode() == wgtransport.HTTP3IP {
+			if e.transport.Mode() == wgtransport.HTTP3IP {
 				e.packetPrivate.Store(nil)
 				e.packetIdentity.Store(new(key.NodePublic))
 				e.transport.LocalIdentityChanged([32]byte{})

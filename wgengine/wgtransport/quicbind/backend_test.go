@@ -131,7 +131,7 @@ func newTestPair(t testing.TB, mode string, options ...func(*Config)) *testPair 
 		for i > 0 && addresses[i] == addresses[0] {
 			addresses[i] = freeUDP(t)
 		}
-		configs[i] = Config{Version: 2, Payload: "ip", LocalPublicKey: hex.EncodeToString(pk[:]), Certificate: cert, PrivateKey: k, IO: mode, InitialPacketSize: 1200, QueuePackets: 256}
+		configs[i] = Config{Version: 2, Payload: "ip", LocalPublicKey: hex.EncodeToString(pk[:]), Certificate: cert, PrivateKey: k, IO: mode, InitialPacketSize: 1200, QueuePackets: 256, HTTP3: true, HTTP3URL: "https://quic-ip.test/.well-known/masque/ip/*/*/"}
 		if mode == "udp" {
 			configs[i].Listen = addresses[i]
 		}
@@ -139,7 +139,7 @@ func newTestPair(t testing.TB, mode string, options ...func(*Config)) *testPair 
 	for i := range 2 {
 		peerKey := p.keys[i^1].Public().Raw32()
 		peerKeyString := hex.EncodeToString(peerKey[:])
-		pc := PeerConfig{PublicKey: peerKeyString, SPKISHA256: pins[i^1]}
+		pc := PeerConfig{PublicKey: peerKeyString, SPKISHA256: pins[i^1], HTTP3URL: configs[i].HTTP3URL}
 		if mode == "udp" {
 			pc.Endpoint = addresses[i^1]
 		}
@@ -227,7 +227,7 @@ func readOne(t testing.TB, fn conn.ReceiveFunc) []byte {
 }
 
 func TestQUICBidirectionalAndReopen(t *testing.T) {
-	for _, mode := range []string{"udp", "magicsock", "http3-udp", "http3-magicsock"} {
+	for _, mode := range []string{"http3-udp", "http3-magicsock"} {
 		t.Run(mode, func(t *testing.T) {
 			p := newTestPair(t, mode)
 			for cycle := range 2 {

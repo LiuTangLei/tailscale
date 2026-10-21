@@ -21,14 +21,14 @@ import (
 )
 
 func TestTransportRejectedBeforeEngineResources(t *testing.T) {
-	for _, mode := range []wgtransport.Mode{wgtransport.QUIC, "misspelled"} {
+	for _, mode := range []wgtransport.Mode{wgtransport.QUIC, wgtransport.QUICIP, "misspelled"} {
 		// Missing mandatory health/metrics would panic/fail later. Transport
 		// validation must happen first, before sockets or TUNs are allocated.
 		e, err := NewUserspaceEngine(t.Logf, Config{Transport: wgtransport.Config{Mode: mode}})
 		if e != nil || err == nil {
 			t.Fatalf("mode %q: engine=%v err=%v", mode, e, err)
 		}
-		if mode == wgtransport.QUIC && !errors.Is(err, wgtransport.ErrUnsupported) {
+		if (mode == wgtransport.QUIC || mode == wgtransport.QUICIP) && !errors.Is(err, wgtransport.ErrUnsupported) {
 			t.Fatal(err)
 		}
 	}
@@ -36,7 +36,7 @@ func TestTransportRejectedBeforeEngineResources(t *testing.T) {
 
 type transportTestFactory struct{ b *transportTestBackend }
 
-func (f transportTestFactory) Mode() wgtransport.Mode { return wgtransport.QUICIP }
+func (f transportTestFactory) Mode() wgtransport.Mode { return wgtransport.HTTP3IP }
 func (f transportTestFactory) New(h wgtransport.Host) (wgtransport.Backend, error) {
 	f.b.bind = h.Bind
 	return f.b, nil
@@ -60,7 +60,7 @@ func TestTransportEngineLifecycle(t *testing.T) {
 	// This is a test double for the future extension point, NOT a QUIC implementation.
 	e, err := NewUserspaceEngine(t.Logf, Config{
 		HealthTracker: health.NewTracker(bus), Metrics: new(usermetric.Registry), EventBus: bus,
-		Transport: wgtransport.Config{Mode: wgtransport.QUICIP, Factory: transportTestFactory{b}},
+		Transport: wgtransport.Config{Mode: wgtransport.HTTP3IP, Factory: transportTestFactory{b}},
 	})
 	if err != nil {
 		t.Fatal(err)

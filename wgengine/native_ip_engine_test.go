@@ -20,13 +20,13 @@ import (
 
 type nativeIPTestFactory struct{ transportTestFactory }
 
-func (nativeIPTestFactory) Mode() wgtransport.Mode { return wgtransport.QUICIP }
+func (nativeIPTestFactory) Mode() wgtransport.Mode { return wgtransport.HTTP3IP }
 
 func TestNativeIPEngineHasNoWireGuardAndRecoversRejectedProfile(t *testing.T) {
 	bus := eventbustest.NewBus(t)
 	backend := &transportTestBackend{keys: make(chan [32]byte, 32), removed: make(chan [32]byte, 32)}
 	e, err := NewUserspaceEngine(t.Logf, Config{HealthTracker: health.NewTracker(bus), Metrics: new(usermetric.Registry), EventBus: bus,
-		Transport: wgtransport.Config{Mode: wgtransport.QUICIP, Factory: nativeIPTestFactory{transportTestFactory{backend}}}})
+		Transport: wgtransport.Config{Mode: wgtransport.HTTP3IP, Factory: nativeIPTestFactory{transportTestFactory{backend}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
