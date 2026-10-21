@@ -64,6 +64,10 @@ github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9 h1:1ltq
 github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9/go.mod h1:7uhhqiBaR4CpN0k9rMjOtjpcfGd6DG2m04zQxKnWQ0I=
 github.com/LiuTangLei/quic-go v0.63.0-tailscale.1.0.20260929072415-cda3ed094749 h1:gdZvpsgsnz05GIWfNlkhWIdNJRB50N4mZBXij1pAbrc=
 github.com/LiuTangLei/quic-go v0.63.0-tailscale.1.0.20260929072415-cda3ed094749/go.mod h1:V5cuc1OxYYDdr+TgQThkS0e15A0yF4U0yr03MA2FP3U=
+github.com/LiuTangLei/quic-go v0.63.0-tailscale.1.0.20261021075301-bc2ce38e62f3 h1:SBZuurD9Hgd0hvwPMrxZloKrPof3j6e5xvFJQp7yh5E=
+github.com/LiuTangLei/quic-go v0.63.0-tailscale.1.0.20261021075301-bc2ce38e62f3/go.mod h1:OUW5S5Qu4zqjFGFlPthYnILnS4Voqo83pZqiRmWCmmk=
+github.com/LiuTangLei/utls v1.8.3-0.20261021023852-7effde6a93dc h1:T3DDZUtc9ENa2lQ8BVzm0SdZ+If8WFXIwu/QyY0fsJM=
+github.com/LiuTangLei/utls v1.8.3-0.20261021023852-7effde6a93dc/go.mod h1:jkSOEkLqn+S/jtpEHPOsVv/4V4EVnelwbMQl4vCWXAM=
 github.com/LiuTangLei/wireguard-go v0.0.34 h1:RCNbtJPuOAZu5K+M7Fpv/rLhA8FtSPm6sdq7++ZapnI=
 github.com/LiuTangLei/wireguard-go v0.0.34/go.mod h1:f7uSn74R1/LKiqDHRok1pV2vnEelx6Catt+uAkBzgrk=
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=
