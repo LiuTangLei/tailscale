@@ -58,6 +58,7 @@ require (
 	github.com/go4org/hashtriemap v0.0.0-20260925222741-44e5305f85d9
 	github.com/go4org/plan9netshell v0.0.0-20250324183649-788daa080737
 	github.com/godbus/dbus/v5 v5.2.2
+	github.com/gofrs/flock v0.13.0
 	github.com/gokrazy/breakglass v0.0.0-20260711072910-0f882c44303e
 	github.com/gokrazy/firmware v0.0.0-20260916135839-f966a2e0e4b0
 	github.com/gokrazy/gokrazy v0.0.0-20260916140236-39fe3e5557b8
@@ -327,7 +328,6 @@ require (
 	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/godoc-lint/godoc-lint v0.11.2 // indirect
-	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/gokrazy/gokapi v0.0.0-20251205165548-0927bab199d4 // indirect
 	github.com/gokrazy/internal v0.0.0-20260625065634-6994f9152c44 // indirect

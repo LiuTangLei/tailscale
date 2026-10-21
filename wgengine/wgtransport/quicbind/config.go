@@ -51,6 +51,8 @@ type Config struct {
 	Peers             []PeerConfig `json:"peers"`
 	// HTTP3 must be true. Raw QUIC IP was removed; every tunnel uses CONNECT-IP.
 	HTTP3 bool `json:"http3,omitempty"`
+	// TicketJournal is a private stateful TLS ticket journal; empty uses memory.
+	TicketJournal string `json:"ticket_journal,omitempty"`
 	// BBRv3 is retained for source/JSON compatibility with existing callers.
 	// Deprecated: all connections use the published fork's tuned BBRv3;
 	// false no longer selects a different congestion controller.
@@ -129,7 +131,7 @@ func Load(path string) (*Factory, error) {
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("QUIC config must contain exactly one JSON object")
 	}
-	for _, p := range []*string{&c.Certificate, &c.PrivateKey} {
+	for _, p := range []*string{&c.Certificate, &c.PrivateKey, &c.TicketJournal} {
 		if *p != "" && !filepath.IsAbs(*p) {
 			*p = filepath.Join(filepath.Dir(path), *p)
 		}
@@ -177,6 +179,12 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	}
 	if !c.HTTP3 {
 		return nil, fmt.Errorf("%w: raw QUIC IP was removed; use http3=true with CONNECT-IP URLs", wgtransport.ErrUnsupported)
+	}
+	if c.TicketJournal == "" && c.PrivateKey != "" {
+		c.TicketJournal = c.PrivateKey + ".tickets"
+	}
+	if c.TicketJournal != "" && !filepath.IsAbs(c.TicketJournal) {
+		return nil, errors.New("ticket_journal must use an absolute path")
 	}
 	h3URL, err := parseHTTP3URL(c.HTTP3URL)
 	if err != nil {

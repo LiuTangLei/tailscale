@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"github.com/LiuTangLei/wireguard-go/conn"
+	quic "github.com/quic-go/quic-go"
 	"net"
 	"testing"
 	"time"
@@ -108,7 +109,12 @@ func TestSingleSidedRebindReconnect(t *testing.T) {
 					deadline := time.NewTimer(5 * time.Second)
 					ticker := time.NewTicker(20 * time.Millisecond)
 					if e := p.backends[i].Bind().Send([][]byte{data}, ep, 0); e != nil {
-						t.Fatal(e)
+						var closed *quic.ApplicationError
+						// A close notification may race the first probe, just as
+						// it may race its delivery. Subsequent probes must recover.
+						if round == 0 || !errors.As(e, &closed) || closed.ErrorCode != 0 {
+							t.Fatal(e)
+						}
 					}
 				wait:
 					for {

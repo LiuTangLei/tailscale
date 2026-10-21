@@ -27,10 +27,44 @@ with `Capsule-Protocol: ?1` before installing an IP session. HTTP Datagrams carr
 the request stream's Quarter Stream ID, context ID 0, and the IP packet. Normal
 packet transmission is unreliable DATAGRAM, not a reliable stream tunnel.
 
-The server uses 0.5-RTT to send public SETTINGS before receiving client Finished.
-Private CONNECT authentication still waits for the completed TLS channel.
-Client 0-RTT is disabled: the chromium-h3 adapter, ticket replay protection and
-connection-bound node authentication need separate resumption support first.
+The first connection completes TLS and channel-bound node authentication before
+the server issues its single TLS resumption ticket. Both standard TLS and the
+Chromium-inspired H3 profile support real QUIC 0-RTT. A subsequent connection
+sends only the CONNECT-IP request early, authenticated by the previously issued
+PSK and current peer policy. The response may arrive at 0.5-RTT; server admission
+and business delivery wait for client Finished. No UDP payload or TCP operation
+is deliberately sent as replayable early data.
+
+Tickets are single-use, valid for at most 24 hours, and bounded to 4096 server
+entries. Consumption is appended and synced before TLS may accept the PSK.
+The private journal uses an exclusive lock, checksummed records, atomic
+compaction and a synced parent directory. Managed profiles use
+`http3-session-tickets` in their state directory; file-based identities default
+to `<private-key-path>.tickets` (`ticket_journal` overrides this). Protect these
+0600 files as identity secrets. A corrupt, busy or unsupported durable journal
+falls back to fresh memory-only tickets; a later I/O failure disables that
+store's ticket acceptance. It never accepts unverifiable persisted state.
+
+Client tickets remain in memory, scoped to one backend and exact peer, and are
+removed on use. Server configuration, certificate, authentication-secret and
+protocol changes invalidate persisted tickets. Node removal and local identity
+rotation revoke tickets and invalidate in-flight recovery, including a rapid
+remove/re-add. Rejected early data triggers one fresh full handshake within the
+original 10-second deadline, without replaying business data. A client process
+restart needs a full connection; there is no shared, cross-server ticket key.
+
+The development implementation spans the Tailscale, quic-go and uTLS checkouts
+in the supplied parent Go workspace. Published dependency pins are unchanged;
+publish and pin both library commits before producing a release. Local checks:
+`go test -race ./wgengine/wgtransport/... ./wgengine/transportprofile ./wgengine`.
+The opt-in `TS_H3_MIXED_LOAD=1 go test ./wgengine/wgtransport/quicbind
+-run '^TestMixedTCPUDPResumptionLoad$' -count=1 -v` compares full and early
+reconnection with four checked TCP echo streams, 250 UDP packets/second,
+12 Mbit/s per direction, 8 ms propagation, bounded queues and deterministic
+outer packet loss. Missing UDP packets count as infinite latency for the
+unconditional P99 gate. These local checks do not establish WAN or mobile
+device performance.
+
 No FEC or IP/UDP retransmission is implemented. The embedded reliable TCP stream
 API uses QUIC's existing loss recovery; VPN TCP packets retain their inner TCP
 stack's retransmission behavior.

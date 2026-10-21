@@ -243,7 +243,9 @@ func (p Profile) Public(revision string) ipn.TransportControlStatus {
 	}
 	return ipn.TransportControlStatus{DesiredMode: p.Mode, Server: p.Server, AutoTrust: p.AutoTrust, Authentication: auth, Revision: revision, Identity: identity, Peers: slices.Clone(p.Peers), Available: true}
 }
-func (p Profile) Factory() (*quicbind.Factory, error) {
+func (p Profile) Factory() (*quicbind.Factory, error) { return p.factory("") }
+
+func (p Profile) factory(stateDir string) (*quicbind.Factory, error) {
 	p = p.withH3Transport()
 	if p.AutoTrust && p.Mode != "http3-ip" {
 		return nil, errors.New("automatic node authentication requires HTTP/3")
@@ -262,6 +264,13 @@ func (p Profile) Factory() (*quicbind.Factory, error) {
 	// 1400-byte Initial can blackhole before the authenticated peer or path-MTU
 	// negotiation even though quic-go and the transport allow values up to 1400.
 	c := quicbind.Config{Version: 2, Payload: "ip", IO: "magicsock", LocalPublicKey: p.LocalKey, InitialPacketSize: 1200, QueuePackets: 256}
+	if stateDir != "" {
+		journal, err := filepath.Abs(filepath.Join(stateDir, "http3-session-tickets"))
+		if err != nil {
+			return nil, err
+		}
+		c.TicketJournal = journal
+	}
 	if p.Mode == "http3-ip" {
 		c.HTTP3 = true
 		c.Server = p.Server
@@ -497,7 +506,7 @@ func LoadForStart(root string) (wgtransport.Config, string, error) {
 			}
 		}
 	}
-	f, err := p.Factory()
+	f, err := p.factory(root)
 	if err != nil {
 		return wgtransport.Config{}, "", err
 	}

@@ -38,7 +38,15 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	c := &b.counters
 	out["http3"] = f.cfg.HTTP3
 	out["http3_early_settings"] = true
-	out["zero_rtt_enabled"] = false
+	out["zero_rtt_enabled"] = true
+	out["zero_rtt_attempts"] = c.ZeroRTTAttempts.Load()
+	out["zero_rtt_accepted"] = c.ZeroRTTAccepted.Load()
+	out["zero_rtt_rejected"] = c.ZeroRTTRejected.Load()
+	out["resume_auth_rejected"] = c.ResumeAuthRejected.Load()
+	out["handshake_attempts"] = c.HandshakeAttempts.Load()
+	if store := b.tickets.Load(); store != nil {
+		out["resumption_tickets"] = store.snapshot()
+	}
 	out["datagram_retransmission"] = false
 	out["http3_receive_queue_capacity"] = http3ReceiveQueueCapacity
 	out["quic_receive_queue_capacity"] = quicReceiveQueueCapacity
@@ -133,6 +141,7 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 				detail["browser_fingerprint"] = profile
 				profiles[profile] = true
 				detail["tls_version"], detail["tls_cipher_suite"] = state.TLS.Version, state.TLS.CipherSuite
+				detail["tls_resumed"], detail["used_0rtt"] = state.TLS.DidResume, state.Used0RTT
 				detail["datagrams"] = state.SupportsDatagrams.Local && state.SupportsDatagrams.Remote
 				if active == 1 {
 					out["browser_fingerprint"] = profile

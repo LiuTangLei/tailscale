@@ -43,10 +43,15 @@ CONNECT, HTTP Datagrams, capsule receive support and bounded negotiated packet
 fragmentation. Public HTTP/3 GET and optional HTTPS/TCP GET serve a small page;
 they cannot open a tunnel without current peer authorization. Tunnel proof is
 bound to a TLS exporter and the exact request target, not a reusable bearer
-secret. The server sends public SETTINGS before client Finished, but a private
-CONNECT still waits for TLS completion and current peer authentication.
+secret. The server sends public SETTINGS before client Finished. Full private
+CONNECT authentication uses the completed TLS exporter; resumed CONNECT uses a
+single-use PSK issued after that authentication and rechecks current policy.
 
-Client 0-RTT remains disabled. IP/UDP uses unreliable DATAGRAMs: no FEC,
+Both TLS profiles support 0-RTT CONNECT setup, durable single-use server tickets,
+and one full reconnect after rejection. Business delivery waits for TLS
+completion. Client caches are private per peer and memory-only; see the
+[ticket lifecycle](../../docs/http3-ip-experimental.md#actual-wire-behavior).
+IP/UDP uses unreliable DATAGRAMs: no FEC,
 application retransmission, ACK-wait queue or reliable-stream fallback is added.
 The optional embedded TCP stream API uses QUIC's normal reliable loss recovery;
 it does not change the delivery contract of UDP packets in the VPN.
@@ -56,6 +61,9 @@ sizes when a platform rejects the request, and report actual kernel sizes in
 `udp_socket_buffers`. No global socket limits are changed. Per-peer
 `last_outgoing_setup` reports TLS, SETTINGS, authentication and total durations
 in microseconds for the last completed outgoing attempt, including failed stages.
+During resumption, authentication time includes concurrent TLS completion.
+Snapshots also expose ticket-store health, accepted/rejected recovery attempts,
+and each connection's `tls_resumed` / `used_0rtt` flags.
 
 This is not a universal MASQUE proxy, a Chromium fingerprint implementation or
 a claim of indistinguishable browser traffic. STUN/disco are still managed by

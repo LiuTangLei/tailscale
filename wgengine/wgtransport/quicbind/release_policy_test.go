@@ -11,7 +11,7 @@ func TestPublishedQUICPolicy(t *testing.T) {
 	for _, streams := range []bool{false, true} {
 		b := &Backend{factory: &Factory{cfg: Config{HTTP3: true, TCPStreams: streams, InitialPacketSize: 1400}}}
 		c := b.quicConfig()
-		if c.CongestionControlName() != "bbr-v3" || !c.EnableDatagrams || c.Allow0RTT {
+		if c.CongestionControlName() != "bbr-v3" || !c.EnableDatagrams || !c.Allow0RTT || !c.DeferSessionTicket {
 			t.Fatalf("unexpected release transport policy (tcp_streams=%v): controller=%s datagrams=%v 0RTT=%v", streams, c.CongestionControlName(), c.EnableDatagrams, c.Allow0RTT)
 		}
 	}

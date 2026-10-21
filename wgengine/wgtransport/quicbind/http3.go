@@ -159,21 +159,30 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusNotFound)
 		return
 	}
-	// ListenEarly may send public SETTINGS before client Finished arrives.
-	// A private CONNECT must still use a completed, authenticated TLS channel.
-	select {
-	case <-q.HandshakeComplete():
-	case <-r.Context().Done():
-		return
-	case <-g.ctx.Done():
-		return
+	resumeRequest := r.Header.Get("Authorization") == resumeAuthorization
+	// Ordinary authentication uses the completed TLS exporter. A resumed
+	// request is authenticated by a single-use PSK issued after node proof.
+	if !resumeRequest {
+		if err := awaitTLS(r.Context(), q); err != nil {
+			return
+		}
 	}
+	epoch, identityEpoch := g.b.authEpoch.Load(), g.b.identityEpoch.Load()
+	var resume resumeIdentity
 	var k [32]byte
 	var requestProof nodeProof
 	var authenticatedPeer *peer
 	var attempt *lifecycleStamp
 	var err error
-	if g.b.factory.cfg.AutoTrust {
+	if resumeRequest {
+		resume, err = g.b.resumedIdentity(q, r)
+		if err != nil {
+			g.b.counters.ResumeAuthRejected.Add(1)
+			deny(http.StatusTooEarly)
+			return
+		}
+		k = resume.Peer
+	} else if g.b.factory.cfg.AutoTrust {
 		// The initiator identity is encrypted in IK message 1. Capture the
 		// global revocation epoch before decrypting; do not resurrect an old
 		// attempt if a node was removed/re-added while its identity was hidden.
@@ -234,6 +243,14 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if epoch != g.b.authEpoch.Load() || identityEpoch != g.b.identityEpoch.Load() {
+		deny(http.StatusNotFound)
+		return
+	}
+	if attempt == nil {
+		stamp := p.lifecycleStamp()
+		attempt = &stamp
+	}
 	if attempt != nil && !p.stampValid(*attempt) {
 		deny(http.StatusNotFound)
 		return
@@ -258,7 +275,7 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		g.h3.mu.Unlock()
 	}()
 	fragments := r.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(r.Header.Values(fragmentHeaderName)) == 1
-	if g.b.factory.cfg.AutoTrust {
+	if !resumeRequest && g.b.factory.cfg.AutoTrust {
 		proof, err := g.b.createNodeReply(requestProof)
 		if err != nil {
 			deny(http.StatusNotFound)
@@ -276,12 +293,15 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	if fragments {
 		w.Header().Set(fragmentHeaderName, fragmentHeaderValue)
 	}
+	if resumeRequest {
+		w.Header().Set(resumeReplyHeader, "v1")
+	}
 	w.WriteHeader(http.StatusOK)
 	if err := http.NewResponseController(w).Flush(); err != nil {
 		return
 	}
 	stream := w.(http3.HTTPStreamer).HTTPStream()
-	if g.b.factory.cfg.AutoTrust {
+	if !resumeRequest && g.b.factory.cfg.AutoTrust {
 		_ = stream.SetDeadline(time.Now().Add(8 * time.Second))
 		if err := readNodeFinished(stream, requestProof.handshake, "initiator finished v2"); err != nil || !p.stampValid(*attempt) {
 			_ = q.CloseWithError(1, "node confirmation failed")
@@ -294,6 +314,15 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		requestProof.handshake.Close()
 		_ = stream.SetDeadline(time.Time{})
 	}
+	// Send the provisional response at 0.5-RTT, but do not release business
+	// packets or issue another ticket until the TLS handshake also completes.
+	if err := awaitTLS(r.Context(), q); err != nil {
+		return
+	}
+	if !p.stampValid(*attempt) {
+		q.CloseWithError(1, "peer authorization changed")
+		return
+	}
 	channel := newHTTP3Channel(g, q, stream, stream, fragments)
 	session := p.installBoundChannel(q, false, channel, attempt, peerServerHint)
 	if session == nil || session.q != q {
@@ -302,6 +331,18 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	publishReady()
 	p.rememberServerHint(session, peerServerHint)
 	g.b.counters.HTTP3Tunnels.Add(1)
+	pin := resume.Pin
+	if !resumeRequest {
+		if g.b.factory.cfg.AutoTrust {
+			pin = requestProof.pin
+		} else if peer, ok := g.b.factory.peers[k]; ok {
+			pin = peer.pin
+		}
+	} else {
+		g.b.counters.ZeroRTTAccepted.Add(1)
+	}
+	g.b.issueAuthorizedTicket(q, resumeIdentity{Local: g.b.localNodeKey(), Peer: k, Pin: pin}, *attempt, epoch)
+
 	// The request stream, not an unrelated raw QUIC receive loop, owns the tunnel.
 	select {
 	case <-q.Context().Done():

@@ -59,26 +59,36 @@ type Counters struct {
 	TCPStreams               atomic.Uint64
 	TCPBytesSent             atomic.Uint64
 	TCPBytesReceived         atomic.Uint64
+	HandshakeAttempts        atomic.Uint64
+	ZeroRTTAttempts          atomic.Uint64
+	ZeroRTTAccepted          atomic.Uint64
+	ZeroRTTRejected          atomic.Uint64
+	ResumeAuthRejected       atomic.Uint64
 }
 
 type Backend struct {
-	factory       *Factory
-	host          wgtransport.Host
-	bind          carrierBind
-	mu            sync.Mutex
-	eventMu       sync.Mutex // serialize host notifications across actor replacement
-	closed        bool
-	active        atomic.Pointer[generation]
-	identityOK    atomic.Bool
-	authEpoch     atomic.Uint64 // invalidates anonymous in-flight authentication on any revocation
-	identityEpoch atomic.Uint64 // invalidates queued work across local identity changes
-	networkUp     atomic.Bool
-	counters      Counters
-	timing        sessionTiming
-	tcpStreams    sync.Map // *tcpStreamConn -> struct{}; retained until FIN acknowledgment
-	readBuffers   tcpReadBufferPool
-	serverHintsMu sync.RWMutex
-	serverHints   map[[32]byte]*atomic.Uint32
+	factory        *Factory
+	host           wgtransport.Host
+	bind           carrierBind
+	mu             sync.Mutex
+	eventMu        sync.Mutex // serialize host notifications across actor replacement
+	closed         bool
+	active         atomic.Pointer[generation]
+	identityOK     atomic.Bool
+	identityMu     sync.Mutex
+	identityKey    [32]byte
+	authEpoch      atomic.Uint64 // invalidates anonymous in-flight authentication on any revocation
+	identityEpoch  atomic.Uint64 // invalidates queued work across local identity changes
+	networkUp      atomic.Bool
+	counters       Counters
+	timing         sessionTiming
+	tcpStreams     sync.Map // *tcpStreamConn -> struct{}; retained until FIN acknowledgment
+	readBuffers    tcpReadBufferPool
+	serverHintsMu  sync.RWMutex
+	serverHints    map[[32]byte]*atomic.Uint32
+	tickets        atomic.Pointer[serverTicketStore]
+	resumptionMu   sync.Mutex
+	clientSessions map[[32]byte]*peerSessionCache
 }
 type carrierBind struct{ b *Backend }
 
@@ -214,17 +224,23 @@ func (b *Backend) Bind() conn.Bind     { return &b.bind }
 func (b *Backend) Counters() *Counters { return &b.counters }
 func (b *Backend) Close() error        { return b.stop(true) }
 func (b *Backend) LocalIdentityChanged(k [32]byte) {
+	b.identityMu.Lock()
+	defer b.identityMu.Unlock()
 	valid := k != ([32]byte{}) && k == b.localNodeKey()
 	old := b.identityOK.Swap(valid)
-	if old != valid {
+	changed := b.identityKey != k || old != valid
+	b.identityKey = k
+	if changed {
 		b.identityEpoch.Add(1)
 	}
-	if old && !valid {
+	if old && changed {
+		b.forgetResumption([32]byte{})
 		b.resetConnections("local identity changed")
 	}
 }
 func (b *Backend) PeerRemoved(k [32]byte) {
 	b.authEpoch.Add(1)
+	b.forgetResumption(k)
 	g := b.active.Load()
 	if g == nil {
 		b.forgetServerHint(k)
@@ -382,14 +398,16 @@ func (c *carrierBind) open(port uint16, offset int, grow bool) ([]conn.ReceiveFu
 				return nil, errors.New("QUIC provisional connection limit")
 			}
 			context.AfterFunc(ctx, func() { incoming.Add(-1); ticket.release() })
-			return context.WithValue(ctx, admissionContextKey{}, ticket), nil
+			ctx = context.WithValue(ctx, admissionContextKey{}, ticket)
+			return context.WithValue(ctx, resumptionContextKey{}, new(resumptionContext)), nil
 		},
 	}
+	b.initResumption()
 	qc := b.quicConfig()
 	// Send HTTP/3 SETTINGS in the server's first flight. Early acceptance is
-	// not peer authorization: CONNECT still requires the completed TLS channel
-	// and current node proof, and client 0-RTT remains disabled.
-	listener, err := g.transport.ListenEarly(b.tlsConfig(nil), qc)
+	// not peer authorization: early CONNECT needs a single-use authenticated
+	// ticket; business traffic still waits for TLS completion and live policy.
+	listener, err := g.transport.ListenEarly(b.resumingTLSConfig(), qc)
 	if err != nil {
 		rollback()
 		return nil, 0, err
@@ -420,7 +438,7 @@ func (b *Backend) quicConfig() *quic.Config {
 	cfg := &quic.Config{
 		EnableDatagrams: true, HandshakeIdleTimeout: 8 * time.Second, MaxIdleTimeout: 60 * time.Second,
 		KeepAlivePeriod: 20 * time.Second, InitialPacketSize: b.factory.cfg.InitialPacketSize,
-		MaxIncomingStreams: streams, MaxIncomingUniStreams: uni, Allow0RTT: false,
+		MaxIncomingStreams: streams, MaxIncomingUniStreams: uni, Allow0RTT: true, DeferSessionTicket: true,
 		MaxStreamReceiveWindow: 128 << 10, MaxConnectionReceiveWindow: 1 << 20,
 	}
 	if b.factory.cfg.TCPStreams {
@@ -443,6 +461,17 @@ func (b *Backend) stop(final bool) error {
 	defer b.mu.Unlock()
 	if final {
 		b.closed = true
+		defer func() {
+			if store := b.tickets.Swap(nil); store != nil {
+				store.close()
+			}
+			b.resumptionMu.Lock()
+			for k, c := range b.clientSessions {
+				c.clear()
+				delete(b.clientSessions, k)
+			}
+			b.resumptionMu.Unlock()
+		}()
 	}
 	g := b.active.Swap(nil)
 	if g == nil {
@@ -871,6 +900,12 @@ func (p *peer) getSessionContext(parent context.Context, replace *session) (*ses
 	if p.cfg.http3URL != nil {
 		tlsConfig.ServerName = http3ClientHelloServerName(p.cfg.http3URL)
 	}
+	// crypto/tls disables its session cache without a ServerName. An IP
+	// literal creates an internal cache key while TLS omits the SNI extension.
+	// The cache itself remains scoped to this exact authenticated peer.
+	if tlsConfig.ServerName == "" {
+		tlsConfig.ServerName = "0.0.0.0"
+	}
 	cfg := p.g.b.quicConfig()
 	if profile := p.g.b.browserProfileForPeer(p.cfg.key, true); profile != "" {
 		cfg.ClientHelloProfile = profile
@@ -881,7 +916,9 @@ func (p *peer) getSessionContext(parent context.Context, replace *session) (*ses
 		setup.TotalMicros = time.Since(started).Microseconds()
 		p.setup.Store(setup)
 	}()
-	q, err := p.g.transport.Dial(ctx, remote, tlsConfig, cfg)
+	tlsConfig.ClientSessionCache = p.g.b.clientSessionCache(p.cfg.key)
+	p.g.b.counters.HandshakeAttempts.Add(1)
+	q, err := p.g.transport.DialEarly(ctx, remote, tlsConfig, cfg)
 	setup.TLSMicros = time.Since(started).Microseconds()
 	if err != nil {
 		p.g.b.counters.HandshakeErrors.Add(1)
@@ -889,6 +926,30 @@ func (p *peer) getSessionContext(parent context.Context, replace *session) (*ses
 			p.publishState(wgtransport.SessionExpired)
 		}
 		return nil, err
+	}
+	select {
+	case <-q.HandshakeComplete():
+	default:
+		p.g.b.counters.ZeroRTTAttempts.Add(1)
+		resumed, resumeErr := p.openResumedHTTP3(ctx, q, attempt, setup)
+		if resumeErr == nil {
+			p.g.b.counters.ZeroRTTAccepted.Add(1)
+			setup.Stage = "established"
+			return resumed, nil
+		}
+		if !errors.Is(resumeErr, quic.Err0RTTRejected) && !errors.Is(resumeErr, errResumeRejected) {
+			return nil, resumeErr
+		}
+		p.g.b.counters.ZeroRTTRejected.Add(1)
+		// Rejecting early data invalidates its HTTP/3 streams. Start one new
+		// full handshake inside the original deadline; never retry business data.
+		tlsConfig = tlsConfig.Clone()
+		tlsConfig.ClientSessionCache = freshSessionCache{tlsConfig.ClientSessionCache}
+		p.g.b.counters.HandshakeAttempts.Add(1)
+		q, err = p.g.transport.Dial(ctx, remote, tlsConfig, cfg)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return p.openHTTP3Context(ctx, q, setup, attempt)
 }

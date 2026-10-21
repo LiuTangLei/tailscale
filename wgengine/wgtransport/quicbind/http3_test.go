@@ -97,6 +97,12 @@ func TestHTTP3PublicPageDoesNotAuthorizeTunnel(t *testing.T) {
 	if b.counters.HTTP3Tunnels.Load() != 0 || b.counters.ReceivedPackets.Load() != 0 {
 		t.Fatal("public request created a tunnel")
 	}
+	store := b.tickets.Load()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.tickets) != 0 {
+		t.Fatal("unauthenticated public request received an application resumption ticket")
+	}
 }
 
 func TestHTTP3ConfigValidation(t *testing.T) {
