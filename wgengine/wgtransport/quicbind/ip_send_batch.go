@@ -51,7 +51,8 @@ func (p *peer) sendIPBatch(s *session, bufs [][]byte, offset int) (handled bool,
 			}
 		}
 	}
-	var payloads [32][]byte
+	payloads := p.batchPayloads[:]
+	defer clear(payloads) // also release caller references on every error path
 	for len(bufs) > 0 {
 		count := min(len(bufs), len(payloads))
 		for i, b := range bufs[:count] {
@@ -61,7 +62,7 @@ func (p *peer) sendIPBatch(s *session, bufs [][]byte, offset int) (handled bool,
 			payloads[i] = b[offset:]
 		}
 		p.touch()
-		n, sendErr := sender.SendDatagramsWithPrefix([]byte{0}, payloads[:count])
+		n, sendErr := sender.SendDatagramsWithPrefix(p.batchPrefix[:], payloads[:count])
 		if n < 0 || n > count {
 			return true, errors.New("invalid H3 datagram batch result")
 		}
@@ -70,6 +71,11 @@ func (p *peer) sendIPBatch(s *session, bufs [][]byte, offset int) (handled bool,
 			p.g.b.counters.FastPackets.Add(uint64(n))
 			p.g.b.counters.IPBatchCalls.Add(1)
 			p.g.b.counters.IPBatchPackets.Add(uint64(n))
+		}
+		if sendErr == nil && n == count {
+			clear(payloads[:count])
+			bufs = bufs[count:]
+			continue
 		}
 		var tooLarge *quic.DatagramTooLargeError
 		if n == 0 && errors.As(sendErr, &tooLarge) {

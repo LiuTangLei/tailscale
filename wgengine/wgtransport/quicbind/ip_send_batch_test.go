@@ -47,6 +47,11 @@ func TestH3ReadyIPBatchWireIntegrity(t *testing.T) {
 			}
 			p.sendMu.Lock()
 			handled, err := p.sendIPBatch(s, bufs, 8)
+			for _, b := range p.batchPayloads {
+				if b != nil {
+					t.Error("retained caller packet after success")
+				}
+			}
 			p.sendMu.Unlock()
 			if !handled || err != nil {
 				t.Fatalf("handled %v error %v", handled, err)
@@ -70,5 +75,44 @@ func TestH3ReadyIPBatchWireIntegrity(t *testing.T) {
 		if b.counters.IPBatchPackets.Load() == 0 {
 			t.Fatal("no packet entered optimized path")
 		}
+	}
+}
+
+// An interface call may retain the slice descriptor while it runs, but the
+// peer must never retain caller packet buffers after success or an early error.
+type failingIPBatch struct{ datagramChannel }
+
+func (f failingIPBatch) SendDatagramsWithPrefix([]byte, [][]byte) (int, error) {
+	return 0, ErrUnknownPeer
+}
+
+func TestIPBatchScratchClearedAfterAdmissionError(t *testing.T) {
+	pair := newTestPair(t, "http3-magicsock")
+	fns := pair.open(t)
+	key := pair.keys[1].Public().Raw32()
+	ep, err := pair.backends[0].Bind().ParseEndpoint(hex.EncodeToString(key[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pair.backends[0].Bind().Send([][]byte{{7}}, ep, 0); err != nil {
+		t.Fatal(err)
+	}
+	_ = readOne(t, fns[1])
+	p := pair.backends[0].active.Load().peers[key]
+	p.mu.Lock()
+	s := p.session
+	p.mu.Unlock()
+	h := s.dgram.(*http3Channel)
+	candidate := &session{stamp: s.stamp, dgram: &http3Channel{g: h.g, q: h.q, stream: failingIPBatch{h.stream}}}
+	p.sendMu.Lock()
+	handled, err := p.sendIPBatch(candidate, [][]byte{{7, 8, 9}}, 0)
+	for _, b := range p.batchPayloads {
+		if b != nil {
+			t.Error("error return retained caller packet")
+		}
+	}
+	p.sendMu.Unlock()
+	if !handled || err != ErrUnknownPeer {
+		t.Fatal(handled, err)
 	}
 }

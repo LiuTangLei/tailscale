@@ -149,6 +149,8 @@ type peer struct {
 	sendMu           sync.Mutex
 	queueMu          sync.RWMutex // final queue drain waits for in-flight enqueues
 	scratch          [1500]byte
+	batchPayloads    [32][]byte // borrowed only while sendMu is held
+	batchPrefix      [1]byte
 	connectingPacket atomic.Bool
 	g                *generation
 	ctx              context.Context
