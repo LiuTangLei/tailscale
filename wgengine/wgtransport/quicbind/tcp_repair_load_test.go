@@ -360,7 +360,9 @@ func runTCPRepairLoad(t *testing.T, scenario string, enabled bool, trial int, du
 					errors <- fmt.Errorf("TCP payload mismatch")
 					return
 				}
-				tcpBytes.Add(int64(n))
+				if time.Now().Before(stop) {
+					tcpBytes.Add(int64(n))
+				}
 			}
 		}()
 	}
@@ -388,7 +390,11 @@ func runTCPRepairLoad(t *testing.T, scenario string, enabled bool, trial int, du
 	}
 	sendWG.Wait()
 	clientWG.Wait()
-	time.Sleep(400 * time.Millisecond)
+	// Use the same observation deadline in both modes. Waiting a fixed
+	// amount after TCP completion would give slower TCP runs more UDP drain.
+	if drain := time.Until(stop.Add(1500 * time.Millisecond)); drain > 0 {
+		time.Sleep(drain)
+	}
 	for _, c := range udpConns {
 		c.Close()
 	}
