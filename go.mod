@@ -565,6 +565,6 @@ tool (
 	github.com/stacklok/frizbee
 )
 
-replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.63.0-tailscale.1.0.20261021075301-bc2ce38e62f3
+replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.63.0-tailscale.1.0.20261021083103-10dfe69b6d4c
 
 replace github.com/refraction-networking/utls => github.com/LiuTangLei/utls v1.8.3-0.20261021023852-7effde6a93dc

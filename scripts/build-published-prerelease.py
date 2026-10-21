@@ -20,7 +20,10 @@ WG = 'github.com/LiuTangLei/wireguard-go'
 WG_VERSION = 'v0.0.34'
 QUIC = 'github.com/quic-go/quic-go'
 QUIC_FORK = 'github.com/LiuTangLei/quic-go'
-QUIC_VERSION = 'v0.63.0-tailscale.1.0.20260929072415-cda3ed094749'
+QUIC_VERSION = 'v0.63.0-tailscale.1.0.20261021083103-10dfe69b6d4c'
+UTLS = 'github.com/refraction-networking/utls'
+UTLS_FORK = 'github.com/LiuTangLei/utls'
+UTLS_VERSION = 'v1.8.3-0.20261021023852-7effde6a93dc'
 PLATFORMS = ('linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64')
 
 
@@ -51,7 +54,8 @@ def digest(path: Path) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', required=True, type=Path)
-    p.add_argument('--tag', default='v1.104.1')
+    p.add_argument('--tag', default='v1.104.2')
+    p.add_argument('--source-ref', help='local ref when the upstream version tag is already present')
     p.add_argument('--jobs', type=int, default=2)
     a = p.parse_args()
     if not 1 <= a.jobs <= 4:
@@ -67,7 +71,7 @@ def main() -> None:
     if command(['git', 'status', '--porcelain'], env).strip():
         raise RuntimeError('release source must have a clean working tree')
     commit = command(['git', 'rev-parse', 'HEAD'], env).strip()
-    if command(['git', 'rev-parse', a.tag + '^{commit}'], env).strip() != commit:
+    if command(['git', 'rev-parse', (a.source_ref or a.tag) + '^{commit}'], env).strip() != commit:
         raise RuntimeError('release tag does not identify the current commit')
     version_vars = {}
     for line in command(['sh', './build_dist.sh', 'shellvars'], env).splitlines():
@@ -78,13 +82,16 @@ def main() -> None:
     long_version = version_vars.get('VERSION_LONG', '')
     if commit[:9] not in long_version or 'dirty' in long_version:
         raise RuntimeError('Tailscale linker version does not identify the clean source commit')
-    modules = decode_many(command(['go', 'list', '-mod=readonly', '-m', '-json', WG, QUIC], env))
+    modules = decode_many(command(['go', 'list', '-mod=readonly', '-m', '-json', WG, QUIC, UTLS], env))
     selected = {m['Path']: m for m in modules}
     if selected.get(WG, {}).get('Version') != WG_VERSION or selected[WG].get('Replace'):
         raise RuntimeError('WG version is not the published release')
     replacement = selected.get(QUIC, {}).get('Replace') or {}
     if replacement.get('Path') != QUIC_FORK or replacement.get('Version') != QUIC_VERSION or not replacement.get('Sum'):
         raise RuntimeError('QUIC is not the checksum-verified published fork')
+    utls = selected.get(UTLS, {}).get('Replace') or {}
+    if utls.get('Path') != UTLS_FORK or utls.get('Version') != UTLS_VERSION or not utls.get('Sum'):
+        raise RuntimeError('uTLS is not the checksum-verified published fork')
     command(['go', 'mod', 'verify'], env)
     out.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -93,7 +100,8 @@ def main() -> None:
         'dependency_mode': 'published Go modules; no local paths or overlays',
         'dependencies': {
             WG: {'version': WG_VERSION, 'sum': selected[WG].get('Sum'), 'commit': '63cef16b88aab8b23b843beac7ac6f553b7c5fd6'},
-            QUIC_FORK: {'version': QUIC_VERSION, 'sum': replacement['Sum'], 'commit': 'cda3ed094749ffe253e91ab02edf4743003487d0'},
+            QUIC_FORK: {'version': QUIC_VERSION, 'sum': replacement['Sum'], 'commit': '10dfe69b6d4ca273c4284ec48d786206af62286e'},
+            UTLS_FORK: {'version': UTLS_VERSION, 'sum': utls['Sum'], 'commit': '7effde6a93dc68c3535eaa590b6d28c503e18ff6'},
         },
         'assets': [],
         'runtime_scope': 'standalone CLI/daemon binaries; not signed application installers, APKs or IPAs',
@@ -109,7 +117,7 @@ def main() -> None:
         # The CLI is an API client and need not link either crypto engine.
         # Every daemon must link both exact published modules.
         if name == 'tailscaled':
-            for line in (f'\tdep\t{WG}\t{WG_VERSION}\t', f'\t=>\t{QUIC_FORK}\t{QUIC_VERSION}\t'):
+            for line in (f'\tdep\t{WG}\t{WG_VERSION}\t', f'\t=>\t{QUIC_FORK}\t{QUIC_VERSION}\t', f'\t=>\t{UTLS_FORK}\t{UTLS_VERSION}\t'):
                 if line not in info:
                     raise RuntimeError(f'{filename}: missing expected build metadata {line!r}')
         # Tailscale uses explicit linker stamps; generic Go VCS fields are not
