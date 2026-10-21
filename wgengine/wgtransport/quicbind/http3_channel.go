@@ -16,7 +16,8 @@ import (
 
 type http3Channel struct {
 	client          *http3.ClientConn // immutable, non-nil on an outgoing authenticated tunnel
-	tcpStreams      bool              // authenticated peer advertised CONNECT byte streams
+	repair          *tcpRepair
+	tcpStreams      bool // authenticated peer advertised CONNECT byte streams
 	g               *generation
 	q               *quic.Conn
 	stream          datagramChannel
@@ -50,7 +51,7 @@ func (c *http3Channel) normalize(b []byte) []byte {
 		c.g.b.counters.MalformedFrames.Add(1)
 		return nil
 	}
-	if contextID != 0 && (contextID != 2 || !c.fragments) {
+	if contextID != 0 && (contextID != 2 || !c.fragments) && (c.repair == nil || (contextID != uint64(frameTCPRepair) && contextID != uint64(frameTCPAck))) {
 		return nil
 	}
 	if n != 1 {
@@ -59,8 +60,10 @@ func (c *http3Channel) normalize(b []byte) []byte {
 	}
 	if contextID == 0 {
 		b[0] = frameRaw
-	} else {
+	} else if contextID == 2 {
 		b[0] = frameFragment
+	} else {
+		b[0] = byte(contextID)
 	}
 	if len(b) > maxPacket+fragmentHeader {
 		c.g.b.counters.ReceiveQueueDrops.Add(1)

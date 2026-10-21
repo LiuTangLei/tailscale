@@ -26,6 +26,7 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	}
 	out["session_refresh_seconds"] = b.timing.refresh.Seconds()
 	out["session_max_age_seconds"] = b.timing.expire.Seconds()
+	out["tcp_repair_enabled"] = f.cfg.TCPRepair
 	out["tcp_streams_enabled"] = f.cfg.TCPStreams
 	if f.cfg.TCPStreams {
 		out["session_refresh_seconds"] = 0
@@ -47,7 +48,9 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	if store := b.tickets.Load(); store != nil {
 		out["resumption_tickets"] = store.snapshot()
 	}
+	// QUIC frames remain unreliable; native TCP packet copies are separate.
 	out["datagram_retransmission"] = false
+	out["udp_packet_repair"] = false
 	out["http3_receive_queue_capacity"] = http3ReceiveQueueCapacity
 	out["quic_receive_queue_capacity"] = quicReceiveQueueCapacity
 	out["http3_requests"] = c.HTTP3Requests.Load()
@@ -56,6 +59,12 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["http3_tunnels"] = c.HTTP3Tunnels.Load()
 	out["http3_rejected"] = c.HTTP3Rejected.Load()
 	out["http3_datagrams"] = c.HTTP3Datagrams.Load()
+	out["tcp_repair_original_bytes"] = c.TCPRepairOriginalBytes.Load()
+	out["tcp_repair_control_bytes"] = c.TCPRepairControlBytes.Load()
+	out["tcp_repair_packets"] = c.TCPRepairPackets.Load()
+	out["tcp_repair_tail_probes"] = c.TCPRepairTailProbes.Load()
+	out["tcp_repair_bytes"] = c.TCPRepairBytes.Load()
+	out["tcp_repair_duplicates"] = c.TCPRepairDuplicates.Load()
 	out["tcp_streams"] = c.TCPStreams.Load()
 	out["tcp_read_buffers"] = b.readBuffers.snapshot()
 	out["tcp_ready_read_coalescing"] = true
@@ -117,6 +126,9 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 			if s != nil && s.q.Context().Err() == nil {
 				active++
 				detail["connection_stats"] = s.q.ConnectionStats()
+				if c, ok := s.dgram.(*http3Channel); ok {
+					detail["tcp_repair_negotiated"] = c.repair != nil
+				}
 				detail["local_tls_role"] = "server"
 				if s.outgoing {
 					detail["local_tls_role"] = "client"

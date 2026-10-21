@@ -37,6 +37,12 @@ type Counters struct {
 	FastPackets              atomic.Uint64
 	ReceiveQueueDrops        atomic.Uint64
 	FragmentedPackets        atomic.Uint64
+	TCPRepairOriginalBytes   atomic.Uint64
+	TCPRepairControlBytes    atomic.Uint64
+	TCPRepairPackets         atomic.Uint64
+	TCPRepairTailProbes      atomic.Uint64
+	TCPRepairBytes           atomic.Uint64
+	TCPRepairDuplicates      atomic.Uint64
 	TCPMSSClamps             atomic.Uint64
 	MalformedFrames          atomic.Uint64
 	Connections              atomic.Uint64
@@ -1014,6 +1020,18 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 	if !p.stampValid(s.stamp) {
 		return ErrUnknownPeer
 	}
+	if c, ok := s.dgram.(*http3Channel); ok && c.repair != nil {
+		if _, _, eligible := repairTCP(packet); eligible {
+			copy(scratch, packet)
+			p.clampPacketTCPMSS(scratch[:len(packet)])
+			if handled, err := c.repair.send(scratch[:len(packet)]); handled {
+				if err == nil {
+					p.g.b.counters.SentPackets.Add(1)
+				}
+				return err
+			}
+		}
+	}
 	var tooLarge *quic.DatagramTooLargeError
 	limit := 1150
 	if len(packet)+1 <= len(scratch) {
@@ -1075,6 +1093,7 @@ func (p *peer) receiveSession(s *session) {
 			p.publishState(wgtransport.SessionExpired)
 		}
 	}()
+	p.startTCPRepair(s)
 	if capsules, ok := s.dgram.(interface{ StartCapsules(func([]byte)) }); ok {
 		capsules.StartCapsules(func(data []byte) { p.deliverFrame(s, data) })
 	}
@@ -1097,6 +1116,14 @@ func (p *peer) deliverFrame(s *session, data []byte) {
 		return
 	}
 	p.touch()
+	if len(data) > 0 && (data[0] == frameTCPRepair || data[0] == frameTCPAck) {
+		if c, ok := s.dgram.(*http3Channel); ok && c.repair != nil {
+			if err := c.repair.receive(data, func(packet []byte) bool { return p.queueIP(s, packet) }, time.Now()); err != nil {
+				p.g.b.counters.MalformedFrames.Add(1)
+			}
+		}
+		return
+	}
 	var packet []byte
 	var err error
 	if len(data) > 1 && data[0] == frameRaw && len(data)-1 <= maxPacket {
@@ -1113,20 +1140,26 @@ func (p *peer) deliverFrame(s *session, data []byte) {
 	if packet == nil {
 		return
 	}
+	p.queueIP(s, packet)
+}
+
+func (p *peer) queueIP(s *session, packet []byte) bool {
 	if p.g.rxBytes.Add(int64(len(packet))) > packetBudget {
 		p.g.rxBytes.Add(-int64(len(packet)))
 		p.g.b.counters.ReceiveQueueDrops.Add(1)
-		return
+		return false
 	}
 	select {
 	case p.g.rx <- received{data: packet, ep: p.ep.Load(), peer: p, stamp: s.stamp}:
 		p.g.b.counters.ReceivedPackets.Add(1)
+		return true
 	case <-p.g.ctx.Done():
 		p.g.rxBytes.Add(-int64(len(packet)))
 	default:
 		p.g.rxBytes.Add(-int64(len(packet)))
 		p.g.b.counters.ReceiveQueueDrops.Add(1)
 	}
+	return false
 }
 
 // receiveSlab preserves packet headroom and ownership under the upstream

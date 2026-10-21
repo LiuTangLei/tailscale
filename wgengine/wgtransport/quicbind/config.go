@@ -61,6 +61,9 @@ type Config struct {
 	// IPv6 IP MTU or UDP semantics. Embedded stacks can avoid fragmenting every
 	// bulk TCP packet on a 1200-byte QUIC carrier. Zero preserves peer MSS.
 	TCPMSS uint16 `json:"tcp_mss,omitempty"`
+	// TCPRepair opts into negotiated, bounded native-IP TCP repair. Disabled by
+	// default until mixed-load acceptance; UDP and ACK-only TCP remain raw.
+	TCPRepair bool `json:"tcp_repair,omitempty"`
 	// TCPStreams enables authenticated HTTP/3 CONNECT streams for an embedded
 	// point-to-point proxy. UDP remains on CONNECT-IP DATAGRAM. Authentication
 	// and revocation belong to the same QUIC session; no alternate transport.

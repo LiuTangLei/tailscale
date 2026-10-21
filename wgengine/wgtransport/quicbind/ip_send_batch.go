@@ -30,6 +30,13 @@ func (p *peer) sendIPBatch(s *session, bufs [][]byte, offset int) (handled bool,
 	if !ok || p.g.b.factory.cfg.TCPStreams || p.g.b.factory.cfg.TCPMSS != 0 {
 		return false, nil
 	}
+	if h3.repair != nil {
+		for _, b := range bufs {
+			if _, _, eligible := repairTCP(b[offset:]); eligible {
+				return false, nil
+			}
+		}
+	}
 	sender, ok := h3.stream.(datagramBatchSender)
 	if !ok {
 		return false, nil

@@ -33,6 +33,9 @@ func (p *peer) openEarlyTunnel(parent context.Context, q *quic.Conn, attempt lif
 		"Authorization": []string{resumeAuthorization}, http3.CapsuleProtocolHeader: []string{"?1"},
 		fragmentHeaderName: []string{fragmentHeaderValue}, serverHintHeader: []string{serverHintValue(p.g.b.factory.cfg.Server)},
 	}}
+	if p.g.b.factory.cfg.TCPRepair && supportsTCPRepair(q) {
+		req.Header.Set(tcpRepairHeader, "v1")
+	}
 	if err := stream.SendRequestHeader(req); err != nil {
 		return nil, err
 	}
@@ -67,6 +70,7 @@ func (p *peer) openEarlyTunnel(parent context.Context, q *quic.Conn, attempt lif
 	stream.SetDeadline(time.Time{})
 	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1
 	channel := newHTTP3Channel(p.g, q, stream, stream, fragments)
+	channel.enableTCPRepair(p.g.b.factory.cfg.TCPRepair && response.Header.Get(tcpRepairHeader) == "v1" && len(response.Header.Values(tcpRepairHeader)) == 1)
 	channel.client = client
 	channel.tcpStreams = response.Header.Get(tcpStreamsHeader) == "1" && len(response.Header.Values(tcpStreamsHeader)) == 1
 	session := p.installBoundChannel(q, true, channel, &attempt, hint)
