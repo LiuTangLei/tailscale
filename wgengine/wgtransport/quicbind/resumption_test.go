@@ -116,21 +116,33 @@ func TestZeroRTTBusinessWaitsForClientFinished(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	first, e := p.getSession()
-	if e != nil {
+	if _, e := p.getSession(); e != nil {
 		t.Fatal(e)
 	}
 	waitTicket(t, client.clientSessionCache(remote))
+	p.closeSession("test reconnect")
 	gate.mu.Lock()
 	gate.hold = true
 	gate.mu.Unlock()
 	defer gate.release()
-	resumed, e := p.getSessionContext(t.Context(), first)
-	if e != nil {
-		t.Fatal(e)
+	type result struct {
+		s   *session
+		err error
 	}
-	if !resumed.q.ConnectionState().Used0RTT {
-		t.Fatal("test did not use real early data")
+	ready := make(chan result, 1)
+	go func() { s, e := p.getSessionContext(t.Context(), nil); ready <- result{s, e} }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		gate.mu.Lock()
+		held := len(gate.pending)
+		gate.mu.Unlock()
+		if held > 0 && server.counters.HTTP3Requests.Load() >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("early request did not reach Finished gate")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	ep, e := client.Bind().ParseEndpoint(hex.EncodeToString(remote[:]))
 	if e != nil {
@@ -154,6 +166,11 @@ func TestZeroRTTBusinessWaitsForClientFinished(t *testing.T) {
 		t.Fatal("business was delivered before TLS Finished")
 	case <-time.After(80 * time.Millisecond):
 	}
+	select {
+	case result := <-ready:
+		t.Fatalf("private CONNECT succeeded before client Finished: %v", result.err)
+	default:
+	}
 	if server.counters.ZeroRTTAccepted.Load() != 0 || server.counters.HTTP3Tunnels.Load() != 1 {
 		t.Fatal("server admitted early tunnel before TLS Finished")
 	}
@@ -165,6 +182,17 @@ func TestZeroRTTBusinessWaitsForClientFinished(t *testing.T) {
 	}
 	if e := gate.release(); e != nil {
 		t.Fatal(e)
+	}
+	select {
+	case result := <-ready:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if !result.s.q.ConnectionState().Used0RTT {
+			t.Fatal("test did not use real early data")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("recovery not released after client Finished")
 	}
 	select {
 	case data := <-got:

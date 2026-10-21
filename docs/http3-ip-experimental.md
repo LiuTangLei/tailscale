@@ -31,8 +31,9 @@ The first connection completes TLS and channel-bound node authentication before
 the server issues its single TLS resumption ticket. Both standard TLS and the
 Chromium-inspired H3 profile support real QUIC 0-RTT. A subsequent connection
 sends only the CONNECT-IP request early, authenticated by the previously issued
-PSK and current peer policy. The response may arrive at 0.5-RTT; server admission
-and business delivery wait for client Finished. No UDP payload or TCP operation
+PSK and current peer policy. Public SETTINGS can arrive at 0.5-RTT. The private
+success response and business delivery wait for client Finished, keeping the
+existing UDP channel active until the replacement is ready. No UDP payload or TCP operation
 is deliberately sent as replayable early data.
 
 Tickets are single-use, valid for at most 24 hours, and bounded to 4096 server

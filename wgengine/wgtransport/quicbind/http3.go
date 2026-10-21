@@ -275,6 +275,18 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		g.h3.mu.Unlock()
 	}()
 	fragments := r.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(r.Header.Values(fragmentHeaderName)) == 1
+	if resumeRequest {
+		// Validate the request in 0-RTT, but keep the existing UDP path active
+		// until the new server channel can actually receive business packets.
+		// A provisional success at 0.5-RTT creates a handover reorder window.
+		if err := awaitTLS(r.Context(), q); err != nil {
+			return
+		}
+		if epoch != g.b.authEpoch.Load() || identityEpoch != g.b.identityEpoch.Load() || !p.stampValid(*attempt) {
+			deny(http.StatusTooEarly)
+			return
+		}
+	}
 	if !resumeRequest && g.b.factory.cfg.AutoTrust {
 		proof, err := g.b.createNodeReply(requestProof)
 		if err != nil {
@@ -314,8 +326,8 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		requestProof.handshake.Close()
 		_ = stream.SetDeadline(time.Time{})
 	}
-	// Send the provisional response at 0.5-RTT, but do not release business
-	// packets or issue another ticket until the TLS handshake also completes.
+	// Both full and resumed authentication must complete TLS and live policy
+	// checks before installing a channel or issuing another ticket.
 	if err := awaitTLS(r.Context(), q); err != nil {
 		return
 	}

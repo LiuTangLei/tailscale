@@ -340,6 +340,9 @@ func TestMixedTCPUDPResumptionLoad(t *testing.T) {
 		if (a.UnconditionalP99MS != nil && b.UnconditionalP99MS != nil && *b.UnconditionalP99MS > *a.UnconditionalP99MS+25) || float64(b.Missing)/float64(b.Offered) > float64(a.Missing)/float64(a.Offered)+.01 {
 			t.Error("0-RTT UDP regression exceeds 25ms p99 / 1 percentage point missing")
 		}
+		if b.Reordered > a.Reordered+2 {
+			t.Error("early handover added more than two reordered UDP packets on the FIFO test link")
+		}
 		if path := os.Getenv("TS_H3_MIXED_RESULT"); path != "" {
 			data, _ := json.MarshalIndent(results, "", "  ")
 			if e := os.WriteFile(path, append(data, '\n'), 0600); e != nil {
