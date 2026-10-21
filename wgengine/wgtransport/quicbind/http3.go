@@ -274,7 +274,7 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		delete(g.h3.tunnels, q)
 		g.h3.mu.Unlock()
 	}()
-	repair := g.b.factory.cfg.TCPRepair && r.Header.Get(tcpRepairHeader) == "v1" && len(r.Header.Values(tcpRepairHeader)) == 1
+	repair := g.b.factory.cfg.TCPRepair && r.Header.Get(tcpRepairHeader) == tcpRepairVersion && len(r.Header.Values(tcpRepairHeader)) == 1
 	if _, supported := any(q).(opportunisticDatagrams); !supported {
 		repair = false
 	}
@@ -301,7 +301,7 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set(http3.CapsuleProtocolHeader, "?1")
 	if repair {
-		w.Header().Set(tcpRepairHeader, "v1")
+		w.Header().Set(tcpRepairHeader, tcpRepairVersion)
 	}
 	if g.b.factory.cfg.TCPStreams {
 		w.Header().Set(tcpStreamsHeader, "1")
@@ -427,7 +427,7 @@ func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, setup *con
 	u := p.cfg.http3URL
 	req := &http.Request{Method: http.MethodConnect, Proto: "connect-ip", Host: u.Host, URL: u, Header: http.Header{http3.CapsuleProtocolHeader: []string{"?1"}, fragmentHeaderName: []string{fragmentHeaderValue}}}
 	if p.g.b.factory.cfg.TCPRepair && supportsTCPRepair(q) {
-		req.Header.Set(tcpRepairHeader, "v1")
+		req.Header.Set(tcpRepairHeader, tcpRepairVersion)
 	}
 	tlsState := q.ConnectionState().TLS
 	var proof string
@@ -479,7 +479,7 @@ func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, setup *con
 	_ = stream.SetDeadline(time.Time{})
 	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1
 	channel := newHTTP3Channel(p.g, q, stream, stream, fragments)
-	channel.enableTCPRepair(p.g.b.factory.cfg.TCPRepair && response.Header.Get(tcpRepairHeader) == "v1" && len(response.Header.Values(tcpRepairHeader)) == 1)
+	channel.enableTCPRepair(p.g.b.factory.cfg.TCPRepair && response.Header.Get(tcpRepairHeader) == tcpRepairVersion && len(response.Header.Values(tcpRepairHeader)) == 1)
 	channel.client = client
 	channel.tcpStreams = response.Header.Get(tcpStreamsHeader) == "1" && len(response.Header.Values(tcpStreamsHeader)) == 1
 	session := p.installBoundChannel(q, true, channel, &attempt, peerServerHint)

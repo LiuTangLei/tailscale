@@ -68,6 +68,7 @@ func (p *peer) queueDirectIP(s *session, borrowed []byte) {
 		return
 	}
 	p.touch()
+	p.observeTCP(s, borrowed)
 	if p.g.rxBytes.Add(int64(len(borrowed))) > packetBudget {
 		p.g.rxBytes.Add(-int64(len(borrowed)))
 		p.g.b.counters.ReceiveQueueDrops.Add(1)

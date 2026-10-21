@@ -27,6 +27,7 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["session_refresh_seconds"] = b.timing.refresh.Seconds()
 	out["session_max_age_seconds"] = b.timing.expire.Seconds()
 	out["tcp_repair_enabled"] = f.cfg.TCPRepair
+	out["tcp_repair_protocol"] = tcpRepairVersion
 	out["tcp_streams_enabled"] = f.cfg.TCPStreams
 	if f.cfg.TCPStreams {
 		out["session_refresh_seconds"] = 0

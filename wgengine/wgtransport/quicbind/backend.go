@@ -1140,6 +1140,7 @@ func (p *peer) deliverFrame(s *session, data []byte) {
 	if packet == nil {
 		return
 	}
+	p.observeTCP(s, packet)
 	p.queueIP(s, packet)
 }
 

@@ -16,12 +16,16 @@ import (
 )
 
 type repairTestWire struct {
-	frames [][]byte
-	busy   bool
-	limit  int
+	frames  [][]byte
+	busy    bool
+	limit   int
+	discard bool
 }
 
 func (w *repairTestWire) SendDatagram(b []byte) error {
+	if w.discard {
+		return nil
+	}
 	if w.limit > 0 && len(b) > w.limit {
 		return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: int64(w.limit)}
 	}
@@ -61,19 +65,16 @@ func repairIP(n int) []byte {
 	return p
 }
 func repairACK(id, largest, bits uint64) []byte {
-	b := make([]byte, 49)
-	b[0] = frameTCPAck
-	binary.BigEndian.PutUint64(b[1:], id)
-	binary.BigEndian.PutUint64(b[9:], largest)
-	binary.BigEndian.PutUint64(b[17:], bits)
-	return b
+	return appendRepairACK(nil, repairAcknowledgment{id: id, largest: largest, bits: [4]uint64{bits}})
 }
 
 func TestTCPRepairGapTailAndUDP(t *testing.T) {
 	w := &repairTestWire{}
 	r := newRepairTest(w)
-	for range 5 {
-		if ok, e := r.send(repairIP(32)); !ok || e != nil {
+	for i := range 5 {
+		packet := repairIP(32)
+		binary.BigEndian.PutUint32(packet[24:], uint32(i*32))
+		if ok, e := r.send(packet); !ok || e != nil {
 			t.Fatal(ok, e)
 		}
 	}
@@ -183,7 +184,7 @@ func TestTCPRepairReassemblyDedupAndQueueAdmission(t *testing.T) {
 	if delivered != 1 {
 		t.Fatalf("delivered %d copies", delivered)
 	}
-	rx.tick(now.Add(20*time.Millisecond), time.Millisecond)
+	rx.tick(now.Add(30*time.Millisecond), time.Millisecond)
 	ackWire := rx.try.(*repairTestWire)
 	if len(ackWire.frames) != 1 {
 		t.Fatal("missing coalesced ACK")
@@ -203,8 +204,10 @@ func TestTCPRepairReassemblyDedupAndQueueAdmission(t *testing.T) {
 func TestTCPRepairBoundsAndReceiveWindow(t *testing.T) {
 	w := &repairTestWire{}
 	r := newRepairTest(w)
-	for range repairMaxPending + 10 {
-		r.send(repairIP(1000))
+	for i := range repairMaxPending + 10 {
+		packet := repairIP(1000)
+		binary.BigEndian.PutUint32(packet[24:], uint32(i*1000))
+		r.send(packet)
 	}
 	if r.pending > repairMaxPending || r.bytes > repairCacheBytes {
 		t.Fatal("unbounded retransmit cache")
@@ -431,5 +434,239 @@ func TestTCPRepairClassificationAndNegotiatedContexts(t *testing.T) {
 			t.Fatal("negotiated context lost")
 		}
 		c.repair = nil
+	}
+}
+
+func BenchmarkTCPRepairAdmission(b *testing.B) {
+	w := &repairTestWire{discard: true}
+	r := newRepairTest(w)
+	packet := repairIP(1024)
+	key, _, _ := repairTCP(packet)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(packet)))
+	b.ResetTimer()
+	for b.Loop() {
+		binary.BigEndian.PutUint32(packet[24:], func() uint32 {
+			if f := r.tx[key]; f != nil {
+				return uint32(f.next) * 1024
+			}
+			return 0
+		}())
+		if _, e := r.send(packet); e != nil {
+			b.Fatal(e)
+		}
+		f := r.tx[key]
+		r.remove(f, f.packets[f.next])
+	}
+}
+
+func TestTCPRepairCompactACKAndReorderFeedback(t *testing.T) {
+	for _, a := range []repairAcknowledgment{
+		{id: 1, largest: 512, bits: [4]uint64{^uint64(0), ^uint64(0), ^uint64(0), ^uint64(0)}},
+		{id: 256, largest: 1000, duplicates: 17, bits: [4]uint64{0x81, 0, ^uint64(0), 17}},
+		{id: 1, largest: 1, bits: [4]uint64{1}},
+	} {
+		b := appendRepairACK(nil, a)
+		got, e := parseRepairACK(b)
+		if e != nil || got != a {
+			t.Fatal(a, got, e)
+		}
+		if a.largest == 512 && len(b) > 7 {
+			t.Fatalf("in-order ACK uses %d bytes", len(b))
+		}
+		for n := 0; n < len(b); n++ {
+			if _, e := parseRepairACK(b[:n]); e == nil {
+				t.Fatal("truncated ACK accepted")
+			}
+		}
+		if _, e := parseRepairACK(append(bytes.Clone(b), 0)); e == nil {
+			t.Fatal("trailing bytes accepted")
+		}
+	}
+	if _, e := parseRepairACK([]byte{frameTCPAck, 1, 1, 0, 3}); e == nil {
+		t.Fatal("reserved bitmap tag accepted")
+	}
+	w := &repairTestWire{}
+	r := newRepairTest(w)
+	r.send(repairIP(32))
+	var f *repairSendFlow
+	for _, v := range r.tx {
+		f = v
+	}
+	for i := uint64(1); i <= 5; i++ {
+		b := appendRepairACK(nil, repairAcknowledgment{id: f.id, largest: 1, duplicates: i, bits: [4]uint64{1}})
+		if e := r.receive(b, nil, time.Now()); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if r.reorderSlack != 3 {
+		t.Fatal("redundant copies did not increase bounded reorder tolerance")
+	}
+	next := repairIP(32)
+	binary.BigEndian.PutUint32(next[24:], 32)
+	r.send(next)
+	f.packets[f.next].admitted = time.Now()
+	f.largest = f.next + 3
+	before := len(w.frames)
+	now := time.Now()
+	r.tick(now.Add(30*time.Millisecond), 20*time.Millisecond)
+	if len(w.frames) != before {
+		t.Fatal("reorder feedback did not delay spurious repair")
+	}
+	r.tick(now.Add(45*time.Millisecond), 20*time.Millisecond)
+	if len(w.frames) != before+1 {
+		t.Fatal("adaptive threshold disabled genuine hole repair")
+	}
+}
+
+func TestTCPRepairRetainsOneOwnedWireCopy(t *testing.T) {
+	w := &repairTestWire{}
+	r := newRepairTest(w)
+	packet := repairIP(64)
+	want := bytes.Clone(packet)
+	r.send(packet)
+	clear(packet)
+	var p *repairPacket
+	for _, f := range r.tx {
+		p = f.packets[1]
+	}
+	if !bytes.Equal(p.frames[0][repairHeader:], want) {
+		t.Fatal("retained borrowed packet")
+	}
+	r.tick(time.Now().Add(time.Second), 20*time.Millisecond)
+	if len(w.frames) != 2 || !bytes.Equal(w.frames[0], w.frames[1]) {
+		t.Fatal("repair did not reuse immutable wire copy")
+	}
+}
+
+func reverseRepairTCPACK(packet []byte, ack uint32) []byte {
+	b := bytes.Clone(packet[:40])
+	binary.BigEndian.PutUint16(b[2:], 40)
+	copy(b[12:16], packet[16:20])
+	copy(b[16:20], packet[12:16])
+	copy(b[20:22], packet[22:24])
+	copy(b[22:24], packet[20:22])
+	b[33] = 0x10
+	binary.BigEndian.PutUint32(b[28:], ack)
+	return b
+}
+func TestTCPRepairInnerACKAndRetransmissionCancelCopies(t *testing.T) {
+	for _, start := range []uint32{100, 0xfffffff0} {
+		w := &repairTestWire{}
+		r := newRepairTest(w)
+		p := repairIP(64)
+		binary.BigEndian.PutUint32(p[24:], start)
+		r.send(p)
+		ack := reverseRepairTCPACK(p, start)
+		r.observeTCP(ack)
+		if r.pending != 1 {
+			t.Fatal("ACK cancelled bytes not yet acknowledged")
+		}
+		binary.BigEndian.PutUint32(ack[28:], start+64)
+		r.mu.Lock()
+		r.observeTCP(ack)
+		r.mu.Unlock()
+		if r.pending != 1 {
+			t.Fatal("event-loop observation bypassed lock")
+		}
+		r.observeTCP(ack)
+		if r.pending != 0 {
+			t.Fatal("TCP ACK did not cancel supplemental copy")
+		}
+		if handled, e := r.send(p); handled || e != nil {
+			t.Fatal("inner TCP retransmission was wrapped in repair again")
+		}
+		next := repairIP(32)
+		binary.BigEndian.PutUint32(next[24:], start+64)
+		if handled, e := r.send(next); !handled || e != nil {
+			t.Fatal("new TCP sequence space bypassed repair")
+		}
+	}
+	// Native fast retransmission cancels a still-pending original even when
+	// the cumulative ACK for its bytes has not arrived yet.
+	r := newRepairTest(&repairTestWire{})
+	p := repairIP(64)
+	r.send(p)
+	if handled, e := r.send(p); handled || e != nil || r.pending != 0 {
+		t.Fatal("double retransmission retained")
+	}
+	r.send(repairIP(32)) // old sequence is raw; a new SYN starts a new incarnation
+	syn := repairIP(0)
+	syn[33] = 2
+	binary.BigEndian.PutUint32(syn[24:], 50000)
+	if handled, e := r.send(syn); !handled || e != nil || r.pending != 1 {
+		t.Fatal("four-tuple reuse did not reset sequence tracking")
+	}
+}
+
+func TestTCPRepairACKCoalescingKeepsHolesUrgent(t *testing.T) {
+	now := time.Now()
+	w := &repairTestWire{}
+	r := newRepairTest(w)
+	deliver := func([]byte) bool { return true }
+	for id := uint64(1); id <= 2; id++ {
+		if e := r.receive(repairFrames(id, 1, repairIP(256), 1000)[0], deliver, now); e != nil {
+			t.Fatal(e)
+		}
+	}
+	r.tick(now.Add(5*time.Millisecond), time.Millisecond)
+	if len(w.frames) != 0 {
+		t.Fatal("routine ACK was not delayed")
+	}
+	r.tick(now.Add(30*time.Millisecond), time.Millisecond)
+	if len(w.frames) != 2 {
+		t.Fatal("due ACKs were not coalesced")
+	}
+	// New gaps and short tails override the routine 25ms delay.
+	w.frames = nil
+	if e := r.receive(repairFrames(1, 3, repairIP(256), 1000)[0], deliver, now.Add(31*time.Millisecond)); e != nil {
+		t.Fatal(e)
+	}
+	r.tick(now.Add(35*time.Millisecond), time.Millisecond)
+	if len(w.frames) != 1 {
+		t.Fatal("new gap ACK was delayed")
+	}
+	w.frames = nil
+	if e := r.receive(repairFrames(3, 1, repairIP(32), 1000)[0], deliver, now.Add(36*time.Millisecond)); e != nil {
+		t.Fatal(e)
+	}
+	r.tick(now.Add(40*time.Millisecond), time.Millisecond)
+	if len(w.frames) != 1 {
+		t.Fatal("short tail ACK was delayed")
+	}
+}
+
+func TestTCPRepairNativeRetransmissionCoversMultipleSegments(t *testing.T) {
+	r := newRepairTest(&repairTestWire{})
+	first := repairIP(64)
+	r.send(first)
+	second := repairIP(64)
+	binary.BigEndian.PutUint32(second[24:], 64)
+	r.send(second)
+	retransmit := repairIP(128)
+	if handled, e := r.send(retransmit); handled || e != nil || r.pending != 0 {
+		t.Fatal("coalesced native retransmission retained duplicate repairs")
+	}
+}
+
+func TestTCPRepairRejectsUnencodableACKSequence(t *testing.T) {
+	r := newRepairTest(&repairTestWire{})
+	deliver := func([]byte) bool { return true }
+	for _, ids := range [][2]uint64{{^uint64(0), 1}, {1, ^uint64(0)}} {
+		if e := r.receive(repairFrames(ids[0], ids[1], repairIP(32), 1000)[0], deliver, time.Now()); e == nil {
+			t.Fatal("data frame could force ACK varint overflow")
+		}
+	}
+	if len(r.rx) != 0 {
+		t.Fatal("invalid flow retained")
+	}
+	r.tick(time.Now().Add(time.Second), time.Millisecond)
+}
+
+func TestTCPRepairIdleTickDoesNotAllocate(t *testing.T) {
+	r := newRepairTest(&repairTestWire{})
+	now := time.Now()
+	if n := testing.AllocsPerRun(100, func() { r.tick(now, time.Millisecond) }); n != 0 {
+		t.Fatalf("idle repair worker allocates %.0f objects per tick", n)
 	}
 }

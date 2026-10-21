@@ -14,6 +14,7 @@ import (
 
 const (
 	tcpRepairHeader       = "Connect-IP-TCP-Repair"
+	tcpRepairVersion      = "v2"
 	frameTCPRepair   byte = 3
 	frameTCPAck      byte = 4
 	repairHeader          = 21 // context, directional flow ID, packet sequence, total, offset
@@ -30,10 +31,17 @@ type repairFlowKey [37]byte
 // ACK-only packets, UDP, IP fragments and unsupported extension headers retain
 // the immediate raw DATAGRAM path. The inner TCP stack remains authoritative.
 func repairTCP(packet []byte) (key repairFlowKey, short bool, ok bool) {
-	if len(packet) < 40 || len(packet) > repairMaxPacket {
+	if len(packet) > repairMaxPacket {
 		return
 	}
-	off := 0
+	key, _, n, valid := repairTCPInfo(packet)
+	return key, n <= 128, valid && n > 0
+}
+
+func repairTCPInfo(packet []byte) (key repairFlowKey, off, sequenceBytes int, ok bool) {
+	if len(packet) < 40 || len(packet) > maxPacket {
+		return
+	}
 	switch packet[0] >> 4 {
 	case 4:
 		off = int(packet[0]&15) * 4
@@ -65,11 +73,8 @@ func repairTCP(packet []byte) (key repairFlowKey, short bool, ok bool) {
 	if packet[off+13]&1 != 0 {
 		n++
 	}
-	if n == 0 {
-		return
-	}
 	copy(key[33:], packet[off:off+4])
-	return key, n <= 128, true
+	return key, off, n, true
 }
 
 type opportunisticDatagrams interface {
@@ -77,21 +82,28 @@ type opportunisticDatagrams interface {
 }
 
 type repairPacket struct {
-	seq           uint64
-	data          []byte
-	admitted      time.Time
-	short, copied bool
-	chunk         int
+	seq              uint64
+	frames           [][]byte
+	size             int
+	tcpStart, tcpEnd uint32
+	admitted         time.Time
+	short, copied    bool
 }
 type repairSendFlow struct {
 	id, next, largest uint64
+	duplicateAck      uint64
+	tcpNext           uint32
+	tcpStarted        bool
 	packets           map[uint64]*repairPacket
 }
 type repairReceiveFlow struct {
-	largest uint64
-	bits    [4]uint64
-	dirty   bool
-	key     repairFlowKey
+	largest     uint64
+	duplicates  uint64
+	ackAt       time.Time
+	urgentUntil uint64
+	bits        [4]uint64
+	dirty       bool
+	key         repairFlowKey
 }
 type repairAssemblyKey struct{ flow, seq uint64 }
 type repairAssembly struct {
@@ -114,6 +126,7 @@ type tcpRepair struct {
 	ackCredit      int // independent 8 KiB/s coalesced control ceiling
 	last           time.Time
 	ackRTT         time.Duration
+	reorderSlack   uint8 // grows to 2 RTTs after redundant copies are observed
 }
 
 func supportsTCPRepair(q *quic.Conn) bool { _, ok := any(q).(opportunisticDatagrams); return ok }
@@ -157,8 +170,8 @@ func repairFrames(flow, seq uint64, packet []byte, chunk int) [][]byte {
 // send is called under the existing peer send lock. Admission clocks start
 // after QUIC has accepted the entire original, never while waiting locally.
 func (r *tcpRepair) send(packet []byte) (bool, error) {
-	key, short, ok := repairTCP(packet)
-	if !ok {
+	key, off, sequenceBytes, ok := repairTCPInfo(packet)
+	if !ok || sequenceBytes == 0 || len(packet) > repairMaxPacket {
 		return false, nil
 	}
 	r.mu.Lock()
@@ -173,28 +186,47 @@ func (r *tcpRepair) send(packet []byte) (bool, error) {
 		r.tx[key] = f
 		r.txIDs[f.id] = f
 	}
-	if r.pending >= repairMaxPending || r.bytes+len(packet) > repairCacheBytes {
+	start := binary.BigEndian.Uint32(packet[off+4:])
+	end := start + uint32(sequenceBytes)
+	if packet[off+13]&2 != 0 && (!f.tcpStarted || end != f.tcpNext) {
+		// A new TCP incarnation can reuse a four-tuple on this QUIC session.
+		for _, old := range f.packets {
+			r.remove(f, old)
+		}
+	} else if f.tcpStarted && int32(start-f.tcpNext) < 0 {
+		// The inner TCP stack has already retransmitted this sequence space.
+		// Cancel its supplemental copy and send this packet on the raw path.
+		for _, old := range f.packets {
+			if int32(old.tcpStart-start) >= 0 && int32(end-old.tcpEnd) >= 0 {
+				r.remove(f, old)
+			}
+		}
+		r.mu.Unlock()
+		return false, nil
+	}
+	f.tcpStarted = true
+	f.tcpNext = end
+	if r.pending >= repairMaxPending || r.bytes+len(packet) > repairCacheBytes || f.next >= quicvarint.Max {
 		r.mu.Unlock()
 		return false, nil
 	}
 	f.next++
-	p := &repairPacket{seq: f.next, data: append([]byte(nil), packet...), short: short, chunk: len(packet)}
+	p := &repairPacket{seq: f.next, size: len(packet), short: sequenceBytes <= 128, tcpStart: start, tcpEnd: end}
 	f.packets[p.seq] = p
 	r.pending++
 	r.bytes += len(packet)
 	r.mu.Unlock()
-	frames := repairFrames(f.id, p.seq, p.data, p.chunk)
-	err := r.channel.stream.SendDatagram(frames[0])
+	p.frames = repairFrames(f.id, p.seq, packet, len(packet))
+	err := r.channel.stream.SendDatagram(p.frames[0])
 	var large *quic.DatagramTooLargeError
 	if errors.As(err, &large) {
 		// Reserve the maximum H3 stream prefix, even on implementations reporting
 		// the pre-prefix limit. Both initial and repair copies use identical pieces.
 		chunk := int(large.MaxDatagramPayloadSize) - 8 - repairHeader
 		if chunk > 0 {
-			p.chunk = chunk
-			frames = repairFrames(f.id, p.seq, p.data, chunk)
+			p.frames = repairFrames(f.id, p.seq, packet, chunk)
 			err = nil
-			for _, b := range frames {
+			for _, b := range p.frames {
 				if err = r.channel.stream.SendDatagram(b); err != nil {
 					break
 				}
@@ -219,7 +251,7 @@ func (r *tcpRepair) send(packet []byte) (bool, error) {
 func (r *tcpRepair) remove(f *repairSendFlow, p *repairPacket) {
 	delete(f.packets, p.seq)
 	r.pending--
-	r.bytes -= len(p.data)
+	r.bytes -= p.size
 }
 
 func (f *repairReceiveFlow) seen(seq uint64) bool {
@@ -259,39 +291,47 @@ func (r *tcpRepair) receive(b []byte, deliver func([]byte) bool, now time.Time) 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if b[0] == frameTCPAck {
-		if len(b) != 49 {
-			return errors.New("invalid TCP repair ACK")
+		ack, err := parseRepairACK(b)
+		if err != nil {
+			return err
 		}
-		id, largest := binary.BigEndian.Uint64(b[1:9]), binary.BigEndian.Uint64(b[9:17])
-		f := r.txIDs[id]
-		if f == nil || largest > f.next || largest == 0 {
+		f := r.txIDs[ack.id]
+		if f == nil || ack.largest > f.next {
 			return nil
 		}
-		bits := [4]uint64{}
-		for i := range bits {
-			bits[i] = binary.BigEndian.Uint64(b[17+8*i:])
+		if ack.duplicates > f.duplicateAck {
+			f.duplicateAck = ack.duplicates
+			r.reorderSlack = min(3, r.reorderSlack+1)
 		}
-		if bits[0]&1 == 0 {
-			return errors.New("invalid TCP repair ACK bitmap")
-		}
-		f.largest = max(f.largest, largest)
+		f.largest = max(f.largest, ack.largest)
+		var latest time.Time
 		for seq, p := range f.packets {
-			if seq > largest || largest-seq >= 256 {
+			if seq > ack.largest {
 				continue
 			}
-			d := largest - seq
-			if bits[d/64]&(uint64(1)<<(d%64)) == 0 {
+			d := ack.largest - seq
+			if d >= 256 {
+				// The receiver cannot distinguish this packet from an old
+				// duplicate anymore. Leave recovery to the inner TCP stack.
+				r.remove(f, p)
 				continue
 			}
-			if !p.copied && !p.admitted.IsZero() {
-				sample := now.Sub(p.admitted)
-				if r.ackRTT == 0 {
-					r.ackRTT = sample
-				} else {
-					r.ackRTT = (7*r.ackRTT + sample) / 8
-				}
+			if ack.bits[d/64]&(uint64(1)<<(d%64)) == 0 {
+				continue
+			}
+			if !p.copied && p.admitted.After(latest) {
+				latest = p.admitted
 			}
 			r.remove(f, p)
+		}
+		// One RTT sample per ACK, from the newest un-retransmitted packet.
+		if !latest.IsZero() {
+			sample := now.Sub(latest)
+			if r.ackRTT == 0 {
+				r.ackRTT = sample
+			} else {
+				r.ackRTT = (7*r.ackRTT + sample) / 8
+			}
 		}
 		return nil
 	}
@@ -301,12 +341,16 @@ func (r *tcpRepair) receive(b []byte, deliver func([]byte) bool, now time.Time) 
 	id, seq := binary.BigEndian.Uint64(b[1:9]), binary.BigEndian.Uint64(b[9:17])
 	total, off := int(binary.BigEndian.Uint16(b[17:19])), int(binary.BigEndian.Uint16(b[19:21]))
 	data := b[repairHeader:]
-	if id == 0 || seq == 0 || total < 40 || total > repairMaxPacket || off+len(data) > total {
+	if id == 0 || id > quicvarint.Max || seq == 0 || seq > quicvarint.Max || total < 40 || total > repairMaxPacket || off+len(data) > total {
 		return errors.New("invalid TCP repair bounds")
 	}
 	f := r.rx[id]
 	if f != nil && f.seen(seq) {
 		f.dirty = true
+		f.ackAt = now
+		if f.largest-seq < 256 {
+			f.duplicates = min(uint64(quicvarint.Max), f.duplicates+1)
+		}
 		r.channel.g.b.counters.TCPRepairDuplicates.Add(1)
 		return nil
 	}
@@ -359,13 +403,14 @@ func (r *tcpRepair) receive(b []byte, deliver func([]byte) bool, now time.Time) 
 		packet = a.data
 		delete(r.partial, k)
 	}
-	key, _, valid := repairTCP(packet)
+	key, short, valid := repairTCP(packet)
 	if !valid {
 		return errors.New("non TCP repair payload")
 	}
 	if f != nil && f.key != key {
 		return errors.New("TCP repair flow changed")
 	}
+	r.observeTCPLocked(packet)
 	if !deliver(packet) {
 		return nil
 	}
@@ -373,7 +418,18 @@ func (r *tcpRepair) receive(b []byte, deliver func([]byte) bool, now time.Time) 
 		f = &repairReceiveFlow{key: key}
 		r.rx[id] = f
 	}
+	previous := f.largest
 	f.mark(seq)
+	if seq > previous+1 {
+		f.urgentUntil = max(f.urgentUntil, seq+2)
+	}
+	due := now.Add(25 * time.Millisecond)
+	if short || seq <= f.urgentUntil || seq < previous {
+		due = now
+	}
+	if f.ackAt.IsZero() || due.Before(f.ackAt) {
+		f.ackAt = due
+	}
 	return nil
 }
 
@@ -384,23 +440,50 @@ func (r *tcpRepair) tick(now time.Time, rtt time.Duration) {
 	r.last = now
 	r.rateCredit = min(2048, r.rateCredit+int(elapsed*16384/time.Second))
 	r.ackCredit = min(512, r.ackCredit+int(elapsed*8192/time.Second))
-	for id, f := range r.rx {
-		if !f.dirty || r.ackCredit < 49 {
-			continue
+	// Delay routine ACKs, but promptly report new holes and short tails.
+	// Two small ACK frames can share one paced QUIC packet; admission remains
+	// atomic and yields to already-queued UDP or original TCP packets.
+	dueACK := false
+	for _, f := range r.rx {
+		if f.dirty && !now.Before(f.ackAt) {
+			dueACK = true
+			break
 		}
-		b := make([]byte, 49)
-		b[0] = frameTCPAck
-		binary.BigEndian.PutUint64(b[1:9], id)
-		binary.BigEndian.PutUint64(b[9:17], f.largest)
-		for i, v := range f.bits {
-			binary.BigEndian.PutUint64(b[17+8*i:], v)
+	}
+	// Keep the idle worker allocation-free. The wire buffers escape through
+	// the queue interface, so allocate them only when a due ACK exists.
+	if dueACK {
+		var storage [2][58]byte
+		var payloads [2][]byte
+		var selected [2]*repairReceiveFlow
+		count, total := 0, 0
+		for id, f := range r.rx {
+			if !f.dirty || now.Before(f.ackAt) {
+				continue
+			}
+			b := appendRepairACK(storage[count][:0], repairAcknowledgment{id: id, largest: f.largest, duplicates: f.duplicates, bits: f.bits})
+			cost := len(b) + len(r.prefix)
+			if total+cost > r.ackCredit {
+				continue
+			}
+			selected[count] = f
+			payloads[count] = b
+			total += cost
+			count++
+			if count == len(payloads) {
+				break
+			}
 		}
-		if ok, _ := r.try.TrySendDatagramsWithPrefix(r.prefix, [][]byte{b}); ok {
-			f.dirty = false
-			r.ackCredit -= len(b)
-			r.channel.g.b.counters.TCPRepairControlBytes.Add(uint64(len(b) + len(r.prefix)))
+		if count > 0 {
+			if ok, _ := r.try.TrySendDatagramsWithPrefix(r.prefix, payloads[:count]); ok {
+				for _, f := range selected[:count] {
+					f.dirty = false
+					f.ackAt = time.Time{}
+				}
+				r.ackCredit -= total
+				r.channel.g.b.counters.TCPRepairControlBytes.Add(uint64(total))
+			}
 		}
-		break // one low-priority control batch per tick
 	}
 	rtt = max(rtt, r.ackRTT, 5*time.Millisecond)
 	for _, f := range r.tx {
@@ -416,17 +499,16 @@ func (r *tcpRepair) tick(now time.Time, rtt time.Duration) {
 			if p.copied {
 				continue
 			}
-			gap := f.largest >= p.seq+3 && age >= rtt*5/4
-			tail := len(f.packets) == 1 && p.short && age >= rtt*9/8+2*time.Millisecond
+			gap := f.largest >= p.seq+3 && age >= rtt*time.Duration(5+r.reorderSlack)/4
+			tail := len(f.packets) == 1 && p.short && age >= rtt*time.Duration(9+2*r.reorderSlack)/8+2*time.Millisecond
 			if !gap && !tail {
 				continue
 			}
-			frames := repairFrames(f.id, p.seq, p.data, p.chunk)
-			cost := len(p.data) + len(frames)*(repairHeader+len(r.prefix))
-			if len(frames) > 2 || cost > r.credit || cost > r.rateCredit {
+			cost := p.size + len(p.frames)*(repairHeader+len(r.prefix))
+			if len(p.frames) > 2 || cost > r.credit || cost > r.rateCredit {
 				continue
 			}
-			if ok, _ := r.try.TrySendDatagramsWithPrefix(r.prefix, frames); ok {
+			if ok, _ := r.try.TrySendDatagramsWithPrefix(r.prefix, p.frames); ok {
 				p.copied = true
 				r.credit -= cost
 				r.rateCredit -= cost
