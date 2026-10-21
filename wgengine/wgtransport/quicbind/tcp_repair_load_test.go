@@ -175,8 +175,14 @@ func runTCPRepairLoad(t *testing.T, scenario string, enabled bool, trial int, du
 	t.Helper()
 	out := repairLoadResult{Scenario: scenario, Enabled: enabled, Trial: trial}
 	pair := newTestPair(t, "http3-magicsock", func(c *Config) { c.TCPRepair = enabled })
+	for _, b := range pair.backends {
+		b.host.Bind = &readyVectorTestBind{b.host.Bind}
+	}
 	var links [2]*repairLoadLink
 	for i := range links {
+		if scenario == "unshaped" {
+			continue
+		}
 		rate, delay := int64(1500000), 8*time.Millisecond
 		if scenario == "asymmetric" {
 			rate, delay = 750000, 6*time.Millisecond
@@ -195,6 +201,7 @@ func runTCPRepairLoad(t *testing.T, scenario string, enabled bool, trial int, du
 	var endpoints [2]conn.Endpoint
 	ips := [2][4]byte{{10, 88, 0, 1}, {10, 88, 0, 2}}
 	var wg sync.WaitGroup
+	var bridgeErrors atomic.Uint64
 	for i := range 2 {
 		stacks[i], eps[i] = repairLoadStack(t, ips[i])
 		key := pair.keys[i^1].Public().Raw32()
@@ -222,16 +229,41 @@ func runTCPRepairLoad(t *testing.T, scenario string, enabled bool, trial int, du
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
+			var packets [32]*stack.PacketBuffer
+			var views [32]*buffer.View
+			var payloads [32][]byte
 			for {
-				pkt := eps[i].ReadContext(ctx)
-				if pkt == nil {
+				packets[0] = eps[i].ReadContext(ctx)
+				if packets[0] == nil {
 					return
 				}
-				v := pkt.ToView()
-				e := pair.backends[i].Bind().Send([][]byte{v.AsSlice()}, endpoints[i], 0)
-				v.Release()
-				pkt.DecRef()
+				n := 1
+				// Drain only packets already available. This mirrors a ready
+				// TUN batch and adds no coalescing timer or UDP wait.
+				for n < len(packets) {
+					p := eps[i].Read()
+					if p == nil {
+						break
+					}
+					packets[n] = p
+					n++
+				}
+				for j, p := range packets[:n] {
+					views[j] = p.ToView()
+					payloads[j] = views[j].AsSlice()
+				}
+				e := pair.backends[i].Bind().Send(payloads[:n], endpoints[i], 0)
+				for j, p := range packets[:n] {
+					views[j].Release()
+					p.DecRef()
+					packets[j] = nil
+					views[j] = nil
+					payloads[j] = nil
+				}
 				if e != nil {
+					if ctx.Err() == nil {
+						bridgeErrors.Add(1)
+					}
 					return
 				}
 			}
@@ -321,6 +353,9 @@ func runTCPRepairLoad(t *testing.T, scenario string, enabled bool, trial int, du
 		clients = append(clients, c)
 	}
 	for _, l := range links {
+		if l == nil {
+			continue
+		}
 		l.enabled.Store(true)
 	}
 	var tcpBytes atomic.Int64
@@ -412,6 +447,9 @@ func runTCPRepairLoad(t *testing.T, scenario string, enabled bool, trial int, du
 	for e := range errors {
 		t.Error(e)
 	}
+	if bridgeErrors.Load() != 0 {
+		t.Errorf("native IP bridge send errors: %d", bridgeErrors.Load())
+	}
 	out.TCPBytes = tcpBytes.Load()
 	if out.TCPBytes == 0 {
 		t.Error("no verified inner TCP payload")
@@ -457,9 +495,11 @@ func runTCPRepairLoad(t *testing.T, scenario string, enabled bool, trial int, du
 		out.RepairBytes += c.TCPRepairBytes.Load()
 		out.SuppressedDuplicates += c.TCPRepairDuplicates.Load()
 		out.LocalDrops += c.ReceiveQueueDrops.Load()
-		out.LinkDrops += links[i].drops.Load()
-		if links[i].writeErrors.Load() != 0 {
-			t.Error("unexpected outer socket write error")
+		if links[i] != nil {
+			out.LinkDrops += links[i].drops.Load()
+			if links[i].writeErrors.Load() != 0 {
+				t.Error("unexpected outer socket write error")
+			}
 		}
 	}
 	if out.RepairBytes > out.OriginalBytes/20+1024 {
