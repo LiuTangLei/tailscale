@@ -270,20 +270,23 @@ func runTCPRepairLoad(t *testing.T, scenario string, enabled bool, trial int, du
 		}()
 		go func() {
 			defer wg.Done()
-			buf := make([]byte, maxPacket)
-			sizes := make([]int, 1)
-			endpoints := make([]conn.Endpoint, 1)
+			// Reuse the native receive slab. The convenience test helper allocates
+			// 128 KiB on every call and must not dominate performance acceptance.
+			slab := make([]byte, 2*(1<<16-1))
+			var packets [32]conn.ReceivedPacket
 			for {
-				_, e := receiveTestSlots(fns[i], [][]byte{buf}, sizes, endpoints)
+				n, e := fns[i](slab, packets[:])
 				if e != nil {
 					return
 				}
-				if sizes[0] == 0 {
-					continue
+				for _, p := range packets[:n] {
+					if p.Size == 0 {
+						continue
+					}
+					pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(bytes.Clone(p.Bytes(slab)))})
+					eps[i].InjectInbound(header.IPv4ProtocolNumber, pkt)
+					pkt.DecRef()
 				}
-				pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(bytes.Clone(buf[:sizes[0]]))})
-				eps[i].InjectInbound(header.IPv4ProtocolNumber, pkt)
-				pkt.DecRef()
 			}
 		}()
 	}
