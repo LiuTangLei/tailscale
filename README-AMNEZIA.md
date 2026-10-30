@@ -23,8 +23,8 @@ as H3 while retaining their keys and certificate pins; upgrade both ends before
 using those profiles together. No congestion-controller or TLS-profile tuning
 is required. Native WG/AWG remains available through the existing commands.
 
-This integration branch is preparation for the official 1.102.6 release;
-it is not a published release. See [integration validation](docs/integration-1.102-quic4-20260928.md).
+Current release: [v1.104.4](https://github.com/LiuTangLei/tailscale/releases/tag/v1.104.4).
+See [installation and downloads](https://github.com/LiuTangLei/tailscale-awg-installer#install).
 
 ## Key Features
 
