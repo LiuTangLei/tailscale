@@ -1,8 +1,19 @@
-# Tailscale
+# Tailscale with AmneziaWG and QUIC
 
-https://tailscale.com
+**Current release: [v1.104.4](https://github.com/LiuTangLei/tailscale/releases/tag/v1.104.4).**
 
-Private WireGuard® networks made easy
+| Platform | Download |
+| --- | --- |
+| Linux, macOS, Windows | [CLI and daemon](https://github.com/LiuTangLei/tailscale/releases/tag/v1.104.4) |
+| Android | [Signed APK](https://github.com/LiuTangLei/tailscale-android/releases/tag/v1.104.4) |
+| iOS | [AwgScale IPA](https://github.com/LiuTangLei/AwgScale/releases/tag/v1.104.4) |
+| OpenWrt | [IPK / APK packages](https://github.com/LiuTangLei/openwrt-tailscale-awg/releases/tag/v1.104.4) |
+| Docker | `ltlei/tailscale-awg:v1.104.4` |
+
+[Install and upgrade](https://github.com/LiuTangLei/tailscale-awg-installer#install).
+The release includes native WireGuard, AWG v2/v3 and QUIC over HTTP/3.
+
+The following overview describes the upstream Tailscale project.
 
 ## Overview
 
@@ -15,7 +26,7 @@ code, but this repo doesn't contain the mobile GUI code.
 
 Other [Tailscale repos](https://github.com/orgs/tailscale/repositories) of note:
 
-* the Android app is at https://github.com/tailscale/tailscale-android
+* the Android fork is at https://github.com/LiuTangLei/tailscale-android
 * the Synology package is at https://github.com/tailscale/tailscale-synology
 * the QNAP package is at https://github.com/tailscale/tailscale-qpkg
 * the Chocolatey packaging is at https://github.com/tailscale/tailscale-chocolatey
@@ -25,15 +36,9 @@ see [https://tailscale.com/opensource/](https://tailscale.com/opensource/).
 
 ## Using
 
-We serve packages for a variety of distros and platforms at
-[https://pkgs.tailscale.com](https://pkgs.tailscale.com/).
-
-## Other clients
-
-The [macOS, iOS, and Windows clients](https://tailscale.com/download)
-use the code in this repository but additionally include small GUI
-wrappers. The GUI wrappers on non-open source platforms are themselves
-not open source.
+Use the [1.104.4 release](https://github.com/LiuTangLei/tailscale/releases/tag/v1.104.4)
+and the [platform installers](https://github.com/LiuTangLei/tailscale-awg-installer#install).
+Mobile and OpenWrt downloads are listed above.
 
 ## Building
 
@@ -42,7 +47,10 @@ releases with our [Go fork](https://github.com/tailscale/go/), its use is not
 required.)
 
 ```
-go install tailscale.com/cmd/tailscale{,d}
+git clone --branch v1.104.4 https://github.com/LiuTangLei/tailscale.git
+cd tailscale
+./build_dist.sh -o tailscale ./cmd/tailscale
+./build_dist.sh -o tailscaled ./cmd/tailscaled
 ```
 
 If you're packaging Tailscale for distribution, use `build_dist.sh`
@@ -60,7 +68,7 @@ distro's way, so that bug reports contain useful version information.
 ## Bugs
 
 Please file any issues about this code or the hosted service on
-[the issue tracker](https://github.com/tailscale/tailscale/issues).
+[the issue tracker](https://github.com/LiuTangLei/tailscale/issues).
 
 ## Contributing
 
