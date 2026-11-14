@@ -22,19 +22,31 @@ silent protocol downgrade or build tag that restores a retired carrier.
 ## Actual wire behavior
 
 HTTP/3 uses a TLS 1.3 QUIC connection, `h3` ALPN, HTTP/3 control/QPACK streams,
-SETTINGS, Extended CONNECT with `:protocol=connect-ip`, and a successful response
-with `Capsule-Protocol: ?1` before installing an IP session. HTTP Datagrams carry
+SETTINGS and Extended CONNECT with `:protocol=connect-ip`. Full authentication
+requires a successful response with `Capsule-Protocol: ?1` before installing an
+IP session. A negotiated early resumed IP tunnel can install before the response,
+as described below. HTTP Datagrams carry
 the request stream's Quarter Stream ID, context ID 0, and the IP packet. Normal
 packet transmission is unreliable DATAGRAM, not a reliable stream tunnel.
 
 The first connection completes TLS and channel-bound node authentication before
 the server issues its single TLS resumption ticket. Both standard TLS and the
 Chromium-inspired H3 profile support real QUIC 0-RTT. A subsequent connection
-sends only the CONNECT-IP request early, authenticated by the previously issued
-PSK and current peer policy. Public SETTINGS can arrive at 0.5-RTT. The private
-success response and business delivery wait for client Finished, keeping the
-existing UDP channel active until the replacement is ready. No UDP payload or TCP operation
-is deliberately sent as replayable early data.
+authenticates its resumed CONNECT-IP request with the previously issued PSK
+and current peer policy. If the peer previously advertised early IP support,
+no working session is being handed over, and the native TCP-stream/repair
+extensions are disabled, IP datagrams can follow the request in 0-RTT without
+waiting for its response. This includes inner TCP packets carried as IP datagrams.
+Public SETTINGS can arrive at 0.5-RTT. With no live server session, an authenticated
+resumed channel can also answer before client Finished. An existing live server
+session stays in place until the new connection completes TLS, preventing a
+captured and delayed first flight from displacing a working session.
+
+The 0-RTT IP packets use ticket-derived encryption keys and have no forward
+secrecy. Durable single-use ticket consumption rejects reuse of a consumed
+PSK, and current authorization is checked before admission. Full node
+authentication still uses the completed TLS exporter. Replacement tickets
+are issued only after TLS completes and authorization is rechecked.
 
 Tickets are single-use, valid for at most 24 hours, and bounded to 4096 server
 entries. Consumption is appended and synced before TLS may accept the PSK.
@@ -50,8 +62,12 @@ Client tickets remain in memory, scoped to one backend and exact peer, and are
 removed on use. Server configuration, certificate, authentication-secret and
 protocol changes invalidate persisted tickets. Node removal and local identity
 rotation revoke tickets and invalidate in-flight recovery, including a rapid
-remove/re-add. Rejected early data triggers one fresh full handshake within the
-original 10-second deadline, without replaying business data. A client process
+remove/re-add. Rejected early data triggers one fresh full handshake. The client
+closes the rejected connection and, after the send lock covers in-progress batch
+retention, resends copies of its retained first flight on the authenticated
+replacement. Retention is bounded to 32 packets and 48 KiB; later or unretained
+packets use the inner protocol's normal recovery. This is not a general reliable
+UDP delivery queue. A client process
 restart needs a full connection; there is no shared, cross-server ticket key.
 
 The development implementation spans the Tailscale, quic-go and uTLS checkouts

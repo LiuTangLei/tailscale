@@ -93,7 +93,19 @@ certificates, not a production certificate-management system.
 
 The 1200-byte default is conservative. Raising `initial_packet_size` to 1400 was
 explicitly done for the tested server path; it is not a safe universal setting
-for every access network. Key rotation and config/pin changes currently require
+for every access network. The handshake therefore always uses
+`initial_packet_size`. A larger size is reached safely another way:
+`max_packet_size` (default 1320, enough for a full 1280-byte tunnel packet in
+one datagram) is probed after the handshake and used only once the path has
+carried it. It is re-checked while in use, and the connection returns to the
+initial size if the path stops carrying it. Both ends state their value in the
+CONNECT exchange; TCP connections opened through the tunnel get an MSS for the
+size in use, and a peer that states nothing keeps today's 1200-byte behaviour.
+Set `max_packet_size` equal to `initial_packet_size` to disable probing.
+
+Every connection uses lightly tuned BBRv3 with outer congestion control and
+pacing. Managed profiles take the packet-size measurement setting from
+`TS_DEBUG_H3_MAX_PACKET_SIZE`. Key rotation and config/pin changes currently require
 coordinated configuration updates and process restart.
 
 The TLS config replaces default CA/hostname checks with its mandatory SPKI

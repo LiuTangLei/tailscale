@@ -48,11 +48,15 @@ CONNECT authentication uses the completed TLS exporter; resumed CONNECT uses a
 single-use PSK issued after that authentication and rechecks current policy.
 
 Both TLS profiles support 0-RTT CONNECT setup, durable single-use server tickets,
-and one full reconnect after rejection. Business delivery waits for TLS
-completion. Client caches are private per peer and memory-only; see the
+and one full reconnect after rejection. Negotiated early IP tunnels can send IP
+datagrams before TLS completion when no working session is being handed over;
+those 0-RTT packets have no forward secrecy. A live server session is retained
+until its replacement completes TLS. Rejection resends a retained first flight
+bounded to 32 packets / 48 KiB after closing the old connection and synchronizing
+with in-progress sends. Client caches are private per peer and memory-only; see the
 [ticket lifecycle](../../docs/http3-ip-experimental.md#actual-wire-behavior).
 IP/UDP uses unreliable DATAGRAMs: no FEC,
-application retransmission, ACK-wait queue or reliable-stream fallback is added.
+general application retransmission, ACK-wait queue or reliable-stream fallback is added.
 The optional embedded TCP stream API uses QUIC's normal reliable loss recovery;
 it does not change the delivery contract of UDP packets in the VPN.
 
@@ -69,6 +73,22 @@ This is not a universal MASQUE proxy, a Chromium fingerprint implementation or
 a claim of indistinguishable browser traffic. STUN/disco are still managed by
 the host outside this packet backend. Throughput must be measured; HTTP/3 is
 experimental and not the default.
+
+For cold magicsock paths, an authenticated discovery Ping identifying one peer
+can start a reverse challenge before the first application reply. A separate
+reverse-probe cooldown uses the existing discovery interval, so a lost early
+challenge does not suppress normal send-triggered discovery. It sends one
+minimum-size challenge, including when peer MTU discovery is enabled. The incoming Ping does not trust a route: normal
+Pong verification remains required. Existing trusted direct paths, expired
+peers, ambiguous discovery identities and DERP sources do not start this probe.
+The reverse challenge does not alter the QUIC retransmission timer or BBRv3/pacing policy.
+
+While an outgoing handshake is waiting for its first server reply, magicsock
+can signal that it validated a direct route. QUIC can then requeue its
+outstanding Initial flight once through existing retransmission ownership and
+normal congestion/pacing gates. No RTT/PTO parameters or authentication rules
+are changed. The hint requeues Initial handshake frames, not application
+datagrams; ordinary resumption rejection recovery remains responsible for those.
 
 See `../../docs/http3-ip-experimental.md` relative to the repository docs area
 (`docs/http3-ip-experimental.md`), `docs/quic-platforms.md`, and
