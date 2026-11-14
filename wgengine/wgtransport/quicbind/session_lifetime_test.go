@@ -15,7 +15,7 @@ import (
 func TestAutoTrustSessionRefreshKeepsTraffic(t *testing.T) {
 	pair := newTestPair(t, "http3-magicsock", func(c *Config) { c.AutoTrust = true; c.Peers = nil })
 	for _, b := range pair.backends {
-		b.timing = sessionTiming{120 * time.Millisecond, 2 * time.Second, 100 * time.Millisecond, time.Minute, 10 * time.Millisecond, time.Second}
+		b.timing = sessionTiming{refresh: 120 * time.Millisecond, expire: 2 * time.Second, overlap: 100 * time.Millisecond, idle: time.Minute, tick: 10 * time.Millisecond, authTimeout: time.Second}
 	}
 	fns := pair.open(t)
 	remote := pair.keys[1].Public().Raw32()
@@ -145,8 +145,8 @@ func TestAutoTrustProvisionalTLSExpires(t *testing.T) {
 func TestAutoTrustSessionHardExpiry(t *testing.T) {
 	pair := newTestPair(t, "http3-magicsock", func(c *Config) { c.AutoTrust = true; c.Peers = nil })
 	for _, b := range pair.backends {
-		b.timing.refresh = time.Hour
-		b.timing.expire = 100 * time.Millisecond
+		b.timing.refresh, b.timing.longRefresh = time.Hour, time.Hour
+		b.timing.expire, b.timing.longExpire = 100*time.Millisecond, 100*time.Millisecond
 		b.timing.tick = 10 * time.Millisecond
 	}
 	pair.open(t)

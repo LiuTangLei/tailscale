@@ -197,9 +197,12 @@ func awaitTLS(ctx context.Context, q *quic.Conn) error {
 	}
 }
 
-// Only the tunnel request is early data. Arbitrary UDP/TCP business traffic
-// starts after the server accepts it and the client verifies TLS completion.
-func (p *peer) openResumedHTTP3(ctx context.Context, q *quic.Conn, attempt lifecycleStamp, setup *connectionSetupStats) (session *session, err error) {
+// openResumedHTTP3 opens the tunnel on a resumed connection. early reports
+// that the session was installed before the peer answered: tunnel packets are
+// then sent as 0-RTT data right behind the request. A single-use ticket makes
+// that flight unreplayable, and only the peer that issued the ticket after a
+// full node authentication holds the key that decrypts it.
+func (p *peer) openResumedHTTP3(ctx context.Context, q *quic.Conn, attempt lifecycleStamp, setup *connectionSetupStats, handover bool) (session *session, early bool, err error) {
 	setup.Stage = "resumption"
 	started := time.Now()
 	defer func() {
@@ -208,5 +211,5 @@ func (p *peer) openResumedHTTP3(ctx context.Context, q *quic.Conn, attempt lifec
 			q.CloseWithError(1, "HTTP/3 resumption failed")
 		}
 	}()
-	return p.openEarlyTunnel(ctx, q, attempt)
+	return p.openEarlyTunnel(ctx, q, attempt, handover)
 }

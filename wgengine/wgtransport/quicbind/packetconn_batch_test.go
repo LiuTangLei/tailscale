@@ -115,3 +115,56 @@ func TestPacketConnExpandedBatch(t *testing.T) {
 		t.Fatal("oversized group was partially sent")
 	}
 }
+
+type heldBatchBind struct {
+	conn.Bind
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (*heldBatchBind) BatchSize() int { return maxOuterPacketBatch }
+func (b *heldBatchBind) Send(packets [][]byte, _ conn.Endpoint, offset int) error {
+	if packets[0][offset] != 1 {
+		return nil
+	}
+	close(b.entered)
+	<-b.release
+	for _, p := range packets {
+		if p[offset] != 1 {
+			return errors.New("borrowed batch overwritten before Send returned")
+		}
+	}
+	return nil
+}
+func TestPacketConnConcurrentBorrowedBatch(t *testing.T) {
+	host := &heldBatchBind{entered: make(chan struct{}), release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-host.release:
+		default:
+			close(host.release)
+		}
+	}()
+	c := newBindPacketConn(&generation{b: &Backend{host: wgtransport.Host{Bind: host}}})
+	defer c.Close()
+	addr := &bindAddr{ep: &endpoint{}}
+	done := make(chan error, 1)
+	go func() { done <- c.WritePacketBatch([][]byte{{1}, {1}}, addr) }()
+	select {
+	case <-host.entered:
+	case <-time.After(time.Second):
+		t.Fatal("host did not borrow batch")
+	}
+	if err := c.WritePacketBatch([][]byte{{2}, {2}}, addr); err != nil {
+		t.Fatal(err)
+	}
+	close(host.release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host Send did not finish")
+	}
+}

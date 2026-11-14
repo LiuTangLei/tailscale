@@ -39,16 +39,20 @@ const maxPeers = 256
 // Native UDP preserves quic-go's batch/GSO fast path but needs explicit reachable
 // endpoints. Magicsock reuses the existing NAT/DERP paths at additional I/O cost.
 type Config struct {
-	Version           int          `json:"version"`
-	Payload           string       `json:"payload,omitempty"` // version 2 requires "ip"
-	LocalPublicKey    string       `json:"local_public_key"`
-	Certificate       string       `json:"certificate"`
-	PrivateKey        string       `json:"private_key"`
-	IO                string       `json:"io"`               // "magicsock" (default), or "udp"
-	Listen            string       `json:"listen,omitempty"` // UDP mode only
-	InitialPacketSize uint16       `json:"initial_packet_size,omitempty"`
-	QueuePackets      int          `json:"queue_packets,omitempty"`
-	Peers             []PeerConfig `json:"peers"`
+	Version           int    `json:"version"`
+	Payload           string `json:"payload,omitempty"` // version 2 requires "ip"
+	LocalPublicKey    string `json:"local_public_key"`
+	Certificate       string `json:"certificate"`
+	PrivateKey        string `json:"private_key"`
+	IO                string `json:"io"`               // "magicsock" (default), or "udp"
+	Listen            string `json:"listen,omitempty"` // UDP mode only
+	InitialPacketSize uint16 `json:"initial_packet_size,omitempty"`
+	// MaxPacketSize is the larger packet size probed after the handshake and
+	// used only once the path has carried it. Zero selects the default; a
+	// value equal to InitialPacketSize disables probing.
+	MaxPacketSize uint16       `json:"max_packet_size,omitempty"`
+	QueuePackets  int          `json:"queue_packets,omitempty"`
+	Peers         []PeerConfig `json:"peers"`
 	// HTTP3 must be true. Raw QUIC IP was removed; every tunnel uses CONNECT-IP.
 	HTTP3 bool `json:"http3,omitempty"`
 	// TicketJournal is a private stateful TLS ticket journal; empty uses memory.
@@ -239,6 +243,12 @@ func newFactory(c Config, identity *tls.Certificate) (*Factory, error) {
 	}
 	if c.InitialPacketSize < 1200 || c.InitialPacketSize > 1400 {
 		return nil, errors.New("initial_packet_size must be 1200..1400")
+	}
+	if c.MaxPacketSize == 0 {
+		c.MaxPacketSize = max(c.InitialPacketSize, defaultMaxPacketSize)
+	}
+	if c.MaxPacketSize < c.InitialPacketSize || c.MaxPacketSize > 1400 {
+		return nil, errors.New("max_packet_size must be initial_packet_size..1400")
 	}
 	if (!c.AutoTrust && len(c.Peers) == 0) || len(c.Peers) > maxPeers {
 		return nil, fmt.Errorf("QUIC requires 1..%d explicitly pinned peers", maxPeers)

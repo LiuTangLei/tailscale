@@ -6,12 +6,17 @@ package quicbind
 import (
 	"errors"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/LiuTangLei/wireguard-go/conn"
 )
 
 const maxOuterPacketBatch = 32
+
+// The host borrows descriptors only through Send. Reuse the descriptor array
+// after all sends return; packet payload ownership stays with packetPool.
+var outerBatchBuffers = sync.Pool{New: func() any { return new([maxOuterPacketBatch][]byte) }}
 
 // MaxPacketBatchSize opts this bridge into larger already-paced ready batches.
 // Older QUIC libraries continue sending their historical groups of at most 8.
@@ -48,14 +53,17 @@ func (c *bindPacketConn) WritePacketBatch(input [][]byte, addr net.Addr) error {
 		return deadlineError{}
 	}
 	var packets [maxOuterPacketBatch]*packetBuffer
-	var buffers [maxOuterPacketBatch][]byte
+
 	// Validate the entire batch before performing any write.
 	for _, p := range input {
 		if len(p)+8 > 2048 {
 			return errors.New("oversized outer QUIC packet")
 		}
 	}
+	buffers := outerBatchBuffers.Get().(*[maxOuterPacketBatch][]byte)
 	defer func() {
+		clear(buffers[:]) // don't retain packet storage through descriptors
+		outerBatchBuffers.Put(buffers)
 		for _, p := range packets {
 			if p != nil {
 				releasePacket(p)

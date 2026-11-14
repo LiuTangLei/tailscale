@@ -3,15 +3,55 @@
 package quicbind
 
 import (
+	"net/http"
 	"time"
 
 	"tailscale.com/wgengine/wgtransport"
 )
 
-type sessionTiming struct{ refresh, expire, overlap, idle, tick, authTimeout time.Duration }
+// sessionLifetimeHeader lets both ends agree to keep one QUIC connection for
+// hours instead of replacing it every two minutes. A peer that does not echo
+// it keeps the original short lifetime, which it still enforces on its side.
+const sessionLifetimeHeader = "Tailnet-Session-Lifetime"
+const sessionLifetimeLong = "long"
 
+// earlyDataHeader is sent by a responder that accepts tunnel packets in the
+// first flight of a resumed connection.
+const earlyDataHeader = "Tailnet-Early-Data"
+
+func wantsLongSession(h http.Header) bool {
+	return h.Get(sessionLifetimeHeader) == sessionLifetimeLong && len(h.Values(sessionLifetimeHeader)) == 1
+}
+
+// refresh and expire are the lifetime every peer understands. longRefresh and
+// longExpire apply to a session whose two ends both asked for a long lifetime;
+// zero keeps the short values.
+type sessionTiming struct {
+	refresh, expire, overlap, idle, tick, authTimeout time.Duration
+	longRefresh, longExpire                           time.Duration
+}
+
+// Replacing the whole connection every two minutes discards the congestion
+// and path state of a busy tunnel, reorders packets across the handover, and
+// shows an observer a fresh handshake between the same two addresses at a
+// fixed period. TLS 1.3 key updates already rotate the packet keys of a
+// long connection, so a negotiated session lives for hours. The periodic
+// replacement that remains also renews the resumption ticket, which is valid
+// for a day.
 func defaultSessionTiming() sessionTiming {
-	return sessionTiming{120 * time.Second, 180 * time.Second, 3 * time.Second, 2 * time.Minute, time.Second, 8 * time.Second}
+	return sessionTiming{
+		refresh: 120 * time.Second, expire: 180 * time.Second, overlap: 3 * time.Second,
+		idle: 2 * time.Minute, tick: time.Second, authTimeout: 8 * time.Second,
+		longRefresh: 8 * time.Hour, longExpire: 8*time.Hour + 30*time.Minute,
+	}
+}
+
+// lifetime returns the refresh and expiry ages that apply to s.
+func (t sessionTiming) lifetime(s *session) (refresh, expire time.Duration) {
+	if s.longLived.Load() && t.longRefresh > 0 && t.longExpire > 0 {
+		return t.longRefresh, t.longExpire
+	}
+	return t.refresh, t.expire
 }
 func (p *peer) touch() { p.lastActivity.Store(time.Now().UnixNano()) }
 
@@ -71,6 +111,7 @@ func (g *generation) maintainAt(now time.Time) {
 		if s == nil || s.q.Context().Err() != nil {
 			continue
 		}
+		p.notePacketSize(s, now)
 		if g.b.factory.cfg.TCPStreams {
 			// Reliable streams cannot migrate to a replacement QUIC connection.
 			// Embedded CONNECT proxies use QUIC's ordinary packet-key updates
@@ -79,11 +120,12 @@ func (g *generation) maintainAt(now time.Time) {
 			continue
 		}
 		age := now.Sub(s.created)
-		if age >= g.b.timing.expire {
+		refresh, expire := g.b.timing.lifetime(s)
+		if age >= expire {
 			s.q.CloseWithError(0, "session key lifetime reached")
 			continue
 		}
-		if s.outgoing && !dialing && age >= g.b.timing.refresh && now.UnixNano() >= s.nextRefresh.Load() {
+		if s.outgoing && !dialing && age >= refresh && now.UnixNano() >= s.nextRefresh.Load() {
 			s.nextRefresh.Store(now.Add(5 * time.Second).UnixNano())
 			g.workers.Add(1)
 			go func() { defer g.workers.Done(); _, _ = p.getSessionReplacing(s) }()

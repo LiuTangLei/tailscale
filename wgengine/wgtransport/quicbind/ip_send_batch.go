@@ -67,6 +67,9 @@ func (p *peer) sendIPBatch(s *session, bufs [][]byte, offset int) (handled bool,
 			return true, errors.New("invalid H3 datagram batch result")
 		}
 		if n > 0 {
+			if h3.flightOpen.Load() {
+				h3.retainEarly(payloads[:n]...)
+			}
 			p.g.b.counters.SentPackets.Add(uint64(n))
 			p.g.b.counters.FastPackets.Add(uint64(n))
 			p.g.b.counters.IPBatchCalls.Add(1)

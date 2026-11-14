@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"tailscale.com/atomicfile"
+	"tailscale.com/envknob"
 	"tailscale.com/ipn"
 	"tailscale.com/wgengine/wgtransport"
 	"tailscale.com/wgengine/wgtransport/quicbind"
@@ -263,7 +264,13 @@ func (p Profile) factory(stateDir string) (*quicbind.Factory, error) {
 	// Keep the managed QUIC carrier conservative on mixed mobile/NAT paths. A
 	// 1400-byte Initial can blackhole before the authenticated peer or path-MTU
 	// negotiation even though quic-go and the transport allow values up to 1400.
+	// The handshake still uses 1200 bytes; a larger size is used only after
+	// the established connection has carried it (quicbind max_packet_size).
 	c := quicbind.Config{Version: 2, Payload: "ip", IO: "magicsock", LocalPublicKey: p.LocalKey, InitialPacketSize: 1200, QueuePackets: 256}
+	// Packet-size measurement switch for real paths; unset in normal use.
+	if size, ok := envknob.LookupInt("TS_DEBUG_H3_MAX_PACKET_SIZE"); ok && size >= 0 && size <= 65535 {
+		c.MaxPacketSize = uint16(size) // 1200 disables the larger packet size
+	}
 	if stateDir != "" {
 		journal, err := filepath.Abs(filepath.Join(stateDir, "http3-session-tickets"))
 		if err != nil {

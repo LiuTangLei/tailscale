@@ -25,6 +25,7 @@ type holdTLSFinishedSocket struct {
 	net.PacketConn
 	mu          sync.Mutex
 	hold        bool
+	dropShort   bool // lose 1-RTT packets, such as a CONNECTION_CLOSE
 	pending     [][]byte
 	destination net.Addr
 }
@@ -32,6 +33,9 @@ type holdTLSFinishedSocket struct {
 func (s *holdTLSFinishedSocket) WriteTo(data []byte, a net.Addr) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.dropShort && len(data) > 0 && data[0]&0x80 == 0 {
+		return len(data), nil
+	}
 	if !s.hold {
 		return s.PacketConn.WriteTo(data, a)
 	}
@@ -97,10 +101,12 @@ func (s *holdTLSFinishedSocket) release() error {
 	return nil
 }
 
-func TestZeroRTTBusinessWaitsForClientFinished(t *testing.T) {
-	pair := newTestPair(t, "http3-udp")
-	client, server := pair.backends[0], pair.backends[1]
-	var gate *holdTLSFinishedSocket
+// gatedResumption prepares a pair with one spent full handshake, a ticket in
+// the client's cache and a socket that can withhold the client's Finished.
+func gatedResumption(t *testing.T) (pair *testPair, gate *holdTLSFinishedSocket, fns [2]conn.ReceiveFunc, p *peer) {
+	t.Helper()
+	pair = newTestPair(t, "http3-udp")
+	client := pair.backends[0]
 	original := client.host.ListenPacket
 	client.host.ListenPacket = func(ctx context.Context, n, a string) (net.PacketConn, error) {
 		pc, e := original(ctx, n, a)
@@ -110,7 +116,7 @@ func TestZeroRTTBusinessWaitsForClientFinished(t *testing.T) {
 		gate = &holdTLSFinishedSocket{PacketConn: pc}
 		return gate, nil
 	}
-	fns := pair.open(t)
+	fns = pair.open(t)
 	remote := pair.keys[1].Public().Raw32()
 	p, e := client.active.Load().peer(remote, nil)
 	if e != nil {
@@ -120,30 +126,129 @@ func TestZeroRTTBusinessWaitsForClientFinished(t *testing.T) {
 		t.Fatal(e)
 	}
 	waitTicket(t, client.clientSessionCache(remote))
+	return pair, gate, fns, p
+}
+
+// waitEstablished waits until the peer has confirmed an early tunnel.
+func waitEstablished(t testing.TB, s *session) {
+	t.Helper()
+	channel, ok := s.dgram.(*http3Channel)
+	if !ok || channel.confirmed == nil {
+		return
+	}
+	select {
+	case <-channel.confirmed:
+	case <-s.q.Context().Done():
+		t.Fatal("early tunnel closed before confirmation:", context.Cause(s.q.Context()))
+	case <-time.After(5 * time.Second):
+		t.Fatal("early tunnel was not confirmed")
+	}
+}
+
+func waitFor(t testing.TB, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal(what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A resumed connection to a peer that holds no working session carries the
+// packet that caused it in its first flight, and the answer comes back in the
+// peer's first flight: one round trip, with the client's Finished still
+// outstanding.
+func TestZeroRTTBusinessRidesFirstFlight(t *testing.T) {
+	pair, gate, fns, p := gatedResumption(t)
+	client, server := pair.backends[0], pair.backends[1]
+	local, remote := pair.keys[0].Public().Raw32(), pair.keys[1].Public().Raw32()
 	p.closeSession("test reconnect")
+	serverPeer, e := server.active.Load().peer(local, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	waitFor(t, "server kept the closed session", func() bool { return !serverPeer.hasLiveSession() })
 	gate.mu.Lock()
 	gate.hold = true
 	gate.mu.Unlock()
 	defer gate.release()
-	type result struct {
-		s   *session
-		err error
+
+	ep, e := client.Bind().ParseEndpoint(hex.EncodeToString(remote[:]))
+	if e != nil {
+		t.Fatal(e)
 	}
-	ready := make(chan result, 1)
-	go func() { s, e := p.getSessionContext(t.Context(), nil); ready <- result{s, e} }()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+	request := []byte("request in the first flight")
+	if e := client.Bind().Send([][]byte{request}, ep, 0); e != nil {
+		t.Fatal(e)
+	}
+	if got := readOne(t, fns[1]); !bytes.Equal(got, request) {
+		t.Fatalf("first-flight packet changed: %q", got)
+	}
+	back, e := server.Bind().ParseEndpoint(hex.EncodeToString(local[:]))
+	if e != nil {
+		t.Fatal(e)
+	}
+	reply := []byte("answer in the peer's first flight")
+	if e := server.Bind().Send([][]byte{reply}, back, 0); e != nil {
+		t.Fatal(e)
+	}
+	if got := readOne(t, fns[0]); !bytes.Equal(got, reply) {
+		t.Fatalf("first-flight answer changed: %q", got)
+	}
+	waitFor(t, "test did not withhold client Finished", func() bool {
 		gate.mu.Lock()
-		held := len(gate.pending)
-		gate.mu.Unlock()
-		if held > 0 && server.counters.HTTP3Requests.Load() >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("early request did not reach Finished gate")
-		}
-		time.Sleep(time.Millisecond)
+		defer gate.mu.Unlock()
+		return len(gate.pending) > 0
+	})
+	// The exchange above happened without the client's Finished. A new ticket
+	// is a different matter: only a completed handshake earns one.
+	if server.counters.ZeroRTTAccepted.Load() != 0 {
+		t.Fatal("server completed the resumption without the client Finished")
 	}
+	cache := client.clientSessionCache(remote)
+	cache.mu.Lock()
+	ticket := cache.ticket
+	cache.mu.Unlock()
+	if ticket != nil {
+		t.Fatal("ticket issued before the client Finished")
+	}
+	if e := gate.release(); e != nil {
+		t.Fatal(e)
+	}
+	waitFor(t, "resumption not completed after client Finished", func() bool {
+		return server.counters.ZeroRTTAccepted.Load() == 1 && client.counters.ZeroRTTAccepted.Load() == 1
+	})
+	waitTicket(t, cache)
+	if s, e := p.getSession(); e != nil || !s.q.ConnectionState().Used0RTT {
+		t.Fatal("test did not use real early data", e)
+	}
+	if server.counters.HTTP3Tunnels.Load() != 2 || client.counters.ZeroRTTRejected.Load() != 0 {
+		t.Fatal("resumption was retried")
+	}
+}
+
+// A peer that still holds a working session keeps using it until the resumed
+// connection proves liveness with the client's Finished: a first flight that
+// was captured and delivered late must not displace working traffic.
+func TestZeroRTTHandoverWaitsForClientFinished(t *testing.T) {
+	pair, gate, fns, p := gatedResumption(t)
+	client, server := pair.backends[0], pair.backends[1]
+	remote := pair.keys[1].Public().Raw32()
+	// Lose the client's CONNECTION_CLOSE: the server still believes in the
+	// old session, as it would after the client changed networks. The closed
+	// connection repeats its CONNECTION_CLOSE whenever the server sends to
+	// it, so 1-RTT packets stay lost until the handover is decided. The new
+	// connection needs none before then: its request and the packet below
+	// travel as 0-RTT.
+	gate.mu.Lock()
+	gate.dropShort = true
+	gate.hold = true
+	gate.mu.Unlock()
+	p.closeSession("test reconnect")
+	defer gate.release()
+
 	ep, e := client.Bind().ParseEndpoint(hex.EncodeToString(remote[:]))
 	if e != nil {
 		t.Fatal(e)
@@ -152,6 +257,11 @@ func TestZeroRTTBusinessWaitsForClientFinished(t *testing.T) {
 	if e := client.Bind().Send([][]byte{payload}, ep, 0); e != nil {
 		t.Fatal(e)
 	}
+	waitFor(t, "early request did not reach Finished gate", func() bool {
+		gate.mu.Lock()
+		defer gate.mu.Unlock()
+		return len(gate.pending) > 0 && server.counters.HTTP3Requests.Load() >= 2
+	})
 	got := make(chan []byte, 1)
 	go func() {
 		buf := make([]byte, maxPacket)
@@ -166,33 +276,14 @@ func TestZeroRTTBusinessWaitsForClientFinished(t *testing.T) {
 		t.Fatal("business was delivered before TLS Finished")
 	case <-time.After(80 * time.Millisecond):
 	}
-	select {
-	case result := <-ready:
-		t.Fatalf("private CONNECT succeeded before client Finished: %v", result.err)
-	default:
-	}
 	if server.counters.ZeroRTTAccepted.Load() != 0 || server.counters.HTTP3Tunnels.Load() != 1 {
-		t.Fatal("server admitted early tunnel before TLS Finished")
+		t.Fatal("server replaced a working session before TLS Finished")
 	}
 	gate.mu.Lock()
-	held := len(gate.pending)
+	gate.dropShort = false
 	gate.mu.Unlock()
-	if held == 0 {
-		t.Fatal("test did not withhold client Finished")
-	}
 	if e := gate.release(); e != nil {
 		t.Fatal(e)
-	}
-	select {
-	case result := <-ready:
-		if result.err != nil {
-			t.Fatal(result.err)
-		}
-		if !result.s.q.ConnectionState().Used0RTT {
-			t.Fatal("test did not use real early data")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("recovery not released after client Finished")
 	}
 	select {
 	case data := <-got:
@@ -201,6 +292,12 @@ func TestZeroRTTBusinessWaitsForClientFinished(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("business not released after TLS Finished")
+	}
+	waitFor(t, "resumption not completed after client Finished", func() bool {
+		return server.counters.ZeroRTTAccepted.Load() == 1 && client.counters.ZeroRTTAccepted.Load() == 1
+	})
+	if s, e := p.getSession(); e != nil || !s.q.ConnectionState().Used0RTT {
+		t.Fatal("test did not use real early data", e)
 	}
 }
 

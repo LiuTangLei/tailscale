@@ -267,6 +267,7 @@ func TestTCPRepairNegotiationResumptionAndLegacyPeer(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
+			waitEstablished(t, s)
 			if s == old || !s.q.ConnectionState().Used0RTT {
 				t.Fatal("did not exercise real resumed tunnel")
 			}

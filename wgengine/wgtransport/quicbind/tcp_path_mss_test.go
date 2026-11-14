@@ -36,7 +36,8 @@ func TestH3FixedPathMSSLimits(t *testing.T) {
 }
 
 func TestH3FixedPathMSSWireAndBatchIntegrity(t *testing.T) {
-	pair := newTestPair(t, "http3-magicsock", func(c *Config) { c.InitialPacketSize = 1200 })
+	// A fixed path: no larger packet size is probed.
+	pair := newTestPair(t, "http3-magicsock", func(c *Config) { c.InitialPacketSize, c.MaxPacketSize = 1200, 1200 })
 	fns := pair.open(t)
 	for from := range 2 {
 		b := pair.backends[from]

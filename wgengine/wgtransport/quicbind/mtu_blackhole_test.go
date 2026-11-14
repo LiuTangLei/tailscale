@@ -20,6 +20,8 @@ type mtuLimitedBind struct {
 	conn.Bind
 	limit atomic.Int64
 	drops atomic.Int64
+	// oddDrops counts dropped packets that were not of the probed size.
+	probeSize, oddDrops atomic.Int64
 }
 
 func (b *mtuLimitedBind) Send(packets [][]byte, endpoint conn.Endpoint, offset int) error {
@@ -27,6 +29,9 @@ func (b *mtuLimitedBind) Send(packets [][]byte, endpoint conn.Endpoint, offset i
 	for _, packet := range packets {
 		if int64(len(packet)-offset) > b.limit.Load() {
 			b.drops.Add(1)
+			if int64(len(packet)-offset) != b.probeSize.Load() {
+				b.oddDrops.Add(1)
+			}
 			continue // UDP reports successful local transmission, not delivery.
 		}
 		accepted = append(accepted, packet)
@@ -52,6 +57,7 @@ func TestHTTP3InitialMTUBlackhole(t *testing.T) {
 			for i := range links {
 				links[i] = &mtuLimitedBind{Bind: pair.bases[i].Bind}
 				links[i].limit.Store(1200)
+				links[i].probeSize.Store(defaultMaxPacketSize)
 				pair.bases[i].Bind = links[i]
 			}
 			receive := pair.open(t)
@@ -94,8 +100,16 @@ func TestHTTP3InitialMTUBlackhole(t *testing.T) {
 					}
 				}
 			}
-			if drops := links[0].drops.Load() + links[1].drops.Load(); drops != 0 {
-				t.Fatalf("safe magicsock transport exceeded the path limit: drops=%d", drops)
+			// The only packets above the path limit are the few probes of the
+			// larger size. They are lost, and the size is never used.
+			if odd := links[0].oddDrops.Load() + links[1].oddDrops.Load(); odd != 0 {
+				t.Fatalf("safe magicsock transport exceeded the path limit: %d packets that were not probes", odd)
+			}
+			if drops := links[0].drops.Load() + links[1].drops.Load(); drops > 8 {
+				t.Fatalf("too many probes of a size the path does not carry: %d", drops)
+			}
+			if size := session.q.PacketSize(); size != 1200 {
+				t.Fatalf("packet size %d in use on a 1200-byte path", size)
 			}
 		})
 	}

@@ -14,9 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -335,6 +337,24 @@ func (s *serverTicketStore) snapshot() map[string]any {
 type peerSessionCache struct {
 	mu     sync.Mutex
 	ticket *tls.ClientSessionState
+	// fragments is what the peer answered about the fragmentation extension
+	// the last time it was asked. An early tunnel starts from it.
+	fragments atomic.Bool
+	// early records that the peer's last answer announced support for tunnel
+	// packets in the first flight of a resumed connection. Older peers answer
+	// only after the TLS handshake and may drop datagrams that arrive before
+	// their request, so they keep the original wait-for-the-answer exchange.
+	early atomic.Bool
+	// peerPacketSize is the max_packet_size the peer last stated, and
+	// packetSize the size the last connection to it reached (zero if none
+	// beyond the initial size). See packet_size.go.
+	peerPacketSize, packetSize atomic.Uint32
+}
+
+// remember records the capabilities stated in an authenticated answer.
+func (c *peerSessionCache) remember(h http.Header, fragments bool) {
+	c.fragments.Store(fragments)
+	c.early.Store(h.Get(earlyDataHeader) == "1" && len(h.Values(earlyDataHeader)) == 1)
 }
 
 func (c *peerSessionCache) Get(string) (*tls.ClientSessionState, bool) {

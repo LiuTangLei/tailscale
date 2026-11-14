@@ -3,10 +3,12 @@
 package quicbind
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 
 	quic "github.com/quic-go/quic-go"
@@ -15,19 +17,95 @@ import (
 )
 
 type http3Channel struct {
-	client          *http3.ClientConn // immutable, non-nil on an outgoing authenticated tunnel
-	repair          *tcpRepair
-	tcpStreams      bool // authenticated peer advertised CONNECT byte streams
-	g               *generation
-	q               *quic.Conn
-	stream          datagramChannel
-	fragments       bool
+	client     *http3.ClientConn // immutable, non-nil on an outgoing authenticated tunnel
+	repair     *tcpRepair
+	tcpStreams bool // authenticated peer advertised CONNECT byte streams
+	g          *generation
+	q          *quic.Conn
+	stream     datagramChannel
+	// fragments reports that the peer echoed the fragmentation extension. An
+	// early (0-RTT) tunnel learns it only when the response arrives.
+	fragments       atomic.Bool
 	capsules        io.Reader
 	capsulesStarted atomic.Bool
+	// confirmed is closed once the CONNECT response has been validated. The
+	// request stream carries capsules only after that point. nil means the
+	// response was validated before the channel was created.
+	confirmed chan struct{}
+	// preamble consumes handshake bytes that precede the capsule protocol on
+	// the request stream. It runs once, on the capsule reader, after confirmed.
+	preamble func(io.Reader) error
+	// flight holds copies of the first packets sent on an early tunnel until
+	// the peer's answer is known. See retainEarly.
+	flightOpen atomic.Bool
+	flightMu   sync.Mutex
+	flight     [][]byte
+	flightSize int
+}
+
+// An early flight is worth keeping only for what starts a conversation: a few
+// handshake and request packets. Bulk data recovers by itself.
+const (
+	earlyFlightPackets = 32
+	earlyFlightBytes   = 48 << 10
+)
+
+// retainEarly copies a packet sent on a not yet confirmed early tunnel. If
+// the peer refuses the resumption, TLS discards the whole flight unread; the
+// copies are then sent again on the fully authenticated connection instead of
+// leaving each inner protocol to its retransmission timer (a full second for
+// a TCP SYN). A packet can reach the peer twice only if the answer is lost
+// after the peer accepted, which IP permits. The oldest packets are kept.
+func (c *http3Channel) retainEarly(packets ...[]byte) {
+	if !c.flightOpen.Load() {
+		return
+	}
+	c.flightMu.Lock()
+	defer c.flightMu.Unlock()
+	for _, packet := range packets {
+		if !c.flightOpen.Load() || len(c.flight) >= earlyFlightPackets || c.flightSize+len(packet) > earlyFlightBytes {
+			return
+		}
+		c.flight = append(c.flight, bytes.Clone(packet))
+		c.flightSize += len(packet)
+	}
+}
+
+// takeEarly ends retention and returns what was kept.
+func (c *http3Channel) takeEarly() [][]byte {
+	c.flightMu.Lock()
+	defer c.flightMu.Unlock()
+	c.flightOpen.Store(false)
+	flight := c.flight
+	c.flight, c.flightSize = nil, 0
+	return flight
 }
 
 func newHTTP3Channel(g *generation, q *quic.Conn, str datagramChannel, capsules io.Reader, fragments bool) *http3Channel {
-	return &http3Channel{g: g, q: q, stream: str, fragments: fragments, capsules: capsules}
+	c := &http3Channel{g: g, q: q, stream: str, capsules: capsules}
+	c.fragments.Store(fragments)
+	return c
+}
+
+// newEarlyHTTP3Channel creates the channel of a resumed tunnel whose CONNECT
+// request has been sent but not answered. IP datagrams may flow immediately;
+// the capsule stream waits for confirm. fragments is the peer's previous
+// answer: the peer that holds the ticket key is the one that gave it, and a
+// packet too large for one datagram should not fail for the one round trip
+// until it repeats that answer. If it ever answers differently, the fragments
+// sent meanwhile are dropped by the peer like any lost packet.
+func newEarlyHTTP3Channel(g *generation, q *quic.Conn, str datagramChannel, capsules io.Reader, fragments bool) *http3Channel {
+	c := &http3Channel{g: g, q: q, stream: str, capsules: capsules, confirmed: make(chan struct{})}
+	c.fragments.Store(fragments)
+	c.flightOpen.Store(true)
+	return c
+}
+
+// confirm records the validated CONNECT response of an early channel.
+func (c *http3Channel) confirm(fragments bool) {
+	c.fragments.Store(fragments)
+	c.takeEarly()
+	close(c.confirmed)
 }
 
 // Capsules are the uncommon side channel. Normal packets are read directly
@@ -38,7 +116,24 @@ func (c *http3Channel) StartCapsules(deliver func([]byte)) {
 		return
 	}
 	c.g.workers.Add(1)
-	go func() { defer c.g.workers.Done(); c.readCapsules(c.capsules, deliver) }()
+	go func() {
+		defer c.g.workers.Done()
+		if c.confirmed != nil {
+			// The response headers precede every capsule on the stream.
+			select {
+			case <-c.confirmed:
+			case <-c.q.Context().Done():
+				return
+			}
+		}
+		if c.preamble != nil {
+			if err := c.preamble(c.capsules); err != nil {
+				_ = c.q.CloseWithError(1, "node confirmation failed")
+				return
+			}
+		}
+		c.readCapsules(c.capsules, deliver)
+	}()
 }
 func (c *http3Channel) fail() {
 	_ = c.q.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeMessageError), "CONNECT-IP stream closed")
@@ -51,7 +146,7 @@ func (c *http3Channel) normalize(b []byte) []byte {
 		c.g.b.counters.MalformedFrames.Add(1)
 		return nil
 	}
-	if contextID != 0 && (contextID != 2 || !c.fragments) && (c.repair == nil || (contextID != uint64(frameTCPRepair) && contextID != uint64(frameTCPAck))) {
+	if contextID != 0 && (contextID != 2 || !c.fragments.Load()) && (c.repair == nil || (contextID != uint64(frameTCPRepair) && contextID != uint64(frameTCPAck))) {
 		return nil
 	}
 	if n != 1 {
@@ -126,7 +221,7 @@ func (c *http3Channel) SendDatagram(b []byte) error {
 		return errors.New("empty IP datagram")
 	}
 	if b[0] == frameFragment {
-		if !c.fragments {
+		if !c.fragments.Load() {
 			return errors.New("CONNECT-IP peer did not negotiate IP fragmentation")
 		}
 		b[0] = 2

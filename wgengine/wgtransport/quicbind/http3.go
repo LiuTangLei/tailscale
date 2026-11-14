@@ -280,17 +280,29 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	}
 	fragments := r.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(r.Header.Values(fragmentHeaderName)) == 1
 	if resumeRequest {
-		// Validate the request in 0-RTT, but keep the existing UDP path active
-		// until the new server channel can actually receive business packets.
-		// A provisional success at 0.5-RTT creates a handover reorder window.
-		if err := awaitTLS(r.Context(), q); err != nil {
-			return
+		// Without a working session, answer in the server's first flight. The
+		// single-use ticket was consumed durably before TLS accepted this
+		// early data, so the flight cannot be replayed, and only the peer that
+		// received the ticket after its full node authentication can read the
+		// answer or anything sent on the new channel. Waiting for the client's
+		// Finished would add a round trip before the first tunnel packet
+		// without adding a check.
+		//
+		// A working session is different: it must not be displaced by a
+		// flight that was captured, withheld and delivered later from another
+		// address, and it has no handover reorder window to gain from. It
+		// stays in use until the newcomer proves liveness with its Finished.
+		if p.hasLiveSession() {
+			if err := awaitTLS(r.Context(), q); err != nil {
+				return
+			}
 		}
 		if epoch != g.b.authEpoch.Load() || identityEpoch != g.b.identityEpoch.Load() || !p.stampValid(*attempt) {
 			deny(http.StatusTooEarly)
 			return
 		}
 	}
+	long := wantsLongSession(r.Header)
 	if !resumeRequest && g.b.factory.cfg.AutoTrust {
 		proof, err := g.b.createNodeReply(requestProof)
 		if err != nil {
@@ -315,6 +327,13 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	if resumeRequest {
 		w.Header().Set(resumeReplyHeader, "v1")
 	}
+	if long {
+		w.Header().Set(sessionLifetimeHeader, sessionLifetimeLong)
+	}
+	if !g.b.factory.cfg.TCPStreams {
+		w.Header().Set(earlyDataHeader, "1")
+	}
+	w.Header().Set(packetSizeHeader, packetSizeValue(g.b.factory.cfg.MaxPacketSize, 0))
 	w.WriteHeader(http.StatusOK)
 	if err := http.NewResponseController(w).Flush(); err != nil {
 		return
@@ -333,10 +352,13 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 		requestProof.handshake.Close()
 		_ = stream.SetDeadline(time.Time{})
 	}
-	// Both full and resumed authentication must complete TLS and live policy
-	// checks before installing a channel or issuing another ticket.
-	if err := awaitTLS(r.Context(), q); err != nil {
-		return
+	// Full authentication proves the peer with the completed TLS exporter, so
+	// TLS must be complete before its channel exists. A resumed peer is proven
+	// by its single-use ticket and is installed at once; see above.
+	if !resumeRequest {
+		if err := awaitTLS(r.Context(), q); err != nil {
+			return
+		}
 	}
 	if !p.stampValid(*attempt) {
 		q.CloseWithError(1, "peer authorization changed")
@@ -348,9 +370,24 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	if session == nil || session.q != q {
 		return
 	}
+	session.longLived.Store(long)
+	peerMax, peerProven := parsePacketSize(r.Header)
+	session.peerPacketSize.Store(uint32(peerMax))
+	session.provenPacketSize.Store(uint32(peerProven))
 	publishReady()
 	p.rememberServerHint(session, peerServerHint)
 	g.b.counters.HTTP3Tunnels.Add(1)
+	if resumeRequest {
+		// A replacement ticket is issued only by a completed handshake and
+		// under the policy that is current at that moment.
+		if err := awaitTLS(r.Context(), q); err != nil {
+			return
+		}
+		if epoch != g.b.authEpoch.Load() || identityEpoch != g.b.identityEpoch.Load() || !p.stampValid(*attempt) {
+			q.CloseWithError(1, "peer authorization changed")
+			return
+		}
+	}
 	pin := resume.Pin
 	if !resumeRequest {
 		if g.b.factory.cfg.AutoTrust {
@@ -432,12 +469,21 @@ func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, setup *con
 	tlsState := q.ConnectionState().TLS
 	var proof string
 	var requestProof nodeProof
+	// Once the session is installed, the capsule reader owns the node
+	// handshake; until then it is released when this function returns.
+	closeHandshake := func() {}
+	handshakeTransferred := false
 	if p.g.b.factory.cfg.AutoTrust {
 		proof, requestProof, err = p.g.b.createNodeRequest(p.cfg.key, &tlsState, req, q.ExportKeyingMaterial)
 		if err != nil {
 			return nil, err
 		}
-		defer requestProof.handshake.Close()
+		closeHandshake = sync.OnceFunc(requestProof.handshake.Close)
+		defer func() {
+			if !handshakeTransferred {
+				closeHandshake()
+			}
+		}()
 	} else {
 		proof, err = p.g.b.factory.http3Authorization(&tlsState, req, q.ExportKeyingMaterial)
 		if err != nil {
@@ -446,6 +492,9 @@ func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, setup *con
 	}
 	req.Header.Set("Authorization", proof)
 	req.Header.Set(serverHintHeader, serverHintValue(p.g.b.factory.cfg.Server))
+	req.Header.Set(sessionLifetimeHeader, sessionLifetimeLong)
+	cache := p.g.b.clientSessionCache(p.cfg.key)
+	req.Header.Set(packetSizeHeader, packetSizeValue(p.g.b.factory.cfg.MaxPacketSize, uint16(cache.packetSize.Load())))
 	if err := stream.SendRequestHeader(req); err != nil {
 		return nil, err
 	}
@@ -468,17 +517,29 @@ func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, setup *con
 	if err != nil {
 		return nil, err
 	}
+	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1
+	channel := newHTTP3Channel(p.g, q, stream, stream, fragments)
+	p.g.b.clientSessionCache(p.cfg.key).remember(response.Header, fragments)
 	if p.g.b.factory.cfg.AutoTrust {
 		if err := writeNodeFinished(stream, requestProof.handshake, "initiator finished v2"); err != nil {
 			return nil, err
 		}
-		if err := readNodeFinished(stream, requestProof.handshake, "responder finished v2"); err != nil {
-			return nil, err
+		// The reply verified above already proves the responder holds its
+		// node key and derived this handshake. Its closing confirmation adds
+		// no authentication for the initiator, so do not spend a round trip
+		// waiting for it before the first tunnel packet: the capsule reader
+		// consumes and checks it when it arrives, ahead of any capsule.
+		handshake := requestProof.handshake
+		channel.preamble = func(r io.Reader) error {
+			defer closeHandshake()
+			if err := readNodeFinished(r, handshake, "responder finished v2"); err != nil {
+				return err
+			}
+			return stream.SetDeadline(time.Time{})
 		}
+	} else {
+		_ = stream.SetDeadline(time.Time{})
 	}
-	_ = stream.SetDeadline(time.Time{})
-	fragments := response.Header.Get(fragmentHeaderName) == fragmentHeaderValue && len(response.Header.Values(fragmentHeaderName)) == 1
-	channel := newHTTP3Channel(p.g, q, stream, stream, fragments)
 	channel.enableTCPRepair(p.g.b.factory.cfg.TCPRepair && response.Header.Get(tcpRepairHeader) == tcpRepairVersion && len(response.Header.Values(tcpRepairHeader)) == 1)
 	channel.client = client
 	channel.tcpStreams = response.Header.Get(tcpStreamsHeader) == "1" && len(response.Header.Values(tcpStreamsHeader)) == 1
@@ -487,6 +548,10 @@ func (p *peer) openHTTP3Context(parent context.Context, q *quic.Conn, setup *con
 		return nil, net.ErrClosed
 	}
 	if session.q == q {
+		// Only an installed channel starts its capsule reader.
+		handshakeTransferred = channel.preamble != nil
+		session.longLived.Store(wantsLongSession(response.Header))
+		cache.usePacketSize(session, response.Header)
 		p.rememberServerHint(session, peerServerHint)
 	}
 	p.g.b.counters.HTTP3Tunnels.Add(1)

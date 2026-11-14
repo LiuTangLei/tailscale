@@ -69,6 +69,7 @@ type Counters struct {
 	ZeroRTTAttempts          atomic.Uint64
 	ZeroRTTAccepted          atomic.Uint64
 	ZeroRTTRejected          atomic.Uint64
+	EarlyPacketsResent       atomic.Uint64 // first-flight packets sent again after a refused resumption
 	ResumeAuthRejected       atomic.Uint64
 }
 
@@ -185,9 +186,16 @@ type datagramChannel interface {
 type session struct {
 	tcpActive   atomic.Int64
 	nextRefresh atomic.Int64
-	created     time.Time
-	q           *quic.Conn
-	dgram       datagramChannel
+	// longLived is set once both ends agreed on the long session lifetime.
+	longLived atomic.Bool
+	// peerPacketSize is the max_packet_size the peer stated; zero for a peer
+	// that states none and keeps the initial size. provenPacketSize is the
+	// size the previous connection between the two reached, as remembered by
+	// the dialing side. See tcpPacketSize.
+	peerPacketSize, provenPacketSize, notedPacketSize atomic.Uint32
+	created                                           time.Time
+	q                                                 *quic.Conn
+	dgram                                             datagramChannel
 	// Raw packets do not touch the reassembly lock. Capsule fragments and
 	// QUIC DATAGRAM fragments share this bounded state when HTTP/3 is used.
 	fragmentMu sync.Mutex
@@ -445,7 +453,7 @@ func (b *Backend) quicConfig() *quic.Config {
 	}
 	cfg := &quic.Config{
 		EnableDatagrams: true, HandshakeIdleTimeout: 8 * time.Second, MaxIdleTimeout: 60 * time.Second,
-		KeepAlivePeriod: 20 * time.Second, InitialPacketSize: b.factory.cfg.InitialPacketSize,
+		KeepAlivePeriod: 20 * time.Second, InitialPacketSize: b.factory.cfg.InitialPacketSize, PacketSizeTarget: b.factory.cfg.MaxPacketSize,
 		MaxIncomingStreams: streams, MaxIncomingUniStreams: uni, Allow0RTT: true, DeferSessionTicket: true,
 		MaxStreamReceiveWindow: 128 << 10, MaxConnectionReceiveWindow: 1 << 20,
 	}
@@ -458,8 +466,7 @@ func (b *Backend) quicConfig() *quic.Config {
 		cfg.InitialConnectionReceiveWindow = 4 << 20
 		cfg.MaxConnectionReceiveWindow = 32 << 20
 	}
-	// One policy for the VPN and embedded H3 users: the published fork's
-	// lightly tuned BBRv3, including connection migration and recovery.
+	// Every connection uses the fork's lightly tuned BBRv3 controller and pacer.
 	cfg.EnableBBRv3CongestionControl()
 	return cfg
 }
@@ -854,6 +861,15 @@ func (p *peer) getSession() (*session, error) { return p.getSessionReplacing(nil
 func (p *peer) getSessionReplacing(replace *session) (*session, error) {
 	return p.getSessionContext(p.ctx, replace)
 }
+
+// hasLiveSession reports whether an established session currently carries
+// this peer's traffic.
+func (p *peer) hasLiveSession() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.session != nil && p.session.q.Context().Err() == nil
+}
+
 func (p *peer) getSessionContext(parent context.Context, replace *session) (*session, error) {
 	if err := parent.Err(); err != nil {
 		return nil, err
@@ -915,6 +931,12 @@ func (p *peer) getSessionContext(parent context.Context, replace *session) (*ses
 		tlsConfig.ServerName = "0.0.0.0"
 	}
 	cfg := p.g.b.quicConfig()
+	if a, ok := remote.(*bindAddr); ok {
+		if path, ok := a.ep.(interface{ InitialPathReady() <-chan struct{} }); ok {
+			cfg.InitialPathReady = path.InitialPathReady()
+		}
+	}
+
 	if profile := p.g.b.browserProfileForPeer(p.cfg.key, true); profile != "" {
 		cfg.ClientHelloProfile = profile
 	}
@@ -939,9 +961,13 @@ func (p *peer) getSessionContext(parent context.Context, replace *session) (*ses
 	case <-q.HandshakeComplete():
 	default:
 		p.g.b.counters.ZeroRTTAttempts.Add(1)
-		resumed, resumeErr := p.openResumedHTTP3(ctx, q, attempt, setup)
+		resumed, early, resumeErr := p.openResumedHTTP3(ctx, q, attempt, setup, replace != nil)
 		if resumeErr == nil {
-			p.g.b.counters.ZeroRTTAccepted.Add(1)
+			// An early tunnel is already carrying packets; its acceptance is
+			// counted when the peer's answer arrives.
+			if !early {
+				p.g.b.counters.ZeroRTTAccepted.Add(1)
+			}
 			setup.Stage = "established"
 			return resumed, nil
 		}
@@ -950,7 +976,8 @@ func (p *peer) getSessionContext(parent context.Context, replace *session) (*ses
 		}
 		p.g.b.counters.ZeroRTTRejected.Add(1)
 		// Rejecting early data invalidates its HTTP/3 streams. Start one new
-		// full handshake inside the original deadline; never retry business data.
+		// full handshake inside the original deadline. No tunnel packet was
+		// sent on this path, so there is nothing to send again.
 		tlsConfig = tlsConfig.Clone()
 		tlsConfig.ClientSessionCache = freshSessionCache{tlsConfig.ClientSessionCache}
 		p.g.b.counters.HandshakeAttempts.Add(1)
@@ -1022,10 +1049,13 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 	if !p.stampValid(s.stamp) {
 		return ErrUnknownPeer
 	}
+	if c, ok := s.dgram.(*http3Channel); ok && c.flightOpen.Load() {
+		c.retainEarly(packet)
+	}
 	if c, ok := s.dgram.(*http3Channel); ok && c.repair != nil {
 		if _, _, eligible := repairTCP(packet); eligible {
 			copy(scratch, packet)
-			p.clampPacketTCPMSS(scratch[:len(packet)])
+			p.clampPacketTCPMSS(s, scratch[:len(packet)])
 			if handled, err := c.repair.send(scratch[:len(packet)]); handled {
 				if err == nil {
 					p.g.b.counters.SentPackets.Add(1)
@@ -1039,7 +1069,7 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 	if len(packet)+1 <= len(scratch) {
 		scratch[0] = frameRaw
 		copy(scratch[1:], packet)
-		p.clampPacketTCPMSS(scratch[1 : len(packet)+1])
+		p.clampPacketTCPMSS(s, scratch[1:len(packet)+1])
 		err := s.dgram.SendDatagram(scratch[:len(packet)+1])
 		if err == nil {
 			p.g.b.counters.SentPackets.Add(1)
@@ -1069,6 +1099,13 @@ func (p *peer) sendPacket(s *session, packet, scratch []byte) error {
 		copy(scratch[fragmentHeader:], packet[offset:offset+n])
 		err := s.dgram.SendDatagram(scratch[:fragmentHeader+n])
 		if err != nil {
+			// The limit above was a guess when the packet was too large to
+			// be offered whole. Start over with the size the path reports,
+			// which is smaller while a resumed connection is still in 0-RTT.
+			if offset == 0 && errors.As(err, &tooLarge) && fragmentHeader < int(tooLarge.MaxDatagramPayloadSize) && int(tooLarge.MaxDatagramPayloadSize) < limit {
+				limit = int(tooLarge.MaxDatagramPayloadSize)
+				continue
+			}
 			return err
 		}
 		offset += n

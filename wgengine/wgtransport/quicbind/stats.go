@@ -14,7 +14,7 @@ func (b *Backend) Snapshot() map[string]any {
 }
 
 func (f *Factory) snapshotBackend(b *Backend) map[string]any {
-	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "initial_packet_size": f.cfg.InitialPacketSize, "wireguard_encryption": false, "server": f.cfg.Server, "browser_fingerprint": "none", "browser_fingerprint_supported": true}
+	out := map[string]any{"io": f.cfg.IO, "alpn": f.protocol(), "quic": true, "payload": f.cfg.Payload, "initial_packet_size": f.cfg.InitialPacketSize, "max_packet_size": f.cfg.MaxPacketSize, "wireguard_encryption": false, "server": f.cfg.Server, "browser_fingerprint": "none", "browser_fingerprint_supported": true}
 	out["authentication"] = "pinned-key"
 	if f.cfg.AutoTrust {
 		out["authentication"] = "node-key"
@@ -26,6 +26,8 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	}
 	out["session_refresh_seconds"] = b.timing.refresh.Seconds()
 	out["session_max_age_seconds"] = b.timing.expire.Seconds()
+	out["long_session_refresh_seconds"] = b.timing.longRefresh.Seconds()
+	out["long_session_max_age_seconds"] = b.timing.longExpire.Seconds()
 	out["tcp_repair_enabled"] = f.cfg.TCPRepair
 	out["tcp_repair_protocol"] = tcpRepairVersion
 	out["tcp_streams_enabled"] = f.cfg.TCPStreams
@@ -44,6 +46,7 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["zero_rtt_attempts"] = c.ZeroRTTAttempts.Load()
 	out["zero_rtt_accepted"] = c.ZeroRTTAccepted.Load()
 	out["zero_rtt_rejected"] = c.ZeroRTTRejected.Load()
+	out["early_packets_resent"] = c.EarlyPacketsResent.Load()
 	out["resume_auth_rejected"] = c.ResumeAuthRejected.Load()
 	out["handshake_attempts"] = c.HandshakeAttempts.Load()
 	if store := b.tickets.Load(); store != nil {
@@ -127,6 +130,10 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 			if s != nil && s.q.Context().Err() == nil {
 				active++
 				detail["connection_stats"] = s.q.ConnectionStats()
+				detail["datagram_send_queue"] = s.q.DatagramSendQueueStats()
+				detail["packet_size"] = s.q.PacketSize()
+				detail["peer_max_packet_size"] = s.peerPacketSize.Load()
+				detail["tcp_mss_limit_ipv4"] = b.factory.cfg.tcpMSSLimitAt(p.tcpPacketSize(s), 4)
 				if c, ok := s.dgram.(*http3Channel); ok {
 					detail["tcp_repair_negotiated"] = c.repair != nil
 				}

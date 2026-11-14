@@ -3,9 +3,10 @@
 
 package quicbind
 
-// A magicsock PacketConn cannot advertise DF, so quic-go cannot grow its
-// packet size with DPLPMTUD. Keep the safe 1200-byte Initial and negotiate TCP
-// segments that fit that fixed datagram path instead of fragmenting every
+// A magicsock PacketConn cannot advertise DF, so quic-go cannot search for the
+// path MTU. Packets start at the safe 1200-byte Initial size and grow only to
+// the one size that was probed (see packet_size.go). Negotiate TCP segments
+// that fit the datagram of the size in use instead of fragmenting every
 // full-size TUN packet. This changes neither the interface MTU nor UDP/IPv6
 // fragmentation support, and does not pretend that magicsock supports DF/GSO.
 //
@@ -13,12 +14,17 @@ package quicbind
 // DATAGRAM type/length (1+8), HTTP quarter-stream ID (8), and IP context ID (1).
 const h3TCPDatagramHeadroom = 64
 
+// tcpMSSLimit is the limit for packets of the initial size.
 func (c Config) tcpMSSLimit(ipVersion byte) uint16 {
+	return c.tcpMSSLimitAt(c.InitialPacketSize, ipVersion)
+}
+
+// tcpMSSLimitAt is the limit when QUIC packets of the given size are in use.
+func (c Config) tcpMSSLimitAt(size uint16, ipVersion byte) uint16 {
 	limit := c.TCPMSS
 	if c.IO != "magicsock" || c.TCPStreams {
 		return limit
 	}
-	size := c.InitialPacketSize
 	if size == 0 {
 		size = 1200 // same as NewFactory's default
 	}
@@ -65,11 +71,11 @@ func isTCPSYN(packet []byte) bool {
 	return len(packet) >= offset+20 && packet[offset+13]&2 != 0
 }
 
-func (p *peer) clampPacketTCPMSS(packet []byte) {
+func (p *peer) clampPacketTCPMSS(s *session, packet []byte) {
 	if !isTCPSYN(packet) {
 		return
 	}
-	if clampTCPMSS(packet, p.g.b.factory.cfg.tcpMSSLimit(packet[0]>>4)) {
+	if clampTCPMSS(packet, p.g.b.factory.cfg.tcpMSSLimitAt(p.tcpPacketSize(s), packet[0]>>4)) {
 		p.g.b.counters.TCPMSSClamps.Add(1)
 	}
 }
