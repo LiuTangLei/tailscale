@@ -72,6 +72,8 @@ github.com/LiuTangLei/quic-go v0.64.1-quic.2 h1:GzPBpFrC66wI2iNSob42wYSN05B4GUIu
 github.com/LiuTangLei/quic-go v0.64.1-quic.2/go.mod h1:OUW5S5Qu4zqjFGFlPthYnILnS4Voqo83pZqiRmWCmmk=
 github.com/LiuTangLei/quic-go v0.65.0-quic.1 h1:A9JqF7+ooO2G9igGHK5C+QJOPXI4WZB/vjVEb1l4mqU=
 github.com/LiuTangLei/quic-go v0.65.0-quic.1/go.mod h1:OUW5S5Qu4zqjFGFlPthYnILnS4Voqo83pZqiRmWCmmk=
+github.com/LiuTangLei/quic-go v0.65.0-quic.2 h1:FE1u6GItmHaDEpRc9Q7h5QUYDHKJPRi+xttcVmJmh0Y=
+github.com/LiuTangLei/quic-go v0.65.0-quic.2/go.mod h1:OUW5S5Qu4zqjFGFlPthYnILnS4Voqo83pZqiRmWCmmk=
 github.com/LiuTangLei/utls v1.8.3-0.20261021023852-7effde6a93dc h1:T3DDZUtc9ENa2lQ8BVzm0SdZ+If8WFXIwu/QyY0fsJM=
 github.com/LiuTangLei/utls v1.8.3-0.20261021023852-7effde6a93dc/go.mod h1:jkSOEkLqn+S/jtpEHPOsVv/4V4EVnelwbMQl4vCWXAM=
 github.com/LiuTangLei/wireguard-go v0.0.34 h1:RCNbtJPuOAZu5K+M7Fpv/rLhA8FtSPm6sdq7++ZapnI=
