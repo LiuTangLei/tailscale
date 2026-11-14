@@ -130,7 +130,8 @@ func (g *generation) handleTCPStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(tcpStreamsHeader,"1")
 	w.WriteHeader(http.StatusOK)
 	if err := http.NewResponseController(w).Flush(); err != nil { return }
-	stream := w.(http3.HTTPStreamer).HTTPStream()
+	stream, err := w.(http3.HTTPStreamer).HTTPStream()
+	if err != nil { return }
 	remote := net.TCPAddrFromAddrPort(netip.AddrPortFrom(g.b.factory.cfg.TCPNodeAddress(p.cfg.key), 0))
 	c := g.b.newTCPConn(p, s, stream, net.TCPAddrFromAddrPort(dst), remote)
 	// HTTPStream transfers stream ownership to the application. Do not make
