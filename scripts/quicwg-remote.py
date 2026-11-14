@@ -142,9 +142,12 @@ def main():
     p.add_argument("--kernel-seconds", type=int, default=15)
     p.add_argument("--kernel-omit", type=int, default=0, help="iperf omitted warmup seconds; zero measures the full transfer without catch-up artifacts")
     p.add_argument("--kernel-idle", type=int, default=0, help="idle the same QUIC session between directions, at most 20 seconds")
+    p.add_argument("--warm-discovery", action="store_true", help="discover both direct paths before cold TLS, without starting a tunnel")
+    p.add_argument("--kernel-direction", choices=("both", "forward", "reverse"), default="both", help="forward is node B to node A")
     p.add_argument("--kernel-reverse-first", action="store_true", help="start with server-to-client data to detect direction/order bias")
     p.add_argument("--kernel-flows", default="1,4")
-    p.add_argument("--kernel-mbps", type=int, default=500, help="bounded aggregate offered load, at most 500 Mbps")
+    p.add_argument("--kernel-mbps", type=int, default=500, help="bounded aggregate offered load, at most 1000 Mbps")
+    p.add_argument("--kernel-udp-length", type=int, default=1100, help="inner UDP payload bytes, at most 1252 for the IPv4 1280 MTU")
     p.add_argument("--kernel-udp", action="store_true", help="inner UDP offered-load test instead of kernel TCP")
     p.add_argument("--kernel-qdisc", choices=('inherited', 'fq', 'cake-nosplit'), default='inherited', help="test namespace TUN qdisc only; applied equally to WG/H3, never production")
     p.add_argument("--kernel-cpu-profile", action="store_true", help="diagnostic-only bounded CPU profiles; throughput is profiling-affected")
@@ -209,8 +212,10 @@ def main():
     if args.kernel_iperf:
         try: args.kernel_flows = [int(v) for v in args.kernel_flows.split(',')]
         except ValueError: p.error('kernel-flows must be comma-separated integers')
-        if not args.kernel_flows or any(v not in (1,2,4,8) for v in args.kernel_flows) or not 3 <= args.kernel_seconds <= 30 or not 1 <= args.kernel_mbps <= 500:
+        if not args.kernel_flows or any(v not in (1,2,4,8) for v in args.kernel_flows) or not 3 <= args.kernel_seconds <= 30 or not 1 <= args.kernel_mbps <= 1000:
             p.error('invalid bounded kernel benchmark settings')
+        if not 64 <= args.kernel_udp_length <= 1252:
+            p.error('kernel-udp-length must be 64..1252')
         if args.proof_only: p.error('kernel-iperf conflicts with proof-only')
         if args.kernel_seconds * len(args.kernel_flows) * args.rounds * 2 > 360:
             p.error('kernel benchmark exceeds per-mode bounded runtime')
@@ -428,6 +433,17 @@ def main():
                         if value["active_mode"] != expected or value["pending_restart"] or value["source"] != "managed":
                             raise RuntimeError("managed profile did not activate on actual restart: " + json.dumps(value))
                     print("CLI mode applied after restart:", variant, flush=True)
+                if args.warm_discovery:
+                    phase['preconnect_discovery'] = {}
+                    for i, node in enumerate(nodes):
+                        found = api(node, f"/probe?target={nodes[i ^ 1]['test_ip']}&size=1&discovery-only=true",method='POST',timeout=30)
+                        if not found.get('discovery',{}).get('Endpoint'):
+                            raise RuntimeError('discovery did not establish a direct path')
+                        phase['preconnect_discovery'][node['name']] = found
+                    phase['after_discovery_quic'] = {n['name']:api(n,'/quic') for n in nodes}
+                    if any(v.get('handshake_attempts',0) or v.get('connections',0) for v in phase['after_discovery_quic'].values()):
+                        raise RuntimeError('discovery warmed TLS or tunnel state')
+                    checkpoint()
                 # A declared server can send application data first over an
                 # existing connection, but only the nonserver TLS initiator
                 # exercises the browser handshake. Establish that connection

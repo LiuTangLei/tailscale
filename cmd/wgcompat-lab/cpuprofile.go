@@ -34,3 +34,14 @@ func cpuProfile(w http.ResponseWriter, r *http.Request) {
 	case <-r.Context().Done():
 	}
 }
+
+// allocsProfile samples cumulative allocation stacks without forcing a GC.
+// Compare before/after profiles for a bounded transfer to exclude setup work.
+func allocsProfile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || r.Header.Get("X-WG-Lab") != "1" {
+		http.Error(w, "local POST required", 405)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_ = pprof.Lookup("allocs").WriteTo(w, 0)
+}

@@ -7,11 +7,50 @@ production firewall change is needed. iperf traffic has exactly one path: TUN.
 """
 from __future__ import annotations
 import json
+import re
 import shlex
 import time
 import concurrent.futures
 import urllib.request
 from pathlib import Path
+
+
+def receiver_summary(doc, udp=False):
+    """Use actual receiver loss, never the UDP sender's zero loss field.
+
+    Forward UDP loss in some iperf clients is wrong even in sum_received.
+    A JSON server provides the exact summary; archived text output preserves
+    exact lost/total counts too. TUN packet counts are SKBs and may use GRO.
+    """
+    receiver = dict(doc.get('end', {}).get('sum_received') or doc.get('end', {}).get('sum') or {})
+    if not udp:
+        return receiver, 'client.end.sum_received'
+    reverse = bool(doc.get('start', {}).get('test_start', {}).get('reverse'))
+    if reverse:
+        if not receiver or receiver.get('sender') is not False or 'lost_packets' not in receiver or 'packets' not in receiver:
+            raise RuntimeError('missing reverse UDP receiver summary')
+        return receiver, 'client.end.sum_received'
+    server = doc.get('server_output_json')
+    if isinstance(server, dict):
+        end = server.get('end', {})
+        actual = end.get('sum_received') or end.get('sum')
+        if actual and actual.get('sender') is False and 'lost_packets' in actual:
+            return dict(actual), 'server.end.receiver'
+    # Preserve precise loss from older archived server text. Rate/byte fields
+    # remain the precise client receiver values rather than rounded text.
+    text = doc.get('server_output_text', '')
+    pattern = r'^\[\s*(?P<id>SUM|\d+)\]\s+0\.00-\S+\s+sec\s+.*?\s+(?P<lost>\d+)/(?P<total>\d+)\s+\([^)]*\)\s+receiver\s*$'
+    matches = list(re.finditer(pattern, text, re.MULTILINE))
+    sums = [m for m in matches if m['id'] == 'SUM']
+    if sums:
+        match = sums[-1]
+    elif len(matches) == 1:
+        match = matches[0]
+    else:
+        raise RuntimeError('missing unambiguous server UDP receiver loss; never assume zero')
+    lost, total = int(match['lost']), int(match['total'])
+    receiver.update(lost_packets=lost, packets=total, lost_percent=100*lost/total if total else 0, sender=False)
+    return receiver, 'server.text.receiver'
 
 
 def capture_profile(node, seconds, target):
@@ -20,6 +59,13 @@ def capture_profile(node, seconds, target):
         data = response.read(16<<20)
     target.write_bytes(data)
     return {'file':str(target),'bytes':len(data)}
+
+
+def capture_allocs(node, target):
+    req = urllib.request.Request(f"http://127.0.0.1:{node['admin_local']}/allocs-profile", method='POST', headers={'X-WG-Lab':'1'})
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=10) as response:
+        target.write_bytes(response.read(16<<20))
+    return {'file':str(target),'bytes':target.stat().st_size}
 
 
 def capture_loaded_latency(node, target, api):
@@ -70,7 +116,7 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
     unit = f'qbench-iperf-{ident}-{index}'
     command = ['systemd-run', '--quiet', '--collect', '--unit=' + unit,
                '--property=RuntimeMaxSec=600', '--property=TimeoutStopSec=5',
-               'ip', 'netns', 'exec', server['kernel_ns'], 'iperf3', '-s', '-B', server['test_ip'], '-p', '18530']
+               'ip', 'netns', 'exec', server['kernel_ns'], 'iperf3', '-s', '-J', '-B', server['test_ip'], '-p', '18530']
     remote(server, shlex.join(command))
     server.setdefault('aux_units', []).append(unit)
     try:
@@ -82,18 +128,25 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
         phase['kernel_paths'] = {n['name']:n['kernel_path'] for n in nodes}
         phase['kernel_iperf'] = []
         directions = (True, False) if args.kernel_reverse_first else (False, True)
+        if getattr(args, 'kernel_direction', 'both') != 'both':
+            directions = (args.kernel_direction == 'reverse',)
         for round_no in range(1, args.rounds + 1):
             for reverse in directions:
                 direction = f"{server['name']} -> {client['name']}" if reverse else f"{client['name']} -> {server['name']}"
                 for flows in args.kernel_flows:
                     if args.kernel_idle:
                         time.sleep(args.kernel_idle)
+                    allocs_before = {}
+                    if getattr(args, 'kernel_cpu_profile', False):
+                        for n in nodes:
+                            target = args.output.with_name(args.output.stem + f'-{index}-{round_no}-{int(reverse)}-{flows}-{n["name"]}.allocs.before.prof')
+                            allocs_before[n['name']] = capture_allocs(n, target)
                     before = state()
                     cmd = ['ip','netns','exec',client['kernel_ns'],'iperf3','-c',server['test_ip'],'-p','18530',
                            '-P',str(flows),'-t',str(args.kernel_seconds),'-O',str(args.kernel_omit),'-J','--get-server-output',
                            '-b',str(int(args.kernel_mbps*1_000_000/flows))]
                     if reverse: cmd.append('-R')
-                    if args.kernel_udp: cmd += ['-u','-l','1100']
+                    if args.kernel_udp: cmd += ['-u','-l',str(args.kernel_udp_length)]
                     profile_results = {}
                     loaded_latency = None
                     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as profiles:
@@ -122,22 +175,24 @@ def benchmark(nodes, args, phase, checkpoint, remote, api, ident, index):
                         phase['kernel_iperf'].append({'direction':direction,'round':round_no,'flows':flows,'failed':True,'iperf':doc})
                         checkpoint()
                         raise RuntimeError('kernel iperf failed: '+str(doc.get('error',p.stderr[-500:])))
+                    phase.setdefault('kernel_raw_iperf', []).append({'direction':direction,'round':round_no,'flows':flows,'command_wall_seconds':elapsed,'iperf':doc})
+                    checkpoint() # preserve completed transfers if subsequent diagnostics fail
                     after = state()
-                    receiver = doc.get('end',{}).get('sum_received') or doc.get('end',{}).get('sum')
-                    if args.kernel_udp:
-                        streams = doc.get('end',{}).get('streams',[])
-                        udp = [s['udp'] for s in streams if 'udp' in s]
-                        if udp:
-                            receiver = dict(receiver or {})
-                            receiver.update(lost_packets=sum(s.get('lost_packets',0) for s in udp),packets=sum(s.get('packets',0) for s in udp))
+                    allocs_after = {}
+                    if getattr(args, 'kernel_cpu_profile', False):
+                        for n in nodes:
+                            target = args.output.with_name(args.output.stem + f'-{index}-{round_no}-{int(reverse)}-{flows}-{n["name"]}.allocs.after.prof')
+                            allocs_after[n['name']] = capture_allocs(n, target)
+                    receiver, receiver_source = receiver_summary(doc,args.kernel_udp)
                     if not receiver or receiver.get('bytes',0)<=0: raise RuntimeError('no received payload in iperf output')
                     mbps = receiver['bits_per_second']/1_000_000
                     item = {'direction':direction,'round':round_no,'flows':flows,'receiver_mbps':mbps,
+                            'receiver_summary':receiver,'receiver_source':receiver_source,'tun_packet_count_semantics':'SKB/GRO; not UDP datagram loss',
                             'offered_total_mbps':args.kernel_mbps,'protocol':'udp' if args.kernel_udp else 'tcp',
                             'omitted_seconds':args.kernel_omit, 'idle_before_seconds':args.kernel_idle,
                             'receiver_wall_lower_bound_mbps':receiver['bytes']*8/elapsed/1_000_000,
                             'wall_seconds':elapsed,'before':before,'after':after,'iperf':doc,
-                            'profiling_affected':bool(profile_results), 'cpu_profiles':profile_results,
+                            'profiling_affected':bool(profile_results), 'cpu_profiles':profile_results,'allocs_profiles_before':allocs_before,'allocs_profiles_after':allocs_after,
                             'loaded_latency':loaded_latency}
                     if phase['variant'] != 'native':
                         item['session_reused'] = all(

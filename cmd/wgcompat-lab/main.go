@@ -453,6 +453,12 @@ func (n *node) probe(w http.ResponseWriter, r *http.Request) {
 			case <-time.After(250 * time.Millisecond):
 			}
 		}
+		// Isolate path discovery from a cold QUIC/TLS handshake in diagnostics.
+		// This mode sends no TSMP or application traffic and creates no tunnel.
+		if r.URL.Query().Get("discovery-only") == "true" {
+			writeJSON(w, result)
+			return
+		}
 		result.TSMP, err = n.lc.Ping(ctx, ip, tailcfg.PingTSMP)
 		if err != nil {
 			http.Error(w, "encrypted TSMP: "+err.Error(), 504)
