@@ -603,14 +603,14 @@ func newConn(logf logger.Logf) *Conn {
 	discoPrivate := key.NewDisco()
 	c := &Conn{
 		amneziaWGConfigWaiters: make(map[[8]byte]amneziaWGConfigWaiter),
-		logf: logf,
-		derpRecvCh:    make(chan derpReadResult, 1), // must be buffered, see issue 3736
-		derpStarted:   make(chan struct{}),
-		peerLastDerp:  make(map[key.NodePublic]tailcfg.DERPRegionID),
-		peerMap:       newPeerMap(),
-		discoInfo:     make(map[key.DiscoPublic]*discoInfo),
-		cloudInfo:     cloudinfo.New(logf),
-		initializedAt: mono.Now(),
+		logf:                   logf,
+		derpRecvCh:             make(chan derpReadResult, 1), // must be buffered, see issue 3736
+		derpStarted:            make(chan struct{}),
+		peerLastDerp:           make(map[key.NodePublic]tailcfg.DERPRegionID),
+		peerMap:                newPeerMap(),
+		discoInfo:              make(map[key.DiscoPublic]*discoInfo),
+		cloudInfo:              cloudinfo.New(logf),
+		initializedAt:          mono.Now(),
 	}
 	c.discoAtomic.Set(discoPrivate)
 	c.bind = &connBind{Conn: c, closed: true}
@@ -2722,6 +2722,13 @@ func (c *Conn) handlePingLocked(dm *disco.Ping, src epAddr, di *discoInfo, derpN
 		TxID: dm.TxID,
 		Src:  src.ap,
 	}, discoVerboseLog)
+	// The discovery key must identify one peer before probing its source.
+	// Normal Pong verification remains responsible for trusting the route.
+	if hasUDPTransport && !isDerp && numNodes == 1 && !dstKey.IsZero() {
+		if ep, ok := c.peerMap.endpointForNodeKey(dstKey); ok {
+			ep.maybeProbeDiscoveredEndpoint(src.ap)
+		}
+	}
 }
 
 // enqueueCallMeMaybe schedules a send of disco.CallMeMaybe to de via derpAddr

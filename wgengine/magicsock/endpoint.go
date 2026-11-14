@@ -89,6 +89,8 @@ type endpoint struct {
 	lastUDPRelayPathDiscovery mono.Time      // last time we ran UDP relay path discovery
 	derpAddr                  netip.AddrPort // fallback/bootstrap path, if non-zero (non-zero for well-behaved clients)
 
+	initialPathReady chan struct{} // closed only by a verified direct Pong
+
 	bestAddr           addrQuality // best non-DERP path; zero if none; mutate via setBestAddrLocked()
 	bestAddrAt         mono.Time   // time best address re-confirmed
 	trustBestAddrUntil mono.Time   // time when bestAddr expires
@@ -455,6 +457,10 @@ type endpointState struct {
 
 	// lastPing is the last (outgoing) ping time.
 	lastPing mono.Time
+
+	// Reverse challenges have a separate budget so their loss cannot suppress
+	// ordinary discovery when application traffic starts.
+	lastReversePing mono.Time
 
 	// lastGotPing, if non-zero, means that this was an endpoint
 	// that we learned about at runtime (from an incoming ping)
@@ -2016,6 +2022,11 @@ func (de *endpoint) handlePongConnLocked(m *disco.Pong, di *discoInfo, src epAdd
 			de.bestAddr.latency = latency
 			de.bestAddrAt = now
 			de.trustBestAddrUntil = now.Add(trustUDPAddrDuration)
+			if de.bestAddr.isDirect() && de.initialPathReady != nil {
+				close(de.initialPathReady)
+				de.initialPathReady = nil
+			}
+
 		}
 	}
 	return
@@ -2297,6 +2308,7 @@ func (de *endpoint) invalidateDiscoPathLocked() {
 	de.lastUDPRelayPathDiscovery = 0
 	for _, es := range de.endpointState {
 		es.lastPing = 0
+		es.lastReversePing = 0
 	}
 	if !de.isWireguardOnly {
 		for txid, sp := range de.sentPing {
@@ -2324,4 +2336,52 @@ func (de *endpoint) setDERPHome(regionID uint16) {
 	if buildfeatures.HasNATTraversal && de.c.relayManager.hasPeerRelayServers.Load() {
 		de.c.relayManager.handleDERPHomeChange(de.publicKey, regionID)
 	}
+}
+
+// maybeProbeDiscoveredEndpoint validates a newly learned source before waiting
+// for outbound application traffic. A received Ping alone never trusts a path.
+// The existing discovery interval limits challenges while no direct path is trusted.
+func (de *endpoint) maybeProbeDiscoveredEndpoint(src netip.AddrPort) {
+	de.mu.Lock()
+	defer de.mu.Unlock()
+	if de.expired || de.isWireguardOnly || debugNeverDirectUDP() {
+		return
+	}
+	now := mono.Now()
+	if de.bestAddr.isDirect() && !now.After(de.trustBestAddrUntil) {
+		return
+	}
+	st, ok := de.endpointState[src]
+	if !ok || (!st.lastPing.IsZero() && now.Sub(st.lastPing) < discoPingInterval) {
+		return
+	}
+	if !st.lastReversePing.IsZero() && now.Sub(st.lastReversePing) < discoPingInterval {
+		return
+	}
+	st.lastReversePing = now
+	lastPing := st.lastPing
+
+	// Heartbeat purpose sends one minimum-size challenge even with peer MTU
+	// discovery enabled. An inbound Ping must not trigger an MTU probe burst.
+	de.startDiscoPingLocked(epAddr{ap: src}, now, pingHeartbeat, 0, nil)
+	// startDiscoPingLocked stamps lastPing synchronously. Keep the normal
+	// send-triggered probe eligible if this early challenge is lost.
+	// endpoint.mu remains held throughout both updates.
+	st.lastPing = lastPing
+
+}
+
+// InitialPathReady lets an outgoing logical carrier observe its first
+// validated direct route without polling, prewarming or blocking discovery.
+func (de *endpoint) InitialPathReady() <-chan struct{} {
+	de.mu.Lock()
+	defer de.mu.Unlock()
+	now := mono.Now()
+	if !hasUDPTransport || debugNeverDirectUDP() || de.expired || de.isWireguardOnly || (de.bestAddr.isDirect() && !now.After(de.trustBestAddrUntil)) {
+		return nil
+	}
+	if de.initialPathReady == nil {
+		de.initialPathReady = make(chan struct{})
+	}
+	return de.initialPathReady
 }
