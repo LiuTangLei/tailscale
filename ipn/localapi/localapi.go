@@ -85,6 +85,7 @@ var handler = map[string]LocalAPIHandler{
 	"login-interactive":         (*Handler).serveLoginInteractive,
 	"logout":                    (*Handler).serveLogout,
 	"packet-transport":          (*Handler).servePacketTransport,
+	"packet-transport-stats":    (*Handler).servePacketTransportDiagnostics,
 	"peer-by-id":                (*Handler).servePeerByID,
 	"ping":                      (*Handler).servePing,
 	"prefs":                     (*Handler).servePrefs,

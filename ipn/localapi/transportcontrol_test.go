@@ -36,3 +36,22 @@ func TestPacketTransportPermissionAndBody(t *testing.T) {
 		})
 	}
 }
+
+func TestPacketTransportDiagnosticsPermissionAndMethod(t *testing.T) {
+	for _, tc := range []struct {
+		method      string
+		read, write bool
+		want        int
+	}{
+		{http.MethodGet, false, false, http.StatusForbidden},
+		{http.MethodPost, true, true, http.StatusMethodNotAllowed},
+		{http.MethodDelete, true, true, http.StatusMethodNotAllowed},
+	} {
+		h := &Handler{PermitRead: tc.read, PermitWrite: tc.write}
+		w := httptest.NewRecorder()
+		h.servePacketTransportDiagnostics(w, httptest.NewRequest(tc.method, "/localapi/v0/packet-transport-stats", nil))
+		if w.Code != tc.want || w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s: got %d, headers %v", tc.method, w.Code, w.Header())
+		}
+	}
+}

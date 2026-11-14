@@ -53,3 +53,25 @@ func (h *Handler) servePacketTransport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
+
+// servePacketTransportDiagnostics exposes the same sanitized running-carrier
+// snapshot used by tsnet. Inspection never stages a profile or restarts an engine.
+func (h *Handler) servePacketTransportDiagnostics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.PermitRead && !h.PermitWrite {
+		http.Error(w, "transport diagnostics access denied", http.StatusForbidden)
+		return
+	}
+	stats, err := h.b.PacketTransportDiagnostics()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
