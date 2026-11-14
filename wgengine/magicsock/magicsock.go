@@ -1774,6 +1774,11 @@ func (c *Conn) receiveIPv6() conn.ReceiveFunc {
 	)
 }
 
+const (
+	// readErrRetryDelay paces a [conn.ReceiveFunc]'s read errors.
+	readErrRetryDelay = 100 * time.Millisecond
+)
+
 // mkReceiveFunc creates a ReceiveFunc reading from ruc.
 // The provided healthItem and metrics are updated if non-nil.
 func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFuncStats, directPacketMetric, peerRelayPacketMetric, directBytesMetric, peerRelayBytesMetric *expvar.Int) conn.ReceiveFunc {
@@ -1799,12 +1804,28 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 		}
 
 		for {
+			if c.connCtx.Err() != nil {
+				return 0, net.ErrClosed
+			}
 			numMsgs, err := ruc.ReadBatch(slab, batchingPackets)
 			if err != nil {
 				if neterror.PacketWasTruncated(err) {
 					continue
 				}
-				return 0, err
+				if neterror.IsUDPReadFeedback(err) {
+					metricRecvUDPErrorReachability.Add(1)
+					continue
+				}
+				if !neterror.IsUDPReadUnknown(err) {
+					return 0, err
+				}
+
+				metricRecvUDPErrorUnknown.Add(1)
+				select {
+				case <-c.connCtx.Done():
+				case <-time.After(readErrRetryDelay):
+				}
+				continue
 			}
 
 			reportToCaller := false
@@ -4309,6 +4330,11 @@ var (
 	metricSendUDPError        = clientmetric.NewCounter("magicsock_send_udp_error")
 	metricSendPeerRelayError  = clientmetric.NewCounter("magicsock_send_peer_relay_error")
 	metricSendDERPError       = clientmetric.NewCounter("magicsock_send_derp_error")
+
+	// UDP reads matching neterror.IsUDPReadFeedback.
+	metricRecvUDPErrorReachability = clientmetric.NewCounter("magicsock_recv_udp_error_reachability")
+	// UDP reads matching neterror.IsUDPReadUnknown.
+	metricRecvUDPErrorUnknown = clientmetric.NewCounter("magicsock_recv_udp_error_unknown")
 
 	// Sends (data)
 	//

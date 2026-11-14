@@ -72,6 +72,8 @@ github.com/LiuTangLei/utls v1.8.3-0.20261021023852-7effde6a93dc h1:T3DDZUtc9ENa2
 github.com/LiuTangLei/utls v1.8.3-0.20261021023852-7effde6a93dc/go.mod h1:jkSOEkLqn+S/jtpEHPOsVv/4V4EVnelwbMQl4vCWXAM=
 github.com/LiuTangLei/wireguard-go v0.0.34 h1:RCNbtJPuOAZu5K+M7Fpv/rLhA8FtSPm6sdq7++ZapnI=
 github.com/LiuTangLei/wireguard-go v0.0.34/go.mod h1:f7uSn74R1/LKiqDHRok1pV2vnEelx6Catt+uAkBzgrk=
+github.com/LiuTangLei/wireguard-go v0.0.35 h1:A0UdzeplX7CQFhq89sNMhgxcJbtAzS4MCoMLgsPivkQ=
+github.com/LiuTangLei/wireguard-go v0.0.35/go.mod h1:f7uSn74R1/LKiqDHRok1pV2vnEelx6Catt+uAkBzgrk=
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=
 github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
 github.com/Masterminds/goutils v1.1.1 h1:5nUrii3FMTL5diU80unEVvNevw1nH4+ZV4DSLVJLSYI=

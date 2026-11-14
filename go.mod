@@ -7,7 +7,7 @@ require (
 	fyne.io/systray v1.12.2
 	github.com/AlekSi/pointer v1.2.0
 	github.com/Kodeworks/golang-image-ico v0.0.0-20141118225523-73f0f4cfade9
-	github.com/LiuTangLei/wireguard-go v0.0.34
+	github.com/LiuTangLei/wireguard-go v0.0.35
 	github.com/akutz/memconn v0.1.0
 	github.com/alexbrainman/sspi v0.0.0-20250919150558-7d374ff0d59e
 	github.com/atotto/clipboard v0.1.4
