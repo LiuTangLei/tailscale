@@ -107,7 +107,7 @@ require (
 	github.com/prometheus/client_model v0.6.3
 	github.com/prometheus/common v0.71.0
 	github.com/prometheus/prometheus v0.314.0
-	github.com/quic-go/quic-go v0.64.1
+	github.com/quic-go/quic-go v0.65.0
 	github.com/robert-nix/ansihtml v1.0.1
 	github.com/safchain/ethtool v0.7.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
@@ -565,6 +565,6 @@ tool (
 	github.com/stacklok/frizbee
 )
 
-replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.64.1-quic.2
+replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.65.0-quic.1
 
 replace github.com/refraction-networking/utls => github.com/LiuTangLei/utls v1.8.3-0.20261021023852-7effde6a93dc

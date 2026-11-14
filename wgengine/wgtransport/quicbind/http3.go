@@ -338,7 +338,10 @@ func (g *generation) handleHTTP3(w http.ResponseWriter, r *http.Request) {
 	if err := http.NewResponseController(w).Flush(); err != nil {
 		return
 	}
-	stream := w.(http3.HTTPStreamer).HTTPStream()
+	stream, err := w.(http3.HTTPStreamer).HTTPStream()
+	if err != nil {
+		return
+	}
 	if !resumeRequest && g.b.factory.cfg.AutoTrust {
 		_ = stream.SetDeadline(time.Now().Add(8 * time.Second))
 		if err := readNodeFinished(stream, requestProof.handshake, "initiator finished v2"); err != nil || !p.stampValid(*attempt) {
