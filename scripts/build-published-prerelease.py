@@ -116,7 +116,7 @@ def main() -> None:
                      'CGO_ENABLED': '1' if goos == 'darwin' else '0',
                      'TAGS': 'ts_apple_no_network_extension' if goos == 'darwin' else ''}
         command(['sh', './build_dist.sh', '-o', str(path), './cmd/' + name], build_env, timeout=900)
-        info = command(['go', 'version', '-m', str(path)], env)
+        info = '\n'.join(command(['go', 'version', '-m', str(path)], env).splitlines()[1:])
         # The CLI is an API client and need not link either crypto engine.
         # Every daemon must link both exact published modules.
         if name == 'tailscaled':
@@ -144,8 +144,13 @@ def main() -> None:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as ex:
         futures = [ex.submit(build, platform, name) for platform in PLATFORMS for name in ('tailscale', 'tailscaled')]
-        for f in concurrent.futures.as_completed(futures):
-            manifest['assets'].append(f.result())
+        try:
+            for f in concurrent.futures.as_completed(futures):
+                manifest['assets'].append(f.result())
+        except BaseException:
+            for pending in futures:
+                pending.cancel()
+            raise
     manifest['assets'].sort(key=lambda x: x['name'])
     if command(['git', 'rev-parse', 'HEAD'], env).strip() != commit or command(['git', 'status', '--porcelain'], env).strip():
         raise RuntimeError('source changed during build; do not publish')
