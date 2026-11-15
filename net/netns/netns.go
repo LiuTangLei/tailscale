@@ -113,15 +113,18 @@ func NewDialer(logf logger.Logf, netMon *netmon.Monitor) Dialer {
 // FromDialer returns sets d.Control as necessary to run in a logical
 // network namespace that doesn't route back into Tailscale. It also
 // handles using a SOCKS if configured in the environment with
-// ALL_PROXY.
+// ALL_PROXY. When netns is disabled, d gets no namespace setup but may
+// still be wrapped to use SOCKS.
 func FromDialer(logf logger.Logf, netMon *netmon.Monitor, d *net.Dialer) Dialer {
 	if netMon == nil {
 		panic("netns.FromDialer called with nil netMon")
 	}
-	if disabled.Load() {
-		return d
+	// Disabling netns only turns off the namespace setup. Processes that
+	// disable it, such as userspace-only clients that never route traffic
+	// back into themselves, may still need to honor ALL_PROXY.
+	if !disabled.Load() {
+		d.Control = control(logf, netMon)
 	}
-	d.Control = control(logf, netMon)
 	if wrapDialer != nil {
 		return wrapDialer(d)
 	}
