@@ -142,6 +142,7 @@ func (c *bindPacketConn) WriteTo(buf []byte, addr net.Addr) (int, error) {
 		return 0, err
 	}
 	c.g.b.counters.RawBytesSent.Add(uint64(len(buf)))
+	c.g.b.counters.RawSingleWrites.Add(1)
 	return len(buf), nil
 }
 

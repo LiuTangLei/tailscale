@@ -46,6 +46,7 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["http3_rejected"] = c.HTTP3Rejected.Load()
 	out["http3_datagrams"] = c.HTTP3Datagrams.Load()
 	out["tcp_streams"] = c.TCPStreams.Load()
+	out["tcp_stream_send"] = b.tcpStreamMetrics.snapshot()
 	out["tcp_read_buffers"] = b.readBuffers.snapshot()
 	out["tcp_ready_read_coalescing"] = true
 	out["tcp_stream_bytes_sent"] = c.TCPBytesSent.Load()
@@ -68,6 +69,7 @@ func (f *Factory) snapshotBackend(b *Backend) map[string]any {
 	out["raw_bytes_sent"] = c.RawBytesSent.Load()
 	out["raw_bytes_received"] = c.RawBytesReceived.Load()
 	out["raw_write_batches"] = c.RawWriteBatches.Load()
+	out["raw_single_writes"] = c.RawSingleWrites.Load()
 	out["raw_batch_packets"] = c.RawBatchPackets.Load()
 	out["direct_receive_connections"] = c.DirectReceiveConnections.Load()
 	out["direct_receive_datagrams"] = c.DirectReceiveDatagrams.Load()

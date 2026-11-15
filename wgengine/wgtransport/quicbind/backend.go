@@ -45,6 +45,7 @@ type Counters struct {
 	RawBytesSent             atomic.Uint64
 	RawBytesReceived         atomic.Uint64
 	RawWriteBatches          atomic.Uint64
+	RawSingleWrites          atomic.Uint64
 	RawBatchPackets          atomic.Uint64
 	DirectReceiveConnections atomic.Uint64
 	DirectReceiveDatagrams   atomic.Uint64
@@ -62,23 +63,24 @@ type Counters struct {
 }
 
 type Backend struct {
-	factory       *Factory
-	host          wgtransport.Host
-	bind          carrierBind
-	mu            sync.Mutex
-	eventMu       sync.Mutex // serialize host notifications across actor replacement
-	closed        bool
-	active        atomic.Pointer[generation]
-	identityOK    atomic.Bool
-	authEpoch     atomic.Uint64 // invalidates anonymous in-flight authentication on any revocation
-	identityEpoch atomic.Uint64 // invalidates queued work across local identity changes
-	networkUp     atomic.Bool
-	counters      Counters
-	timing        sessionTiming
-	tcpStreams    sync.Map // *tcpStreamConn -> struct{}; retained until FIN acknowledgment
-	readBuffers   tcpReadBufferPool
-	serverHintsMu sync.RWMutex
-	serverHints   map[[32]byte]*atomic.Uint32
+	factory          *Factory
+	host             wgtransport.Host
+	bind             carrierBind
+	mu               sync.Mutex
+	eventMu          sync.Mutex // serialize host notifications across actor replacement
+	closed           bool
+	active           atomic.Pointer[generation]
+	identityOK       atomic.Bool
+	authEpoch        atomic.Uint64 // invalidates anonymous in-flight authentication on any revocation
+	identityEpoch    atomic.Uint64 // invalidates queued work across local identity changes
+	networkUp        atomic.Bool
+	counters         Counters
+	timing           sessionTiming
+	tcpStreams       sync.Map // *tcpStreamConn -> struct{}; retained until FIN acknowledgment
+	tcpStreamMetrics tcpStreamMetrics
+	readBuffers      tcpReadBufferPool
+	serverHintsMu    sync.RWMutex
+	serverHints      map[[32]byte]*atomic.Uint32
 }
 type carrierBind struct{ b *Backend }
 

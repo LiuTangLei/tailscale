@@ -33,6 +33,7 @@ type tcpStreamConn struct {
 	writeQ                                      chan *tcpWriteBuffer
 	readStop, writeStop, readerDone, writerDone chan struct{}
 	closeOnce                                   sync.Once
+	abortOnce                                   sync.Once
 	closeSignal                                 chan struct{}
 	drained                                     chan struct{}
 	drainErr                                    error          // published by closing drained
@@ -59,7 +60,14 @@ func (b *Backend) newTCPConn(p *peer, s *session, stream reliableStream, local, 
 			_ = c.Close()
 		}
 		<-c.writerDone
+		start := time.Now()
 		c.drainErr = stream.WaitWriteAcknowledged(s.q.Context())
+		metrics := &b.tcpStreamMetrics
+		metrics.finWaits.Add(1)
+		metrics.finWaitNS.Add(uint64(time.Since(start)))
+		if c.drainErr != nil {
+			metrics.finWaitErrors.Add(1)
+		}
 		close(c.drained)
 		b.tcpStreams.Delete(c)
 		s.tcpActive.Add(-1)
@@ -116,6 +124,7 @@ func (c *tcpStreamConn) readPump() {
 				// Ownership passes to the queue and then the application Read.
 			case <-c.readStop:
 				if err == nil {
+					c.p.g.b.tcpStreamMetrics.discardedReadBytes.Add(uint64(n))
 					if block == nil {
 						block = pool.get()
 					}
@@ -141,6 +150,7 @@ func (c *tcpStreamConn) writeBuffer(buf *tcpWriteBuffer) bool {
 		c.failWrite(net.ErrClosed)
 		return false
 	}
+	start := time.Now()
 	n, err := c.stream.Write(buf.data[:buf.n])
 	if n > 0 {
 		c.p.touch()
@@ -149,7 +159,11 @@ func (c *tcpStreamConn) writeBuffer(buf *tcpWriteBuffer) bool {
 	if err == nil && n != buf.n {
 		err = io.ErrShortWrite
 	}
+	metrics := &c.p.g.b.tcpStreamMetrics
+	metrics.writeCalls.Add(1)
+	recordTCPDuration(&metrics.writeNS, &metrics.writeMaxNS, time.Since(start))
 	if err != nil {
+		metrics.writeErrors.Add(1)
 		c.failWrite(err)
 		return false
 	}
@@ -335,12 +349,18 @@ func (c *tcpStreamConn) Write(buf []byte) (int, error) {
 		}
 		c.mu.Unlock()
 		timer, stop := deadlineTimer(deadline)
+		metrics := &c.p.g.b.tcpStreamMetrics
+		start := time.Now()
+		metrics.queueWaits.Add(1)
+		metrics.waitingWriters.Add(1)
 		select {
 		case <-wake:
 		case <-timer:
 		case <-c.writeStop:
 		}
 		stop()
+		metrics.waitingWriters.Add(-1)
+		recordTCPDuration(&metrics.queueWaitNS, &metrics.queueWaitMaxNS, time.Since(start))
 	}
 }
 func (c *tcpStreamConn) CloseWrite() error {
@@ -400,6 +420,7 @@ func (c *tcpStreamConn) drainClosedRead(buf []byte) {
 	for remaining := closedReadLimit; remaining > 0 && c.authorized(); {
 		n, err := c.stream.Read(buf[:min(len(buf), remaining)])
 		remaining -= n
+		c.p.g.b.tcpStreamMetrics.discardedReadBytes.Add(uint64(n))
 		if err == io.EOF {
 			return
 		}
@@ -414,6 +435,19 @@ func (c *tcpStreamConn) CloseRead() error {
 	c.closeRead(false)
 	return nil
 }
+
+// Abort stops both halves immediately after a proxy error or explicit reset.
+// Unlike Close, it never drains queued writes or reads final peer bytes. The
+// authenticated QUIC connection remains available to independent streams.
+func (c *tcpStreamConn) Abort() error {
+	c.abortOnce.Do(func() {
+		c.p.g.b.tcpStreamMetrics.aborts.Add(1)
+		c.failWrite(net.ErrClosed)
+		c.closeRead(false)
+	})
+	return nil
+}
+
 func (c *tcpStreamConn) Close() error {
 	c.closeOnce.Do(func() { _ = c.CloseWrite(); c.closeRead(true); close(c.closeSignal) })
 	return nil
