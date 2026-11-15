@@ -17,10 +17,10 @@ import subprocess
 import time
 
 WG = 'github.com/LiuTangLei/wireguard-go'
-WG_VERSION = 'v0.0.34'
+WG_VERSION = 'v0.0.35'
 QUIC = 'github.com/quic-go/quic-go'
 QUIC_FORK = 'github.com/LiuTangLei/quic-go'
-QUIC_VERSION = 'v0.63.0-tailscale.1.0.20261021083103-10dfe69b6d4c'
+QUIC_VERSION = 'v0.65.0-quic.4'
 UTLS = 'github.com/refraction-networking/utls'
 UTLS_FORK = 'github.com/LiuTangLei/utls'
 UTLS_VERSION = 'v1.8.3-0.20261021023852-7effde6a93dc'
@@ -54,7 +54,7 @@ def digest(path: Path) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', required=True, type=Path)
-    p.add_argument('--tag', default='v1.104.2')
+    p.add_argument('--tag', default='v1.104.6-r1')
     p.add_argument('--source-ref', help='local ref when the upstream version tag is already present')
     p.add_argument('--jobs', type=int, default=2)
     a = p.parse_args()
@@ -99,8 +99,8 @@ def main() -> None:
         'go_version': command(['go', 'version'], env).strip(),
         'dependency_mode': 'published Go modules; no local paths or overlays',
         'dependencies': {
-            WG: {'version': WG_VERSION, 'sum': selected[WG].get('Sum'), 'commit': '63cef16b88aab8b23b843beac7ac6f553b7c5fd6'},
-            QUIC_FORK: {'version': QUIC_VERSION, 'sum': replacement['Sum'], 'commit': '10dfe69b6d4ca273c4284ec48d786206af62286e'},
+            WG: {'version': WG_VERSION, 'sum': selected[WG].get('Sum'), 'commit': '144040cc00e7c1e631f9d4bad53ef5a348a071e6'},
+            QUIC_FORK: {'version': QUIC_VERSION, 'sum': replacement['Sum'], 'commit': '490032da4e7405d552492221052d7f37e5cd5515'},
             UTLS_FORK: {'version': UTLS_VERSION, 'sum': utls['Sum'], 'commit': '7effde6a93dc68c3535eaa590b6d28c503e18ff6'},
         },
         'assets': [],
@@ -112,7 +112,10 @@ def main() -> None:
         filename = f'{name}-{goos}-{arch}' + ('.exe' if goos == 'windows' else '')
         path = out / filename
         started = time.monotonic()
-        command(['sh', './build_dist.sh', '-o', str(path), './cmd/' + name], {**env, 'GOOS': goos, 'GOARCH': arch})
+        build_env = {**env, 'GOOS': goos, 'GOARCH': arch,
+                     'CGO_ENABLED': '1' if goos == 'darwin' else '0',
+                     'TAGS': 'ts_apple_no_network_extension' if goos == 'darwin' else ''}
+        command(['sh', './build_dist.sh', '-o', str(path), './cmd/' + name], build_env, timeout=900)
         info = command(['go', 'version', '-m', str(path)], env)
         # The CLI is an API client and need not link either crypto engine.
         # Every daemon must link both exact published modules.
@@ -127,7 +130,7 @@ def main() -> None:
             raise RuntimeError(f'{filename}: incorrect VCS build metadata')
         if long_version.encode() not in path.read_bytes():
             raise RuntimeError(f'{filename}: missing linked Tailscale source version')
-        if 'ts_dev_wg_over_quic' in info or '/Users/lei/code/tailscale-all/quic-go' in info:
+        if 'ts_dev_wg_over_quic' in info or 'tailcat_perf' in info or '/Users/lei/' in info:
             raise RuntimeError('development-only code or local dependency leaked into release')
         if goos == 'darwin':
             # Standalone test binaries use an ad-hoc signature, not a Developer

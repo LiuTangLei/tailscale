@@ -565,6 +565,6 @@ tool (
 	github.com/stacklok/frizbee
 )
 
-replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.65.0-quic.3
+replace github.com/quic-go/quic-go => github.com/LiuTangLei/quic-go v0.65.0-quic.4
 
 replace github.com/refraction-networking/utls => github.com/LiuTangLei/utls v1.8.3-0.20261021023852-7effde6a93dc
