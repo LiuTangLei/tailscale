@@ -4,6 +4,7 @@
 package quicbind
 
 import (
+	"context"
 	"errors"
 	"net"
 	"time"
@@ -16,6 +17,16 @@ import (
 // advertised. Forwarding one same-endpoint batch lets magicsock use its own
 // correct direct-UDP or relay implementation and retains relay headroom.
 func (c *bindPacketConn) WritePacketBatch(input [][]byte, addr net.Addr) error {
+	return c.writePacketBatch(nil, input, addr)
+}
+
+// WritePacketBatchContext allows the QUIC send queue to wait for a congested
+// relay, including a single datagram, while retaining per-connection cancellation.
+func (c *bindPacketConn) WritePacketBatchContext(ctx context.Context, input [][]byte, addr net.Addr) error {
+	return c.writePacketBatch(ctx, input, addr)
+}
+
+func (c *bindPacketConn) writePacketBatch(ctx context.Context, input [][]byte, addr net.Addr) error {
 	if len(input) == 0 {
 		return nil
 	}
@@ -23,7 +34,7 @@ func (c *bindPacketConn) WritePacketBatch(input [][]byte, addr net.Addr) error {
 		return errors.New("outer QUIC write batch exceeds bounded capacity")
 	}
 	if len(input) == 1 {
-		_, err := c.WriteTo(input[0], addr)
+		_, err := c.writeTo(ctx, input[0], addr)
 		return err
 	}
 	select {
@@ -69,7 +80,8 @@ func (c *bindPacketConn) WritePacketBatch(input [][]byte, addr net.Addr) error {
 	}
 	for start := 0; start < len(input); start += size {
 		end := min(start+size, len(input))
-		if err := c.g.b.host.Bind.Send(buffers[start:end], a.ep, 8); err != nil {
+		err := c.sendHost(ctx, buffers[start:end], a.ep)
+		if err != nil {
 			return err
 		}
 		var bytes uint64
@@ -81,4 +93,26 @@ func (c *bindPacketConn) WritePacketBatch(input [][]byte, addr net.Addr) error {
 		c.g.b.counters.RawBatchPackets.Add(uint64(end - start))
 	}
 	return nil
+}
+
+func (c *bindPacketConn) sendHost(ctx context.Context, packets [][]byte, ep conn.Endpoint) error {
+	if ctx != nil {
+		c.deadlines.Lock()
+		deadline := c.timeWriteDeadline
+		c.deadlines.Unlock()
+		if !deadline.IsZero() {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, deadline)
+			defer cancel()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if sender, ok := c.g.b.host.Bind.(interface {
+			SendWithContext(context.Context, [][]byte, conn.Endpoint, int) error
+		}); ok {
+			return sender.SendWithContext(ctx, packets, ep, 8)
+		}
+	}
+	return c.g.b.host.Bind.Send(packets, ep, 8)
 }
