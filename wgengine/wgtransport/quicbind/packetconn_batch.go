@@ -12,6 +12,21 @@ import (
 	"github.com/LiuTangLei/wireguard-go/conn"
 )
 
+// Only hosts which implement cancellable sends advertise this capability.
+// Legacy/UDP binds retain their original queue-draining behavior on Close.
+type contextHostSender interface {
+	SendWithContext(context.Context, [][]byte, conn.Endpoint, int) error
+}
+
+type contextBindPacketConn struct{ *bindPacketConn }
+
+func (c *bindPacketConn) packetConn() net.PacketConn {
+	if _, ok := c.g.b.host.Bind.(contextHostSender); ok {
+		return &contextBindPacketConn{c}
+	}
+	return c
+}
+
 // WritePacketBatch implements quic-go's optional portable batch writer. Every
 // input is already one encrypted QUIC UDP packet. No GSO/ECN/DF capability is
 // advertised. Forwarding one same-endpoint batch lets magicsock use its own
@@ -22,7 +37,7 @@ func (c *bindPacketConn) WritePacketBatch(input [][]byte, addr net.Addr) error {
 
 // WritePacketBatchContext allows the QUIC send queue to wait for a congested
 // relay, including a single datagram, while retaining per-connection cancellation.
-func (c *bindPacketConn) WritePacketBatchContext(ctx context.Context, input [][]byte, addr net.Addr) error {
+func (c *contextBindPacketConn) WritePacketBatchContext(ctx context.Context, input [][]byte, addr net.Addr) error {
 	return c.writePacketBatch(ctx, input, addr)
 }
 
@@ -108,9 +123,7 @@ func (c *bindPacketConn) sendHost(ctx context.Context, packets [][]byte, ep conn
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if sender, ok := c.g.b.host.Bind.(interface {
-			SendWithContext(context.Context, [][]byte, conn.Endpoint, int) error
-		}); ok {
+		if sender, ok := c.g.b.host.Bind.(contextHostSender); ok {
 			return sender.SendWithContext(ctx, packets, ep, 8)
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func TestPacketConnContextBatchOwnershipAndCancel(t *testing.T) {
 	for _, count := range []int{1, 8} {
 		t.Run(string(rune('0'+count)), func(t *testing.T) {
 			h := &contextHostBind{entered: make(chan [][]byte, 1), release: make(chan struct{})}
-			c := newBindPacketConn(&generation{b: &Backend{host: wgtransport.Host{Bind: h}}})
+			c := &contextBindPacketConn{newBindPacketConn(&generation{b: &Backend{host: wgtransport.Host{Bind: h}}})}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			packets := make([][]byte, count)
@@ -72,7 +73,7 @@ func TestPacketConnContextBatchOwnershipAndCancel(t *testing.T) {
 
 func TestPacketConnContextHonorsWriteDeadline(t *testing.T) {
 	h := &contextHostBind{entered: make(chan [][]byte, 1), release: make(chan struct{})}
-	c := newBindPacketConn(&generation{b: &Backend{host: wgtransport.Host{Bind: h}}})
+	c := &contextBindPacketConn{newBindPacketConn(&generation{b: &Backend{host: wgtransport.Host{Bind: h}}})}
 	c.SetWriteDeadline(time.Now().Add(20 * time.Millisecond))
 	done := make(chan error, 1)
 	go func() { done <- c.WritePacketBatchContext(t.Context(), [][]byte{{1}}, &bindAddr{ep: &endpoint{}}) }()
@@ -83,5 +84,20 @@ func TestPacketConnContextHonorsWriteDeadline(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("blocked relay ignored write deadline")
+	}
+}
+
+func TestPacketConnContextCapabilityMatchesHost(t *testing.T) {
+	type contextWriter interface {
+		WritePacketBatchContext(context.Context, [][]byte, net.Addr) error
+	}
+	plain := newBindPacketConn(&generation{b: &Backend{host: wgtransport.Host{Bind: &recordingBatchBind{batch: 8}}}})
+	if _, ok := plain.packetConn().(contextWriter); ok {
+		t.Fatal("uncancellable host advertised cancellable queue writes")
+	}
+	host := &contextHostBind{}
+	cancellable := newBindPacketConn(&generation{b: &Backend{host: wgtransport.Host{Bind: host}}})
+	if _, ok := cancellable.packetConn().(contextWriter); !ok {
+		t.Fatal("cancellable host capability lost")
 	}
 }

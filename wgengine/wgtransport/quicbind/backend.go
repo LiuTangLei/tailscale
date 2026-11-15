@@ -359,7 +359,7 @@ func (c *carrierBind) open(port uint16, offset int, grow bool) ([]conn.ReceiveFu
 		g.pc = udp
 	} else {
 		g.bridge = newBindPacketConn(g)
-		g.pc = g.bridge
+		g.pc = g.bridge.packetConn()
 	}
 	// Bound unauthenticated concurrent TLS work. Excess new sources must also
 	// validate their address with a Retry before allocating a connection.
