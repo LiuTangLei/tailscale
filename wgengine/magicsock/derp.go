@@ -93,6 +93,7 @@ type activeDerp struct {
 	c       *derphttp.Client
 	cancel  context.CancelFunc
 	writeCh chan derpWriteRequest
+	done    <-chan struct{} // canceled when this specific writer generation retires
 	// lastWrite is the time of the last request for its write
 	// channel (currently even if there was no write).
 	// It is always non-nil and initialized to a non-zero Time.
@@ -337,21 +338,26 @@ const derpWriteQueueDepth = 32
 // It returns nil if the network is down, the Conn is closed, or the regionID is
 // not known.
 func (c *Conn) derpWriteChanForRegion(regionID tailcfg.DERPRegionID, peer key.NodePublic) chan derpWriteRequest {
+	ch, _ := c.derpWriteChanForRegionWithDone(regionID, peer)
+	return ch
+}
+
+func (c *Conn) derpWriteChanForRegionWithDone(regionID tailcfg.DERPRegionID, peer key.NodePublic) (chan derpWriteRequest, <-chan struct{}) {
 	if c.networkDown() {
-		return nil
+		return nil, nil
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.wantDerpLocked() || c.closed {
-		return nil
+		return nil, nil
 	}
 	if c.derpMap == nil || c.derpMap.Regions[regionID] == nil {
-		return nil
+		return nil, nil
 	}
 	if c.privateKey.IsZero() {
 		c.logf("magicsock: DERP lookup of region %v with no private key; ignoring", regionID)
-		return nil
+		return nil, nil
 	}
 
 	// See if we have a connection open to that DERP node ID
@@ -362,7 +368,7 @@ func (c *Conn) derpWriteChanForRegion(regionID tailcfg.DERPRegionID, peer key.No
 	if ok {
 		*ad.lastWrite = time.Now()
 		c.setPeerLastDerpLocked(peer, regionID, regionID)
-		return ad.writeCh
+		return ad.writeCh, ad.done
 	}
 
 	// If we don't have an open connection to the peer's home DERP
@@ -376,7 +382,7 @@ func (c *Conn) derpWriteChanForRegion(regionID tailcfg.DERPRegionID, peer key.No
 			if ad, ok := c.activeDerp[r.regionID]; ok && ad.c == r.dc {
 				c.setPeerLastDerpLocked(peer, r.regionID, regionID)
 				*ad.lastWrite = time.Now()
-				return ad.writeCh
+				return ad.writeCh, ad.done
 			}
 		}
 	}
@@ -429,6 +435,7 @@ func (c *Conn) derpWriteChanForRegion(regionID tailcfg.DERPRegionID, peer key.No
 
 	ad.c = dc
 	ad.writeCh = ch
+	ad.done = ctx.Done()
 	ad.cancel = cancel
 	ad.lastWrite = new(time.Time)
 	*ad.lastWrite = time.Now()
@@ -471,7 +478,7 @@ func (c *Conn) derpWriteChanForRegion(regionID tailcfg.DERPRegionID, peer key.No
 		}
 	}()
 
-	return ad.writeCh
+	return ad.writeCh, ad.done
 }
 
 // setPeerLastDerpLocked notes that peer is now being written to via

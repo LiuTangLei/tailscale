@@ -1111,6 +1111,10 @@ var (
 )
 
 func (de *endpoint) send(buffs [][]byte, offset int) error {
+	return de.sendWithContext(nil, buffs, offset)
+}
+
+func (de *endpoint) sendWithContext(ctx context.Context, buffs [][]byte, offset int) error {
 	de.mu.Lock()
 	if de.expired {
 		de.mu.Unlock()
@@ -1194,7 +1198,16 @@ func (de *endpoint) send(buffs [][]byte, offset int) error {
 			buff = buff[offset:]
 			const isDisco = false
 			const isGeneveEncap = false
-			ok, _ := de.c.sendAddr(derpAddr, de.publicKey, buff, isDisco, isGeneveEncap)
+			var ok bool
+			if ctx != nil && !udpAddr.ap.IsValid() {
+				var sendErr error
+				ok, sendErr = de.c.sendDERPWithContext(ctx, derpAddr, de.publicKey, buff)
+				if sendErr != nil {
+					return sendErr
+				}
+			} else {
+				ok, _ = de.c.sendAddr(derpAddr, de.publicKey, buff, isDisco, isGeneveEncap)
+			}
 			txBytes += len(buff)
 			if !ok {
 				allOk = false

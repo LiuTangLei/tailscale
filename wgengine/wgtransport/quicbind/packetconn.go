@@ -3,6 +3,7 @@
 package quicbind
 
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
@@ -123,6 +124,10 @@ func (c *bindPacketConn) ReadFrom(buf []byte) (int, net.Addr, error) {
 	}
 }
 func (c *bindPacketConn) WriteTo(buf []byte, addr net.Addr) (int, error) {
+	return c.writeTo(nil, buf, addr)
+}
+
+func (c *bindPacketConn) writeTo(ctx context.Context, buf []byte, addr net.Addr) (int, error) {
 	select {
 	case <-c.done:
 		return 0, net.ErrClosed
@@ -148,7 +153,7 @@ func (c *bindPacketConn) WriteTo(buf []byte, addr net.Addr) (int, error) {
 	}
 	packet.data = packet.small[:size]
 	copy(packet.data[8:], buf)
-	err := c.g.b.host.Bind.Send([][]byte{packet.data}, a.ep, 8)
+	err := c.sendHost(ctx, [][]byte{packet.data}, a.ep)
 	releasePacket(packet)
 	if err != nil {
 		return 0, err
