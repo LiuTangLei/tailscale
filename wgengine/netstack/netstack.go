@@ -470,9 +470,11 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 
 func (ns *Impl) Close() error {
 	stacksForMetrics.Delete(ns)
-	// Cancel the injection goroutines before ipstack.Wait closes linkEP's
-	// outbound queues. A nil queue read is expected only after cancellation.
+	// Cancel before closing the queues so consumers expect nil reads.
+	// Close linkEP before aborting endpoints that can generate replies,
+	// so their resets cannot block on a full outbound queue.
 	ns.ctxCancel()
+	ns.linkEP.Close()
 	ns.ipstack.Close()
 	ns.ipstack.Wait()
 	ns.injectWG.Wait()

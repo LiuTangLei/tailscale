@@ -73,6 +73,12 @@ func (q *queue) Write(pkt *stack.PacketBuffer) tcpip.Error {
 	case <-q.closedCh:
 		pkt.DecRef()
 		return &tcpip.ErrClosedForSend{}
+	default:
+		// Packet processing can synchronously generate a reply on the TUN
+		// reader or loopback consumer. Neither may wait for queue space:
+		// draining the queue can depend on that same goroutine.
+		pkt.DecRef() // balance the IncRef evaluated before selecting a case
+		return &tcpip.ErrNoBufferSpace{}
 	}
 }
 
@@ -356,9 +362,12 @@ func (ep *linkEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {
 }
 
 // WritePackets routes outbound packets into the appropriate outbound [queue].
-// Multiple concurrent calls are permitted.
+// Multiple concurrent calls are permitted. Packets whose queue is full are
+// dropped and excluded from the returned count; if any were dropped, the error
+// is [tcpip.ErrNoBufferSpace].
 func (ep *linkEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
 	n := 0
+	var full bool
 	// TODO(jwhited): evaluate writing a stack.PacketBufferList instead of a
 	//  single packet. We can split 2 x 64K GSO across
 	//  wireguard-go/conn.IdealBatchSize (128 slots) @ 1280 MTU, and non-GSO we
@@ -376,14 +385,22 @@ func (ep *linkEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Er
 			panic(fmt.Sprintf("linkEndpoint.outboundQueueRouter returned %v which is outside outboundQueueLimit(%v)", q, outboundQueueLimit))
 		}
 		if err := ep.outboundQueues[q].Write(pkt); err != nil {
-			if _, ok := err.(*tcpip.ErrNoBufferSpace); !ok && n == 0 {
+			if _, ok := err.(*tcpip.ErrNoBufferSpace); ok {
+				// Drop only this packet. Later packets may be routed to
+				// queues that have space.
+				full = true
+				continue
+			}
+			if n == 0 {
 				return 0, err
 			}
 			break
 		}
 		n++
 	}
-
+	if full {
+		return n, &tcpip.ErrNoBufferSpace{}
+	}
 	return n, nil
 }
 
