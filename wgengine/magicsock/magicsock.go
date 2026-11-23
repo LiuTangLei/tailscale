@@ -3661,7 +3661,16 @@ func (c *connBind) Close() error {
 	// Send an empty read result to unblock receiveDERP,
 	// which will then check connBind.Closed.
 	// connBind.Closed takes c.mu, but c.derpRecvCh is buffered.
-	c.derpRecvCh <- derpReadResult{}
+	//
+	// Don't block if the buffer is already full: a pending result means
+	// any receiveDERP that is still running will dequeue it and then see
+	// closed once c.mu is released. A blocking send deadlocks when the
+	// packet device's receive workers have already exited (for example
+	// after the QUIC IP device failed), leaving nobody to drain it.
+	select {
+	case c.derpRecvCh <- derpReadResult{}:
+	default:
+	}
 	return nil
 }
 
